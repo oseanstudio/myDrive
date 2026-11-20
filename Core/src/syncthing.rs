@@ -891,7 +891,7 @@ fn configured_share_path(value: &str) -> Result<std::path::PathBuf, String> {
         }
     }
 }
-fn friendly_path(path: &Path) -> String {
+pub(crate) fn friendly_path(path: &Path) -> String {
     let path = path.to_string_lossy();
     if cfg!(windows) {
         if let Some(rest) = path.strip_prefix(r"\\?\UNC\") {

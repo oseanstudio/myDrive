@@ -9,6 +9,7 @@ from uuid import uuid4
 from gi.repository import Gio, GLib, Gtk
 
 from services import DATA, core, credentials, save_credentials
+from smb_sharing import list_private_shares, stop_private_share
 from ui_widgets import button, clear, label, menu, row
 
 
@@ -35,30 +36,60 @@ class StorageView:
         self.app = app
         self.page = page
         self.bookmarks = []
+        self.shared_here = []
+        self.tail_devices = []
         self.current = None
         self.path = ""
 
     def load(self):
-        def done(items):
-            self.bookmarks = items
-            self.render_bookmarks()
-        self.app.work("storage", "Read storage connections", lambda: core("bookmarks.load"), done, quiet=True,
+        def inventory():
+            try:
+                devices = core("smb.devices") or []
+            except (OSError, RuntimeError, subprocess.SubprocessError):
+                devices = []
+            return core("bookmarks.load"), list_private_shares(), devices
+
+        def done(inventory):
+            if (self.bookmarks, self.shared_here, self.tail_devices) != inventory or not self.page.get_first_child():
+                self.bookmarks, self.shared_here, self.tail_devices = inventory
+                if self.current is None:
+                    self.render_bookmarks()
+
+        self.app.work("storage", "Read SMB shares", inventory, done, quiet=True,
                       on_error=self.app.announce)
 
     def render_bookmarks(self):
         self.current = None
         self.path = ""
         clear(self.page)
-        self.page.append(row("SMB Storage", "", button("Add connection…", self.edit)))
-        if not self.bookmarks:
-            self.page.append(label("No saved storage connections."))
-        for bookmark in self.bookmarks:
-            choices = [("Edit…", lambda b=bookmark: self.edit(b)),
+        self.page.append(row("Shared from this computer", "", button("Share folder…", lambda: self.app.files(
+            "Choose a folder to share", Gtk.FileChooserAction.SELECT_FOLDER, lambda paths: self.app.smb_share_folder(paths[0])))))
+        for share in self.shared_here:
+            self.page.append(row(share["name"], "Read-only", menu([("Stop sharing…", lambda s=share: self.stop_share(s))])))
+        if not self.shared_here:
+            self.page.append(label("No folders shared from this computer."))
+        if self.tail_devices:
+            self.page.append(label("Tailscale devices", "heading"))
+        for device in self.tail_devices:
+            address = device["address"]
+            host = f"[{address}]" if ":" in address else address
+            browse = button("Browse", lambda h=host: self.app.open_uri(f"smb://{h}/"))
+            browse.set_sensitive(device["online"])
+            self.page.append(row(device["name"], "Tailscale" if device["online"] else "Offline", browse))
+        shares = [bookmark for bookmark in self.bookmarks if bookmark["protocol"] == "smb"]
+        self.page.append(label("Saved SMB shares", "heading"))
+        if not shares:
+            self.page.append(label("No saved SMB shares."))
+        for bookmark in shares:
+            choices = [("Connect share…", lambda b=bookmark: self.mount(b)),
                        ("Remove…", lambda b=bookmark: self.remove(b))]
-            if bookmark["protocol"] == "smb":
-                choices.insert(0, ("Connect share…", lambda b=bookmark: self.mount(b)))
             self.page.append(row(bookmark["nickname"], bookmark["host"],
                                  button("Browse", lambda b=bookmark: self.browse(b, "")), menu(choices)))
+
+    def stop_share(self, share):
+        name = share["name"]
+        self.app.confirm("Stop sharing?", name, "Stop sharing", lambda: self.app.work(
+            "storage", "Stop sharing folder", lambda: stop_private_share(name), lambda _: self.load()))
 
     def mount(self, bookmark):
         if bookmark.get("mount_path"):

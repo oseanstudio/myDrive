@@ -42,6 +42,7 @@ rm -rf -- "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/myDrive"
 cp "$CORE_BINARY" "$APP/Contents/Resources/mydrive-core"
+cp "$CORE_BINARY" "$APP/Contents/MacOS/mydrive-cli"
 echo "==> Building the private SMB host"
 (cd "$ROOT/Core/SmbHost" && CGO_ENABLED=0 GOTOOLCHAIN=local go run build.go "$APP/Contents/MacOS")
 mv "$APP/Contents/MacOS/SMB-ThirdPartyNotices.txt" "$APP/Contents/Resources/SMB-ThirdPartyNotices.txt"
@@ -68,6 +69,7 @@ chmod 755 "$APP/Contents/MacOS/myDrive" "$APP/Contents/Resources/mydrive-core"
 
 echo "==> Signing (ad-hoc)"
 codesign --force --sign - "$APP/Contents/Resources/mydrive-core" >/dev/null
+codesign --force --sign - "$APP/Contents/MacOS/mydrive-cli" >/dev/null
 codesign --force --sign - "$APP/Contents/MacOS/mydrive-smb-host" >/dev/null
 codesign --force --sign - "$APP" >/dev/null
 

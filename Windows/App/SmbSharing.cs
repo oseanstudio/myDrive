@@ -1,7 +1,9 @@
 using System.Diagnostics;
+using System.Net;
 using System.Text;
 using System.Text.Json;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml;
 using Windows.ApplicationModel.DataTransfer;
 using Windows.Storage.Pickers;
 using WinRT.Interop;
@@ -10,7 +12,7 @@ namespace MyDrive;
 
 internal sealed class SmbShareHost : IDisposable
 {
-    internal sealed record Share(string Name, string Host, string Username, string Password, bool Writable)
+    internal sealed record Share(string Name, string Folder, string Host, string Username, string Password, bool Writable)
     {
         public string Address => @"\\" + (Host.StartsWith('[') ?
             Host.Trim('[', ']').Replace(':', '-') + ".ipv6-literal.net" : Host) + "\\" + Name;
@@ -89,6 +91,73 @@ internal sealed class SmbShareHost : IDisposable
 public sealed partial class MainWindow
 {
     private readonly SmbShareHost smbHosting = new();
+    private sealed record TailDevice(string name, string address, bool online);
+    private IReadOnlyList<SmbShareHost.Share> hostedShares = [];
+    private IReadOnlyList<TailDevice> tailDevices = [];
+    private DateTime nextSmbInventory;
+    private bool updatingSmbInventory;
+
+    private StackPanel RenderSmbOverview()
+    {
+        var panel = new StackPanel { Spacing = 5 };
+        panel.Children.Add(Text("Shared from this computer", 13, true));
+        panel.Children.Add(QuickButton("Share folder…", () => _ = CreatePrivateShare()));
+        foreach (var share in hostedShares)
+        {
+            var button = QuickButton(share.Name + " · " + (share.Writable ? "Read and write" : "Read-only"),
+                () => _ = ShowPrivateShares([share], manage: false));
+            ToolTipService.SetToolTip(button, share.Folder);
+            panel.Children.Add(button);
+        }
+        if (hostedShares.Count == 0) panel.Children.Add(Text("No folders shared from this computer.", 11));
+        else panel.Children.Add(QuickButton("Stop all sharing…", () => _ = ManagePrivateShares()));
+        if (tailDevices.Count > 0)
+        {
+            panel.Children.Add(Text("Tailscale devices", 13, true));
+            foreach (var device in tailDevices)
+            {
+                var button = QuickButton(device.online ? device.name : device.name + " · Offline", () => OpenTailDevice(device));
+                button.IsEnabled = device.online;
+                panel.Children.Add(button);
+            }
+        }
+        return panel;
+    }
+
+    private void OpenTailDevice(TailDevice device)
+    {
+        if (!IPAddress.TryParse(device.address, out var address)) return;
+        string host = address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetworkV6
+            ? address.ToString().Replace(':', '-') + ".ipv6-literal.net" : address.ToString();
+        try { Process.Start(new ProcessStartInfo("explorer.exe") { ArgumentList = { "\\\\" + host }, UseShellExecute = true }); }
+        catch (Exception error) { Error(error); }
+    }
+
+    private async Task RefreshSmbInventory(bool force = false)
+    {
+        if (quitting || updatingSmbInventory || (!force && DateTime.UtcNow < nextSmbInventory)) return;
+        updatingSmbInventory = true;
+        nextSmbInventory = DateTime.UtcNow.AddSeconds(10);
+        try
+        {
+            IReadOnlyList<SmbShareHost.Share> shares;
+            try { shares = (await smbHosting.Call(new { action = "list" })).Shares ?? []; }
+            catch { shares = []; }
+            IReadOnlyList<TailDevice> devices;
+            try
+            {
+                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                var reply = await CoreBridge.Call(new { action = "smb.devices" }, timeout.Token);
+                devices = reply.Deserialize<List<TailDevice>>() ?? [];
+            }
+            catch { devices = []; }
+            if (hostedShares.SequenceEqual(shares) && tailDevices.SequenceEqual(devices)) return;
+            hostedShares = shares;
+            tailDevices = devices;
+            if (!quitting && currentView == "connections" && modalDepth == 0 && !busy) Render();
+        }
+        finally { updatingSmbInventory = false; }
+    }
 
     private async Task CreatePrivateShare(string? folder = null)
     {
@@ -124,7 +193,12 @@ public sealed partial class MainWindow
             }) != ContentDialogResult.Primary) return;
 
             var created = await smbHosting.Call(new { action = "add", folder, name = name.Text.Trim(), writable = write.IsChecked == true }, start: true);
-            if (created.Share is { } share) await ShowPrivateShares([share], manage: false);
+            if (created.Share is { } share)
+            {
+                hostedShares = hostedShares.Append(share).ToArray();
+                if (currentView == "connections") Render();
+                await ShowPrivateShares([share], manage: false);
+            }
         }
         catch (Exception error) { Error(error); }
     }
@@ -159,7 +233,7 @@ public sealed partial class MainWindow
         var dialog = new ContentDialog
         {
             XamlRoot = root.XamlRoot,
-            Title = manage ? "Tailscale SMB shares" : "Folder shared over Tailscale",
+            Title = manage ? "Stop sharing these folders?" : "Folder shared over Tailscale",
             Content = new ScrollViewer { Content = content, MaxHeight = 246 },
             PrimaryButtonText = manage && shares.Count > 0 ? "Stop all shares" : "",
             CloseButtonText = "Done"
@@ -167,6 +241,8 @@ public sealed partial class MainWindow
         if (await ShowDialog(dialog) == ContentDialogResult.Primary)
         {
             await smbHosting.Call(new { action = "stop" });
+            hostedShares = [];
+            if (currentView == "connections") Render();
             Info("Sharing stopped", "All myDrive SMB shares were closed.");
         }
     }

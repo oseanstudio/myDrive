@@ -102,7 +102,7 @@ public sealed partial class MainWindow : Window
         Closed+=(_,_)=>{popupInput.Dispose();healthTimer.Stop();updateTimer.Stop();tray?.Dispose();operation?.Cancel();smbHosting.Dispose();};
         AppWindow.Changed+=(_,e)=>{if(compact&&AppWindow.IsVisible)popupInput.Start();else popupInput.Stop();};
         Activated+=(_,e)=>{if(e.WindowActivationState==WindowActivationState.Deactivated)DispatcherQueue.TryEnqueue(()=>{if(!diagnosticMode&&!PopupInput.OurForeground()&&tray?.PointerInside()!=true)DismissQuickPopup();});};
-        healthTimer.Tick+=async(_,_)=>await MonitorSmb();
+        healthTimer.Tick+=async(_,_)=>{await MonitorSmb();if(currentView=="connections" && !diagnosticMode)_=RefreshSmbInventory();};
         navigation.SelectedItem=navigation.MenuItems[1];
         SetMode(compact);
         if(!diagnosticMode){_=Initialize();StartSyncthingRefresh();StartBlipRefresh();StartUpdateChecks();}
@@ -180,14 +180,11 @@ public sealed partial class MainWindow : Window
     private void Heading(string title,string subtitle){page.Children.Add(Text(title,compact?16:30,true));if(compact)return;var sub=Text(subtitle,14);sub.Foreground=Brush("TextFillColorSecondaryBrush");page.Children.Add(sub);}
     private void RenderConnections()
     {
+        if(!diagnosticMode)_=RefreshSmbInventory();
+        page.Children.Add(RenderSmbOverview());
         if(compact){RenderQuickConnections();return;}
-        Heading(StorageViewName,"Your folders, servers and network shares.");
-        page.Children.Add(Button("Open shared folder…",()=>_=OpenSmbShare()));
-        page.Children.Add(Button("Share over SMB…", () => _ = CreatePrivateShare()));
-        page.Children.Add(Button("Tailscale SMB shares…", () => _ = ManagePrivateShares()));
-        if(!compact){var intro=new StackPanel{Spacing=14};intro.Children.Add(Text("A direct line to your files",22,true));intro.Children.Add(Text("Connect a server or folder to browse and transfer files with native Windows controls. Your passwords stay in Windows Credential Manager."));intro.Children.Add(Button("＋  Add connection",()=>_=EditBookmark(null),true));page.Children.Add(Card(intro));}
-        var line=new Grid();line.ColumnDefinitions.Add(new(){Width=new GridLength(1,GridUnitType.Star)});line.ColumnDefinitions.Add(new(){Width=new GridLength(compact?190:260)});line.Children.Add(Text($"Saved  ·  {bookmarks.Count}",compact?14:18,true));
-        var filter=new AutoSuggestBox{PlaceholderText="Find storage",Text=search};filter.TextChanged+=(_,_)=>{search=filter.Text;RenderConnectionList();};Grid.SetColumn(filter,1);line.Children.Add(filter);page.Children.Add(line);
+        var line=new Grid();line.ColumnDefinitions.Add(new(){Width=new GridLength(1,GridUnitType.Star)});line.ColumnDefinitions.Add(new(){Width=new GridLength(260)});line.Children.Add(Text("Saved SMB shares",18,true));
+        var filter=new AutoSuggestBox{PlaceholderText="Find SMB shares",Text=search};filter.TextChanged+=(_,_)=>{search=filter.Text;RenderConnectionList();};Grid.SetColumn(filter,1);line.Children.Add(filter);page.Children.Add(line);
         connectionsPanel=new StackPanel{Spacing=10};page.Children.Add(connectionsPanel);RenderConnectionList();
     }
     private StackPanel? connectionsPanel;
@@ -195,17 +192,16 @@ public sealed partial class MainWindow : Window
     {
         if(compact){RenderQuickConnectionList();return;}
         if(connectionsPanel==null)return;connectionsPanel.Children.Clear();
-        foreach(var b in bookmarks.Where(b=>(b.nickname+" "+b.host).Contains(search,StringComparison.OrdinalIgnoreCase)))
+        foreach(var b in bookmarks.Where(b=>b.protocol=="smb" && (b.nickname+" "+b.host).Contains(search,StringComparison.OrdinalIgnoreCase)))
         {
             var grid=new Grid{ColumnSpacing=compact?10:18};grid.ColumnDefinitions.Add(new(){Width=GridLength.Auto});grid.ColumnDefinitions.Add(new(){Width=new GridLength(1,GridUnitType.Star)});grid.ColumnDefinitions.Add(new(){Width=GridLength.Auto});
             if(!compact)grid.Children.Add(new Border{Width=46,Height=46,CornerRadius=new(9),Background=Brush("AccentFillColorDefaultBrush"),Child=new FontIcon{Glyph=b.protocol=="local"?"\uE8B7":b.protocol=="smb"?"\uE968":"\uE753",Foreground=new SolidColorBrush(Colors.White),FontSize=22}});
             var details=new StackPanel{Spacing=4,VerticalAlignment=VerticalAlignment.Center};details.Children.Add(new TextBlock{Text=b.nickname,FontSize=compact?15:17,FontWeight=Microsoft.UI.Text.FontWeights.SemiBold,TextTrimming=TextTrimming.CharacterEllipsis});details.Children.Add(new TextBlock{Text=b.Location,TextTrimming=TextTrimming.CharacterEllipsis,Foreground=Brush("TextFillColorSecondaryBrush"),MaxWidth=compact?190:470,HorizontalAlignment=HorizontalAlignment.Left,FontSize=compact?12:14});var state=health.GetValueOrDefault(b.id,"Ready");var stateText=Text(b.ProtocolName+"  ·  "+state,12);if(state=="Unavailable")stateText.Foreground=new SolidColorBrush(colorTheme==ElementTheme.Dark?Colors.LightCoral:Colors.Firebrick);details.Children.Add(stateText);Grid.SetColumn(details,1);grid.Children.Add(details);
             var actions=new StackPanel{Orientation=Orientation.Horizontal,Spacing=8,VerticalAlignment=VerticalAlignment.Center};actions.Children.Add(Button("Browse",()=>_=Browse(b),true));
-            var more=new Button{Content="···"};var menu=new MenuFlyout();var test=new MenuFlyoutItem{Text="Test connection",Icon=new SymbolIcon(Symbol.Sync)};test.Click+=(_,_)=>_=TestConnection(b);menu.Items.Add(test);var edit=new MenuFlyoutItem{Text="Edit connection",Icon=new SymbolIcon(Symbol.Edit)};edit.Click+=(_,_)=>_=EditBookmark(b);menu.Items.Add(edit);
-            if(b.protocol is "smb" or "local"){var explorer=new MenuFlyoutItem{Text="Open in Explorer",Icon=new SymbolIcon(Symbol.OpenLocal)};explorer.Click+=(_,_)=>OpenExplorer(b);menu.Items.Add(explorer);}
-            menu.Items.Add(new MenuFlyoutSeparator());var remove=new MenuFlyoutItem{Text="Remove connection",Icon=new SymbolIcon(Symbol.Delete)};remove.Click+=(_,_)=>_=DeleteBookmark(b);menu.Items.Add(remove);more.Flyout=menu;actions.Children.Add(more);Grid.SetColumn(actions,2);grid.Children.Add(actions);connectionsPanel.Children.Add(Card(grid));
+            var more=new Button{Content="···"};var menu=new MenuFlyout();var explorer=new MenuFlyoutItem{Text="Open in Explorer",Icon=new SymbolIcon(Symbol.OpenLocal)};explorer.Click+=(_,_)=>OpenExplorer(b);menu.Items.Add(explorer);
+            var remove=new MenuFlyoutItem{Text="Remove saved share",Icon=new SymbolIcon(Symbol.Delete)};remove.Click+=(_,_)=>_=DeleteBookmark(b);menu.Items.Add(remove);more.Flyout=menu;actions.Children.Add(more);Grid.SetColumn(actions,2);grid.Children.Add(actions);connectionsPanel.Children.Add(Card(grid));
         }
-        if(connectionsPanel.Children.Count==0){var empty=new StackPanel{Spacing=10,Padding=new Thickness(20,34,20,34),HorizontalAlignment=HorizontalAlignment.Center};empty.Children.Add(new FontIcon{Glyph="\uE8B7",FontSize=38,Foreground=Brush("TextFillColorTertiaryBrush")});empty.Children.Add(Text(bookmarks.Count==0?"Make room for everything.":"No matching connections",20,true));empty.Children.Add(Text(bookmarks.Count==0?"Start with a local folder, or connect your first server.":"Try a different name or server address."));connectionsPanel.Children.Add(Card(empty));}
+        if(connectionsPanel.Children.Count==0)connectionsPanel.Children.Add(Text(search.Length==0?"No saved SMB shares.":"No matching SMB shares.",13));
     }
     private async Task TestConnection(Bookmark b)=>await Run("Test connection",async token=>{if(b.protocol=="smb")await Native.ConnectSmb(b,token);var files=await CoreBridge.List(b,"",token);health[b.id]="Connected";Info("Connection successful",$"{b.nickname} is reachable. {files.Count} items in its root folder.");Render();},b);
     private async Task Browse(Bookmark b,string path="")=>await Run("List files",async token=>{if(b.protocol=="smb")await Native.ConnectSmb(b,token);currentFiles=await CoreBridge.List(b,path,token);currentBookmark=b;currentPath=path;currentView="files";health[b.id]="Connected";Render();},b);

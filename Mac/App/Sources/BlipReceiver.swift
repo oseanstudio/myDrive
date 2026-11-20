@@ -171,12 +171,7 @@ extension Notification.Name { static let myDriveIncomingBlip = Notification.Name
     }
     func stop() { task?.cancel(); task = nil; stopBackground(); setActivity(false) }
 
-    private var desktopAppURL: URL? {
-        NSWorkspace.shared.urlForApplication(withBundleIdentifier: BlipMacEngine.bundleID)
-            ?? [URL(fileURLWithPath: "/Applications/Blip.app"),
-                FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Applications/Blip.app")]
-            .first { Bundle(url: $0)?.bundleIdentifier == BlipMacEngine.bundleID }
-    }
+    private var desktopAppURL: URL? { BlipMacEngine.installedApplication }
 
     private func ensureBackground() {
         guard backgroundEnabled, backgroundProcess == nil, Date() >= nextHostAttempt else { return }

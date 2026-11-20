@@ -129,10 +129,6 @@ struct PopupRootView: View {
             }.buttonStyle(.plain).help("Paste and send with Blip").accessibilityLabel("Paste clipboard and send")
             Menu {
                 Button("Sync a folder…") { app.dialog = .share }
-                Button("Open SMB share…") { app.dialog = .smbAddress }
-                Button("Share over SMB…") { app.createPrivateShare() }
-                Button("Tailscale SMB shares…") { app.managePrivateShares() }
-                Button("Add storage connection…") { app.dialog = .bookmarkEditor(nil) }
                 Button("Send with Blip…") { app.view = .transfers; app.blip.chooseFilesToSend() }
                 Button("Paste and send…") { app.view = .transfers; app.blip.pasteAndSend() }
             } label: {

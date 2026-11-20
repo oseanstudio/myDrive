@@ -10,6 +10,35 @@ struct ConnectionsView: View {
             StorageFilesView(state: state)
         } else {
             LazyVStack(spacing: 6) {
+                HStack {
+                    sectionHeader("Shared from this computer")
+                    Button("Share folder…") { app.createPrivateShare() }
+                        .controlSize(.small)
+                }
+                if app.hostedSmbShares.isEmpty {
+                    Text("No folders shared from this computer.").font(.system(size: 11)).foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                ForEach(app.hostedSmbShares, id: \.name) { share in
+                    Button("\(share.name) · \(share.writable ? "Read and write" : "Read-only")") { app.showPrivateShare(share) }
+                        .help(share.folder ?? share.address)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                if !app.hostedSmbShares.isEmpty {
+                    Button("Stop all sharing…") { app.managePrivateShares() }
+                        .controlSize(.small).frame(maxWidth: .infinity, alignment: .leading)
+                }
+                if !app.smbTailDevices.isEmpty {
+                    Divider()
+                    sectionHeader("Tailscale devices")
+                    ForEach(app.smbTailDevices) { device in
+                        if let url = device.url {
+                            Link(device.online ? device.name : device.name + " · Offline", destination: url)
+                                .disabled(!device.online).frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+                }
+                Divider()
                 sectionHeader("Network drives")
                 if app.mounts.isEmpty {
                     Text("No SMB drives are mounted right now.")
@@ -22,28 +51,23 @@ struct ConnectionsView: View {
                     }
                 }
                 Divider()
-                sectionHeader("Saved storage")
-                if app.bookmarks.isEmpty {
-                    Text("Use + to add a folder or connection.")
+                sectionHeader("Saved SMB shares")
+                let shares = app.bookmarks.filter { $0.protocolKind == "smb" }
+                if shares.isEmpty {
+                    Text("No saved SMB shares.")
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                         .padding(.vertical, 4)
                 } else {
-                    ForEach(app.bookmarks) { bookmark in
+                    ForEach(shares) { bookmark in
                         BookmarkRow(bookmark: bookmark)
                     }
                 }
-                Divider()
-                sectionHeader("Devices")
-                if let devices = app.snapshot?.devices, !devices.isEmpty {
-                    ForEach(devices) { device in
-                        DeviceRow(device: device)
-                    }
-                } else {
-                    Text("Device status appears once Syncthing is connected.")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                        .padding(.vertical, 4)
+            }
+            .task {
+                while !Task.isCancelled {
+                    await app.refreshSmbInventory()
+                    try? await Task.sleep(for: .seconds(15))
                 }
             }
         }
@@ -146,17 +170,8 @@ struct BookmarkRow: View {
             }
             Spacer(minLength: 4)
             Menu {
-                Button("Test connection") {
-                    app.testBookmark(bookmark, credentials: Keychain.readCredentials(id: bookmark.id)) {
-                        app.showBanner(.info, "Test connection", $0)
-                    }
-                }
-                Button("Edit connection") { app.dialog = .bookmarkEditor(bookmark) }
-                if bookmark.protocolKind == "local" {
-                    Button("Open in Finder") { app.openLocalFolder(bookmark.host) }
-                }
-                Divider()
-                Button("Remove connection", role: .destructive) { app.deleteBookmark(bookmark) }
+                Button("Browse") { app.browseBookmark(bookmark, path: "") }
+                Button("Remove saved share", role: .destructive) { app.deleteBookmark(bookmark) }
             } label: {
                 Image(systemName: "ellipsis.circle")
                     .font(.system(size: 14))

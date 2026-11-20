@@ -3,6 +3,9 @@
 import AppKit
 
 let arguments = CommandLine.arguments
+if arguments.count >= 3, arguments[1] == "--blip-cli" {
+    MainActor.assumeIsolated { BlipCommand.run(Array(arguments.dropFirst(2))) }
+}
 if arguments.count == 3, arguments[1] == "--blip-background-engine" {
     do { try BlipMacEngine.runInstalled(appPath: arguments[2]) }
     catch let failure as BlipMacEngine { exit(failure.rawValue) }

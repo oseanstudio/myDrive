@@ -54,10 +54,7 @@ public sealed partial class MainWindow
         MenuAction(addMenu,"Sync a folder…",()=>_=ShowQuickShare());
         MenuAction(addMenu,"Send with Blip…",()=>{NavigateQuick("transfers");if(blipSnapshot?.Status.Authenticated==true)_=ShowBlipSend();});
         MenuAction(addMenu,"Paste and send…",()=>_=PasteAndSendBlip());
-        MenuAction(addMenu,"Open SMB share…",()=>_=OpenSmbShare());
-        MenuAction(addMenu,"Share over SMB…",()=>_=CreatePrivateShare());
-        MenuAction(addMenu,"Tailscale SMB shares…",()=>_=ManagePrivateShares());
-        MenuAction(addMenu,"Add storage connection…",()=>_=EditBookmark(null));add.Flyout=addMenu;
+        add.Flyout=addMenu;
         Grid.SetColumn(add,2);quickHeader.Children.Add(add);
         var paste=QuickIcon("\uE77F","Paste clipboard and send",()=>_=PasteAndSendBlip());Grid.SetColumn(paste,3);quickHeader.Children.Add(paste);
     }
@@ -217,7 +214,7 @@ public sealed partial class MainWindow
     }
     private void RenderQuickConnections()
     {
-        if(bookmarks.Count>4||search.Length>0){var filter=new AutoSuggestBox{PlaceholderText="Find storage",Text=search,FontSize=12};filter.TextChanged+=(_,_)=>{search=filter.Text;RenderConnectionList();};page.Children.Add(filter);}
+        if(bookmarks.Count(b=>b.protocol=="smb")>4||search.Length>0){var filter=new AutoSuggestBox{PlaceholderText="Find SMB shares",Text=search,FontSize=12};filter.TextChanged+=(_,_)=>{search=filter.Text;RenderConnectionList();};page.Children.Add(filter);}
         connectionsPanel=new StackPanel{Spacing=0};page.Children.Add(connectionsPanel);RenderQuickConnectionList();
     }
     private void RenderQuickFiles()
@@ -245,13 +242,13 @@ public sealed partial class MainWindow
     private void RenderQuickConnectionList()
     {
         if(connectionsPanel==null)return;connectionsPanel.Children.Clear();
-        foreach(var b in bookmarks.Where(b=>(b.nickname+" "+b.host).Contains(search,StringComparison.OrdinalIgnoreCase)))
+        foreach(var b in bookmarks.Where(b=>b.protocol=="smb" && (b.nickname+" "+b.host).Contains(search,StringComparison.OrdinalIgnoreCase)))
         {
             var row=new Grid{ColumnSpacing=4};row.ColumnDefinitions.Add(new(){Width=new GridLength(1,GridUnitType.Star)});row.ColumnDefinitions.Add(new(){Width=GridLength.Auto});
             var details=new StackPanel{Spacing=1};details.Children.Add(QuickText(b.nickname,13,true));var state=health.GetValueOrDefault(b.id,"Ready");var note=QuickText(b.ProtocolName+" · "+state,11);note.Foreground=state=="Unavailable"?new SolidColorBrush(colorTheme==ElementTheme.Dark?Colors.LightCoral:Colors.Firebrick):Brush("TextFillColorSecondaryBrush");details.Children.Add(note);
             var open=QuickButton("",()=>_=Browse(b));open.Content=details;open.HorizontalAlignment=HorizontalAlignment.Stretch;open.HorizontalContentAlignment=HorizontalAlignment.Stretch;open.Padding=new Thickness(3,1,3,1);open.Background=new SolidColorBrush(Colors.Transparent);open.BorderThickness=new Thickness(0);ToolTipService.SetToolTip(open,b.Location);AutomationProperties.SetName(open,"Browse "+b.nickname);row.Children.Add(open);
-            var more=QuickIcon("\uE712","Actions for "+b.nickname,()=>{});var menu=new MenuFlyout();MenuAction(menu,"Test connection",()=>_=TestConnection(b));MenuAction(menu,"Edit connection",()=>_=EditBookmark(b));if(b.protocol is "local" or "smb")MenuAction(menu,"Open in Explorer",()=>OpenExplorer(b));menu.Items.Add(new MenuFlyoutSeparator());MenuAction(menu,"Remove connection",()=>_=DeleteBookmark(b));more.Flyout=menu;Grid.SetColumn(more,1);row.Children.Add(more);connectionsPanel.Children.Add(QuickRow(row));
+            var more=QuickIcon("\uE712","Actions for "+b.nickname,()=>{});var menu=new MenuFlyout();MenuAction(menu,"Open in Explorer",()=>OpenExplorer(b));MenuAction(menu,"Remove saved share",()=>_=DeleteBookmark(b));more.Flyout=menu;Grid.SetColumn(more,1);row.Children.Add(more);connectionsPanel.Children.Add(QuickRow(row));
         }
-        if(connectionsPanel.Children.Count==0)connectionsPanel.Children.Add(Text(bookmarks.Count==0?"Use + to add a folder or connection.":"No matching connections.",12));
+        if(connectionsPanel.Children.Count==0)connectionsPanel.Children.Add(Text(search.Length==0?"No saved SMB shares.":"No matching SMB shares.",12));
     }
 }

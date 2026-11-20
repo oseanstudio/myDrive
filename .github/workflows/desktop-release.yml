@@ -70,6 +70,7 @@ jobs:
           dotnet publish Windows/App/myDrive.csproj -c Release -p:Platform=x64 "-p:Version=$env:MYDRIVE_VERSION" -o $payload --nologo
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           Copy-Item -LiteralPath (Join-Path $env:CARGO_TARGET_DIR 'release/mydrive-core.exe') -Destination $payload
+          Copy-Item -LiteralPath (Join-Path $payload 'mydrive-core.exe') -Destination (Join-Path $payload 'mydrive-cli.exe')
           & ./Windows/packaging/collect-notices.ps1 -AssetsFile Windows/App/obj/project.assets.json -PublishDirectory $payload
           node Core/third-party-notices.mjs Core/Cargo.toml (Join-Path $payload 'ThirdPartyNotices.txt')
           exit $LASTEXITCODE
@@ -108,6 +109,8 @@ jobs:
           $core = Join-Path $directory 'mydrive-core.exe'
           $result = '{"action":"version"}' | & $core | ConvertFrom-Json
           if (!$result.ok) { throw 'The installed core did not respond.' }
+          node tests/automation-smoke.mjs (Join-Path $directory 'mydrive-cli.exe')
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
           $shareHost = Join-Path $directory 'mydrive-smb-host.exe'
           $hostResult = '{"action":"list"}' | & $shareHost | ConvertFrom-Json
           if (!$hostResult -or $hostResult.error) { throw 'The installed SMB host did not respond.' }

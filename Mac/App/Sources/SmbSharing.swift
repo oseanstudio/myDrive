@@ -1,8 +1,9 @@
 import AppKit
 import Foundation
 
-struct HostedSmbShare: Decodable {
+struct HostedSmbShare: Decodable, Equatable {
     let name: String
+    let folder: String?
     let host: String
     let username: String
     let password: String
@@ -11,6 +12,18 @@ struct HostedSmbShare: Decodable {
     var address: String {
         let encoded = name.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? name
         return "smb://\(host)/\(encoded)"
+    }
+}
+
+struct SmbTailDevice: Decodable, Equatable, Identifiable {
+    let id: String
+    let name: String
+    let address: String
+    let online: Bool
+
+    var url: URL? {
+        let host = address.contains(":") ? "[\(address)]" : address
+        return URL(string: "smb://\(host)/")
     }
 }
 
@@ -139,7 +152,11 @@ final class SmbSharingHost: @unchecked Sendable {
         view = .connections
         perform("Share folder over encrypted SMB") {
             let result = try await self.smbHosting.request("add", name: name, folder: folder.path, writable: writable)
-            if let share = result.share { self.showPrivateShare(share) }
+            if let share = result.share {
+                self.hostedSmbShares.removeAll { $0.name == share.name }
+                self.hostedSmbShares.append(share)
+                self.showPrivateShare(share)
+            }
         }
     }
 
@@ -149,7 +166,7 @@ final class SmbSharingHost: @unchecked Sendable {
             let result = try await self.smbHosting.request("list")
             let shares = result.shares ?? []
             let alert = NSAlert()
-            alert.messageText = "Tailscale SMB shares"
+            alert.messageText = "Stop sharing these folders?"
             if shares.isEmpty {
                 alert.informativeText = "This session has no active SMB shares."
                 alert.addButton(withTitle: "Done")
@@ -169,12 +186,24 @@ final class SmbSharingHost: @unchecked Sendable {
                 if shares.indices.contains(selector.indexOfSelectedItem) { self.showPrivateShare(shares[selector.indexOfSelectedItem]) }
             case .alertThirdButtonReturn:
                 _ = try await self.smbHosting.request("stop")
+                self.hostedSmbShares = []
             default: break
             }
         }
     }
 
-    private func showPrivateShare(_ share: HostedSmbShare) {
+    func refreshSmbInventory() async {
+        let hosted = (try? await smbHosting.request("list"))?.shares ?? []
+        if hosted != hostedSmbShares { hostedSmbShares = hosted }
+        let result = try? await CoreBridge.shared.call(action: "smb.devices", timeout: 10)
+        let devices: [SmbTailDevice]
+        if let rows = result as? [JSON], let data = try? JSONSerialization.data(withJSONObject: rows) {
+            devices = (try? JSONDecoder().decode([SmbTailDevice].self, from: data)) ?? []
+        } else { devices = [] }
+        if devices != smbTailDevices { smbTailDevices = devices }
+    }
+
+    func showPrivateShare(_ share: HostedSmbShare) {
         let alert = NSAlert()
         alert.messageText = share.name
         alert.informativeText = "\(share.address)\nUsername: \(share.username)\n\(share.writable ? "Read and write" : "Read-only")"

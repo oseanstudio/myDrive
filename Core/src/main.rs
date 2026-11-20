@@ -1,6 +1,8 @@
+mod automation;
 mod client;
 mod desktop_update;
 mod model;
+mod mcp;
 mod relay;
 mod s3;
 mod sftp;
@@ -75,6 +77,7 @@ fn execute(r: Request) -> Result<Value, String> {
     }
     match r.action.as_str() {
         "version" => return Ok(json!({"name":"myDrive","version":env!("CARGO_PKG_VERSION")})),
+        "smb.devices" => return automation::smb_action("devices", &json!({})),
         "update.check" => {
             let installed = r.payload["version"].as_str().ok_or("Missing app version.")?;
             return Ok(json!(updates::check(installed)?));
@@ -170,6 +173,15 @@ fn main() {
             }
             return;
         }
+        if let Err(error) = automation::cli(command, arguments) {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    if std::env::current_exe().ok().and_then(|path| path.file_stem().map(|name| name.eq_ignore_ascii_case("mydrive-cli"))) == Some(true) {
+        let _ = automation::cli("--help".into(), std::iter::empty());
+        return;
     }
     // One JSON request on stdin. Credentials never appear in process arguments or output.
     let mut input = String::new();

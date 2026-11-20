@@ -1,10 +1,28 @@
 """Create read-only usershares on a verified Tailscale-bound Samba host."""
 
+import configparser
 import ipaddress
 import json
 import re
 import subprocess
 from pathlib import Path
+
+
+def list_private_shares():
+    try:
+        data = query("net", "usershare", "info", "--long")
+        shares = configparser.RawConfigParser(strict=False)
+        shares.read_string(data)
+    except (RuntimeError, configparser.Error):
+        return []
+    return [{"name": name, "path": options.get("path", "")}
+            for name, options in shares.items() if options.get("comment") == "Shared from myDrive"]
+
+
+def stop_private_share(name):
+    if not any(share["name"] == name for share in list_private_shares()):
+        raise RuntimeError("That folder is no longer shared by myDrive.")
+    query("net", "usershare", "delete", name)
 
 
 def query(*arguments):

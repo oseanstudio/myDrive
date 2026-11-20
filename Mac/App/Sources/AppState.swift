@@ -103,6 +103,8 @@ final class AppState: ObservableObject {
     @Published var snapshot: Snapshot?
     @Published var snapshotError: String?
     @Published var mounts: [SmbMount] = []
+    @Published var hostedSmbShares: [HostedSmbShare] = []
+    @Published var smbTailDevices: [SmbTailDevice] = []
     @Published var activity: [ActivityEntry] = []
     @Published var updates: [UpdateEntry] = []
     @Published var attention: [AttentionItem] = []

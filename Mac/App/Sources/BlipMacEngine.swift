@@ -1,3 +1,4 @@
+import AppKit
 import CryptoKit
 import Darwin
 import Foundation
@@ -25,6 +26,13 @@ enum BlipMacEngine: Int32, LocalizedError {
     private static let reviewedHash = "d839f07f7ff1c15c4ed144dbf2d09300d3a2c4b061f974a099c1f31a1a34d500"
     static var groupDirectory: URL {
         FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Group Containers/" + group, isDirectory: true)
+    }
+
+    @MainActor static var installedApplication: URL? {
+        NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID)
+            ?? [URL(fileURLWithPath: "/Applications/Blip.app"),
+                FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Applications/Blip.app")]
+            .first { Bundle(url: $0)?.bundleIdentifier == bundleID }
     }
 
     static func runInstalled(appPath: String) throws {

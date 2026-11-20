@@ -33,6 +33,7 @@ type request struct {
 
 type details struct {
 	Name     string `json:"name"`
+	Folder   string `json:"folder"`
 	Host     string `json:"host"`
 	Username string `json:"username"`
 	Password string `json:"password"`
@@ -148,7 +149,7 @@ func (s *service) add(r request) (details, error) {
 		_ = root.Close()
 		return details{}, errors.New("myDrive could not add the SMB share.")
 	}
-	share := details{r.Name, s.net.host(), username, s.password, r.Writable}
+	share := details{r.Name, filepath.Clean(r.Folder), s.net.host(), username, s.password, r.Writable}
 	s.roots = append(s.roots, root)
 	s.shares = append(s.shares, share)
 	return share, nil
@@ -170,6 +171,10 @@ func validate(r request) error {
 }
 
 func main() {
+	if len(os.Args) == 2 && os.Args[1] == "--browse" {
+		browseMain()
+		return
+	}
 	var host *service
 	defer func() {
 		if host != nil {

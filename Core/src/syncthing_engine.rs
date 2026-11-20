@@ -142,7 +142,9 @@ fn binaries(data: &Path) -> Vec<PathBuf> {
 
 fn quiet_command(binary: &Path) -> Command {
     let mut cmd = Command::new(binary);
-    cmd.stdin(Stdio::null())
+    cmd.env_remove("MYDRIVE_SMB_USERNAME")
+        .env_remove("MYDRIVE_SMB_PASSWORD")
+        .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     #[cfg(windows)]

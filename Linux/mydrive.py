@@ -99,7 +99,12 @@ class MyDrive(Gtk.Application):
         content.append(expand)
         self.window.connect("notify::maximized", lambda *_: expand.set_label(
             "Open compact window" if self.window.is_maximized() else "Open full window"))
-        view.connect("notify::selected", lambda dropdown, *_: self.stack.set_visible_child_name(titles[dropdown.get_selected()]))
+        def show_view(dropdown, *_):
+            title = titles[dropdown.get_selected()]
+            self.stack.set_visible_child_name(title)
+            if title == "SMB Storage" and not self.fixture:
+                self.storage_view.load()
+        view.connect("notify::selected", show_view)
         self.storage_view = StorageView(self, self.pages["SMB Storage"])
         self.transfer_view = TransferView(self, self.pages["Send & Receive"], self.blip)
         self.render_activity()
@@ -116,6 +121,7 @@ class MyDrive(Gtk.Application):
         GLib.timeout_add_seconds(6 * 60 * 60, self.tick_updates)
         GLib.timeout_add_seconds(8, self.tick_sync)
         GLib.timeout_add_seconds(2, self.tick_blip)
+        GLib.timeout_add_seconds(15, self.tick_storage)
 
     def do_shutdown(self):
         self.stopping = True
@@ -131,6 +137,11 @@ class MyDrive(Gtk.Application):
 
     def tick_blip(self):
         self.transfer_view.refresh(quiet=True)
+        return not self.stopping
+
+    def tick_storage(self):
+        if self.stack.get_visible_child_name() == "SMB Storage" and self.storage_view.current is None:
+            self.storage_view.load()
         return not self.stopping
 
     def tick_updates(self):
@@ -348,8 +359,10 @@ class MyDrive(Gtk.Application):
         def submit():
             name = field.get_text().strip()
             username = account.get_text().strip()
+            def shared(_):
+                self.storage_view.load()
             self.work("storage", "Share folder over SMB", lambda: add_private_share(name, folder, username),
-                      lambda _: self.announce(f"Shared {name} over Tailscale."))
+                      shared)
 
         self.dialog("Share over SMB", "Share", [field, account, detail], submit)
 
