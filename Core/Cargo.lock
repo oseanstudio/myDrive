@@ -636,6 +636,7 @@ dependencies = [
  "getrandom 0.4.3",
  "hex",
  "hmac",
+ "libc",
  "percent-encoding",
  "quick-xml",
  "reqwest",

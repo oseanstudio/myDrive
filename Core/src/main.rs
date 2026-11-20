@@ -1,4 +1,5 @@
 mod client;
+mod desktop_update;
 mod model;
 mod relay;
 mod s3;
@@ -78,6 +79,10 @@ fn execute(r: Request) -> Result<Value, String> {
             let installed = r.payload["version"].as_str().ok_or("Missing app version.")?;
             return Ok(json!(updates::check(installed)?));
         }
+        "update.install" => {
+            return desktop_update::prepare(r.payload, Path::new(&r.data_dir)).map(|()| Value::Null);
+        }
+        "update.error" => return Ok(json!(desktop_update::take_error(Path::new(&r.data_dir)))),
         "bookmarks.load" => return Ok(json!(storage::load(Path::new(&r.data_dir))?)),
         "bookmarks.save" => {
             storage::save(Path::new(&r.data_dir), &r.bookmarks)?;
@@ -157,6 +162,15 @@ fn execute(r: Request) -> Result<Value, String> {
     }
 }
 fn main() {
+    let mut arguments = std::env::args_os().skip(1);
+    if let Some(command) = arguments.next() {
+        if command == "--finish-desktop-update" {
+            if let Some(plan) = arguments.next() {
+                desktop_update::finish(Path::new(&plan));
+            }
+            return;
+        }
+    }
     // One JSON request on stdin. Credentials never appear in process arguments or output.
     let mut input = String::new();
     if let Err(e) = io::stdin().take(8 * 1024 * 1024).read_to_string(&mut input) {

@@ -22,7 +22,10 @@ struct PopupRootView: View {
         VStack(spacing: 0) {
             header
             if let update = app.availableAppUpdate {
-                Link("Download myDrive \(update.version)", destination: update.url)
+                Button(app.installingAppUpdate ? "Downloading myDrive \(update)…" : "Update to myDrive \(update)") {
+                    app.installAppUpdate()
+                }
+                    .disabled(app.installingAppUpdate || app.busy != nil)
                     .font(.system(size: 12))
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 10)

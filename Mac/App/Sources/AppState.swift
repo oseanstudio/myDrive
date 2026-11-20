@@ -108,7 +108,8 @@ final class AppState: ObservableObject {
     @Published var attention: [AttentionItem] = []
     @Published var busy: BusyState?
     @Published var banner: Banner?
-    @Published var availableAppUpdate: (version: String, url: URL)?
+    @Published var availableAppUpdate: String?
+    @Published var installingAppUpdate = false
     @Published var dialog: DialogKind?
     @Published var syncBrowse: SyncBrowseState?
     @Published var storageBrowse: StorageBrowseState?
@@ -142,6 +143,11 @@ final class AppState: ObservableObject {
 
     func startup() {
         checkForAppUpdate()
+        Task {
+            if let error = (try? await CoreBridge.shared.call(action: "update.error", request: ["data_dir": Paths.dataDir.path])) as? String {
+                showBanner(.error, "Could not update myDrive", error)
+            }
+        }
         blip.start()
         activity = log.activity
         updates = log.updates
@@ -263,6 +269,7 @@ final class AppState: ObservableObject {
     }
 
     func checkForAppUpdate(showResult: Bool = false) {
+        guard !installingAppUpdate else { return }
         guard showResult || Date().timeIntervalSince(lastAppUpdateCheck) >= 6 * 60 * 60 else { return }
         showAppUpdateResult = showAppUpdateResult || showResult
         guard !checkingForAppUpdate,
@@ -276,14 +283,34 @@ final class AppState: ObservableObject {
             }
             do {
                 let reply = try await CoreBridge.shared.call(action: "update.check", request: ["payload": ["version": version]], timeout: 12)
-                if let update = reply as? JSON, let url = URL(string: update.str("url")) {
-                    availableAppUpdate = (update.str("version"), url)
+                guard !installingAppUpdate else { return }
+                if let update = reply as? JSON, let target = update["version"] as? String {
+                    availableAppUpdate = target
                 } else {
                     availableAppUpdate = nil
                     if showAppUpdateResult { showBanner(.info, "myDrive is up to date", "You’re using version \(version).") }
                 }
             } catch {
                 if showAppUpdateResult { showBanner(.info, "Could not check for updates", "Try again when GitHub is available.") }
+            }
+        }
+    }
+
+    func installAppUpdate() {
+        guard !installingAppUpdate, busy == nil, let target = availableAppUpdate,
+              let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String else { return }
+        installingAppUpdate = true
+        Task {
+            do {
+                _ = try await CoreBridge.shared.call(action: "update.install", request: [
+                    "data_dir": Paths.dataDir.path,
+                    "payload": ["version": version, "target_version": target,
+                                "app_path": Bundle.main.bundleURL.path, "pid": ProcessInfo.processInfo.processIdentifier] as JSON,
+                ], timeout: 11 * 60)
+                quit()
+            } catch {
+                installingAppUpdate = false
+                showBanner(.error, "Could not update myDrive", Self.errorText(error))
             }
         }
     }

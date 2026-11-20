@@ -66,4 +66,6 @@ mkdir "$build/notice-check"
 (cd "$build/notice-check" && "$output" --appimage-extract 'usr/share/doc/mydrive/*' >/dev/null)
 test -s "$build/notice-check/squashfs-root/usr/share/doc/mydrive/ThirdPartyNotices.txt"
 test -s "$build/notice-check/squashfs-root/usr/share/doc/mydrive/AppImage-Runtime.txt"
+MYDRIVE_UPDATE_FIXTURE_PACKAGE="$output" MYDRIVE_UPDATE_FIXTURE_VERSION="$("$output" --version)" \
+    cargo test --locked --manifest-path Core/Cargo.toml stages_and_restores_the_packaged_update -- --ignored
 (cd "$MYDRIVE_BUILD_DIR" && sha256sum myDrive-Linux-x86_64.AppImage > myDrive-Linux-x86_64.AppImage.sha256)

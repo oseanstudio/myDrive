@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Native GTK desktop shell for myDrive on Linux."""
 
+import os
 import re
 import shutil
 import subprocess
@@ -42,6 +43,8 @@ class MyDrive(Gtk.Application):
         self.browse = None
         self.stopping = False
         self.show_update_result = False
+        self.available_update = None
+        self.read_update_error = True
 
     def do_activate(self):
         if self.window:
@@ -76,7 +79,10 @@ class MyDrive(Gtk.Application):
         self.status.set_margin_end(8)
         self.status.set_visible(False)
         content.append(self.status)
-        self.update_offer = Gtk.LinkButton(halign=Gtk.Align.START, margin_start=8, visible=False)
+        self.update_offer = button("", self.install_update)
+        self.update_offer.set_halign(Gtk.Align.START)
+        self.update_offer.set_margin_start(8)
+        self.update_offer.set_visible(False)
         content.append(self.update_offer)
         self.stack = Gtk.Stack(vhomogeneous=False, vexpand=True)
         content.append(self.stack)
@@ -138,11 +144,25 @@ class MyDrive(Gtk.Application):
         if self.pending["updates"]:
             return
 
-        def complete(update):
+        def check():
+            error = core("update.error") if self.read_update_error else None
+            try:
+                return error, core("update.check", payload={"version": VERSION}), None
+            except (OSError, RuntimeError, subprocess.SubprocessError) as failure:
+                return error, None, str(failure)
+
+        def complete(result):
+            self.read_update_error = False
+            error, update, check_error = result
+            if error:
+                self.announce(error)
+            if check_error:
+                failed(check_error)
+                return
+            self.available_update = update["version"] if update else None
             self.update_offer.set_visible(bool(update))
             if update:
-                self.update_offer.set_uri(update["url"])
-                self.update_offer.set_label(f"Download myDrive {update['version']}")
+                self.update_offer.set_label(f"Update to myDrive {self.available_update}")
             elif self.show_update_result:
                 self.announce(f"myDrive {VERSION} is up to date.")
             self.show_update_result = False
@@ -152,8 +172,30 @@ class MyDrive(Gtk.Application):
                 self.announce("Could not check for updates. Try again when GitHub is available.")
             self.show_update_result = False
 
-        self.work("updates", "", lambda: core("update.check", payload={"version": VERSION}),
-                  complete, quiet=True, on_error=failed)
+        self.work("updates", "", check, complete, quiet=True, on_error=failed)
+
+    def install_update(self):
+        if not self.available_update or self.pending["updates"]:
+            return
+        if self.pending["storage"]:
+            self.announce("Finish the current file operation before updating myDrive.")
+            return
+        appimage = os.environ.get("APPIMAGE")
+        if not appimage:
+            self.announce("Open myDrive from its AppImage before updating.")
+            return
+        target = self.available_update
+        self.update_offer.set_sensitive(False)
+        self.update_offer.set_label(f"Downloading myDrive {target}…")
+
+        def failed(message):
+            self.announce(message)
+            self.update_offer.set_sensitive(True)
+            self.update_offer.set_label(f"Update to myDrive {target}")
+
+        self.work("updates", "", lambda: core("update.install", payload={
+            "version": VERSION, "target_version": target, "app_path": appimage, "pid": os.getpid(),
+        }), lambda _: self.quit(), quiet=True, on_error=failed)
 
     def resize(self):
         if self.window.is_maximized():

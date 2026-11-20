@@ -23,4 +23,5 @@ percent-encoding = "2"
 windows-sys = { version = "0.61", features = ["Win32_NetworkManagement_WNet", "Win32_Foundation", "Win32_System_Threading", "Win32_Security"] }
 
 [target.'cfg(unix)'.dependencies]
+libc = "0.2"
 ssh2 = { version = "0.9", features = ["vendored-openssl"] }
