@@ -1,6 +1,6 @@
 # myDrive
 
-Download the Windows installer, Linux AppImage, or Apple Silicon macOS DMG from [GitHub Releases](https://github.com/oseanstudio/myDrive-public/releases). The desktop workflow publishes the three packages together after their checks pass. Packages include their dependency notices. The optional Blip integration uses separately installed Blip software.
+Download the Windows installer, Linux AppImage, or Apple Silicon macOS DMG from [GitHub Releases](https://github.com/oseanstudio/myDrive/releases). The desktop workflow publishes the three packages together after their checks pass. Packages include their dependency notices. The optional Blip integration uses separately installed Blip software.
 
 A native storage client, starting with Windows. The everyday interface is a compact **system tray popup**; **Open full window** provides more space with the same screens and actions.
 

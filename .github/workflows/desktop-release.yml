@@ -106,7 +106,7 @@ jobs:
 
   release:
     needs: [mac, linux, windows]
-    if: github.repository == 'oseanstudio/myDrive-public' && github.ref == 'refs/heads/main'
+    if: github.repository_id == '1465782893' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -127,7 +127,6 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          test "$GH_REPO" = 'oseanstudio/myDrive-public'
           test "$(gh repo view "$GH_REPO" --json isPrivate -q .isPrivate)" = false
           version="$(python3 -c 'import xml.etree.ElementTree as xml; print(xml.parse("Windows/App/myDrive.csproj").findtext("PropertyGroup/Version"))')"
           [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
