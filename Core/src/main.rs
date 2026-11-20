@@ -7,6 +7,7 @@ mod smb_copy;
 mod storage;
 mod syncthing;
 mod syncthing_engine;
+mod updates;
 mod webdav;
 #[cfg(windows)]
 #[path = "../../Windows/Network/smb.rs"]
@@ -73,6 +74,10 @@ fn execute(r: Request) -> Result<Value, String> {
     }
     match r.action.as_str() {
         "version" => return Ok(json!({"name":"myDrive","version":env!("CARGO_PKG_VERSION")})),
+        "update.check" => {
+            let installed = r.payload["version"].as_str().ok_or("Missing app version.")?;
+            return Ok(json!(updates::check(installed)?));
+        }
         "bookmarks.load" => return Ok(json!(storage::load(Path::new(&r.data_dir))?)),
         "bookmarks.save" => {
             storage::save(Path::new(&r.data_dir), &r.bookmarks)?;

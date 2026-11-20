@@ -108,6 +108,7 @@ final class AppState: ObservableObject {
     @Published var attention: [AttentionItem] = []
     @Published var busy: BusyState?
     @Published var banner: Banner?
+    @Published var availableAppUpdate: (version: String, url: URL)?
     @Published var dialog: DialogKind?
     @Published var syncBrowse: SyncBrowseState?
     @Published var storageBrowse: StorageBrowseState?
@@ -130,6 +131,9 @@ final class AppState: ObservableObject {
     private let log = ActivityLog.shared
     private var lastSnapshotAt = Date.distantPast
     private var lastEventsAt = Date.distantPast
+    private var lastAppUpdateCheck = Date.distantPast
+    private var checkingForAppUpdate = false
+    private var showAppUpdateResult = false
     private var snapshotTask: Task<Void, Never>?
     private var eventsTask: Task<Void, Never>?
     private var snapshotRefreshPending = false
@@ -137,6 +141,7 @@ final class AppState: ObservableObject {
     // MARK: - Lifecycle
 
     func startup() {
+        checkForAppUpdate()
         blip.start()
         activity = log.activity
         updates = log.updates
@@ -251,9 +256,36 @@ final class AppState: ObservableObject {
     // MARK: - Timers
 
     func tick() {
+        checkForAppUpdate()
         Task { await refreshIfStale() }
         Task { await syncthing.checkBackgroundEngine() }
         SmbMonitor.shared.checkNow()
+    }
+
+    func checkForAppUpdate(showResult: Bool = false) {
+        guard showResult || Date().timeIntervalSince(lastAppUpdateCheck) >= 6 * 60 * 60 else { return }
+        showAppUpdateResult = showAppUpdateResult || showResult
+        guard !checkingForAppUpdate,
+              let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String else { return }
+        checkingForAppUpdate = true
+        lastAppUpdateCheck = Date()
+        Task {
+            defer {
+                checkingForAppUpdate = false
+                showAppUpdateResult = false
+            }
+            do {
+                let reply = try await CoreBridge.shared.call(action: "update.check", request: ["payload": ["version": version]], timeout: 12)
+                if let update = reply as? JSON, let url = URL(string: update.str("url")) {
+                    availableAppUpdate = (update.str("version"), url)
+                } else {
+                    availableAppUpdate = nil
+                    if showAppUpdateResult { showBanner(.info, "myDrive is up to date", "You’re using version \(version).") }
+                }
+            } catch {
+                if showAppUpdateResult { showBanner(.info, "Could not check for updates", "Try again when GitHub is available.") }
+            }
+        }
     }
 
     func refreshIfStale() async {

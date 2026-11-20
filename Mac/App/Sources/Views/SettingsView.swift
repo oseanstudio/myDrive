@@ -113,6 +113,9 @@ struct SettingsView: View {
             .font(.system(size: 12))
             .pickerStyle(.menu)
             .frame(maxWidth: .infinity, alignment: .leading)
+            Button("Check for updates") { app.checkForAppUpdate(showResult: true) }
+                .controlSize(.small)
+                .frame(maxWidth: .infinity, alignment: .leading)
             HStack {
                 let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
                 Text("myDrive \(version) · macOS")

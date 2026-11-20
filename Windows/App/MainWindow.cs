@@ -81,8 +81,9 @@ public sealed partial class MainWindow : Window
         navigation.MenuItems.Add(new NavigationViewItem{Content="Activity",Icon=new SymbolIcon(Symbol.Sync),Tag="activity"});
         navigation.MenuItems.Add(new NavigationViewItem{Content="Send & Receive",Icon=new SymbolIcon(Symbol.Send),Tag="transfers"});
         navigation.PaneFooter=Text($"  myDrive {DisplayVersion}",12);
-        var content=new Grid();content.RowDefinitions.Add(new(){Height=GridLength.Auto});content.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});
-        content.Children.Add(notice);var scroll=new ScrollViewer{Content=page,HorizontalScrollBarVisibility=ScrollBarVisibility.Disabled};Grid.SetRow(scroll,1);content.Children.Add(scroll);navigation.Content=content;
+        var content=new Grid();content.RowDefinitions.Add(new(){Height=GridLength.Auto});content.RowDefinitions.Add(new(){Height=GridLength.Auto});content.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});
+        content.Children.Add(notice);Grid.SetRow(updateOffer,1);content.Children.Add(updateOffer);
+        var scroll=new ScrollViewer{Content=page,HorizontalScrollBarVisibility=ScrollBarVisibility.Disabled};Grid.SetRow(scroll,2);content.Children.Add(scroll);navigation.Content=content;
         navigation.SelectionChanged+=(sender,e)=>{if(busy)return;currentView=e.IsSettingsSelected?"settings":(e.SelectedItem as NavigationViewItem)?.Tag?.ToString()??"connections";Render();if(!diagnosticMode&&currentView=="sync"&&syncSnapshot==null)_=RefreshSyncthing();if(currentView=="transfers")_=RefreshBlip();};
         Grid.SetRow(navigation,1);root.Children.Add(navigation);
         BuildQuickHeader();root.Children.Add(quickHeader);
@@ -98,13 +99,13 @@ public sealed partial class MainWindow : Window
         try{tray=new TrayIcon(hwnd,ToggleQuickMenu,Quit,()=>SetMode(false),()=>_=OnSystemResume());}catch{compact=false;}
         EnableFileDrop();
         AppWindow.Closing+=(_,e)=>{if(!quitting&&tray!=null){e.Cancel=true;AppWindow.Hide();}};
-        Closed+=(_,_)=>{popupInput.Dispose();healthTimer.Stop();tray?.Dispose();operation?.Cancel();smbHosting.Dispose();};
+        Closed+=(_,_)=>{popupInput.Dispose();healthTimer.Stop();updateTimer.Stop();tray?.Dispose();operation?.Cancel();smbHosting.Dispose();};
         AppWindow.Changed+=(_,e)=>{if(compact&&AppWindow.IsVisible)popupInput.Start();else popupInput.Stop();};
         Activated+=(_,e)=>{if(e.WindowActivationState==WindowActivationState.Deactivated)DispatcherQueue.TryEnqueue(()=>{if(!diagnosticMode&&!PopupInput.OurForeground()&&tray?.PointerInside()!=true)DismissQuickPopup();});};
         healthTimer.Tick+=async(_,_)=>await MonitorSmb();
         navigation.SelectedItem=navigation.MenuItems[1];
         SetMode(compact);
-        if(!diagnosticMode){_=Initialize();StartSyncthingRefresh();StartBlipRefresh();}
+        if(!diagnosticMode){_=Initialize();StartSyncthingRefresh();StartBlipRefresh();StartUpdateChecks();}
     }
     private void ToggleQuickMenu(){if(compact&&AppWindow.IsVisible){AppWindow.Hide();return;}SetMode(true);}
     public void OpenQuickMenu()=>SetMode(true);
@@ -272,6 +273,7 @@ public sealed partial class MainWindow : Window
             ApplyCurrentTheme();
         };
         appearance.Children.Add(theme);page.Children.Add(Card(appearance));
+        page.Children.Add(Button("Check for updates",()=>_=CheckForUpdate(showResult:true)));
         page.Children.Add(Button("Syncthing connection settings",()=>_=EditSyncthingConnection()));
         var security=new StackPanel{Spacing=10};security.Children.Add(Text("Private by design",18,true));security.Children.Add(Text("Storage connection secrets stay in Windows Credential Manager. Blip manages its own credentials in its separate local profile. Bookmarks and the latest 200 activity entries are stored locally. SFTP verifies server keys against your OpenSSH known_hosts file."));security.Children.Add(Button("Open app data folder",()=>{Directory.CreateDirectory(CoreBridge.DataDir);Process.Start(new ProcessStartInfo("explorer.exe"){ArgumentList={CoreBridge.DataDir},UseShellExecute=true});}));page.Children.Add(Card(security));
         var smb=new StackPanel{Spacing=10};smb.Children.Add(Text("SMB connection health",18,true));smb.Children.Add(Text("Saved SMB connections are checked every 12 seconds. myDrive attempts a native reconnect if a share becomes unavailable; it does not force unmount files that are in use. Closing the window keeps myDrive in the system tray."));page.Children.Add(Card(smb));

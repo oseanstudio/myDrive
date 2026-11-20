@@ -21,6 +21,13 @@ struct PopupRootView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
+            if let update = app.availableAppUpdate {
+                Link("Download myDrive \(update.version)", destination: update.url)
+                    .font(.system(size: 12))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 4)
+            }
             if let banner = app.banner {
                 BannerRow(banner: banner) { app.banner = nil }
             }

@@ -13,7 +13,7 @@ import gi
 gi.require_version("Gtk", "4.0")
 from gi.repository import Gdk, Gio, GLib, Gtk
 
-from services import DATA, ROOT, Blip, Sync, read_settings, save_settings
+from services import DATA, ROOT, Blip, Sync, core, read_settings, save_settings
 from smb_sharing import add_private_share
 from storage_view import StorageView
 from tray import Tray
@@ -36,11 +36,12 @@ class MyDrive(Gtk.Application):
         self.sync.config_path = self.preferences.get("syncthing_config", "")
         self.activity = read_settings("activity.json", [])
         self.snapshot = {}
-        self.lanes = {key: ThreadPoolExecutor(max_workers=1) for key in ("sync", "blip", "storage")}
+        self.lanes = {key: ThreadPoolExecutor(max_workers=1) for key in ("sync", "blip", "storage", "updates")}
         self.pending = {key: 0 for key in self.lanes}
         self.window = None
         self.browse = None
         self.stopping = False
+        self.show_update_result = False
 
     def do_activate(self):
         if self.window:
@@ -75,6 +76,8 @@ class MyDrive(Gtk.Application):
         self.status.set_margin_end(8)
         self.status.set_visible(False)
         content.append(self.status)
+        self.update_offer = Gtk.LinkButton(halign=Gtk.Align.START, margin_start=8, visible=False)
+        content.append(self.update_offer)
         self.stack = Gtk.Stack(vhomogeneous=False, vexpand=True)
         content.append(self.stack)
         self.pages = {}
@@ -103,6 +106,8 @@ class MyDrive(Gtk.Application):
         self.refresh_sync()
         self.storage_view.load()
         self.transfer_view.refresh()
+        self.tick_updates()
+        GLib.timeout_add_seconds(6 * 60 * 60, self.tick_updates)
         GLib.timeout_add_seconds(8, self.tick_sync)
         GLib.timeout_add_seconds(2, self.tick_blip)
 
@@ -121,6 +126,34 @@ class MyDrive(Gtk.Application):
     def tick_blip(self):
         self.transfer_view.refresh(quiet=True)
         return not self.stopping
+
+    def tick_updates(self):
+        self.check_for_updates()
+        return not self.stopping
+
+    def check_for_updates(self, show_result=False):
+        if self.fixture or self.stopping:
+            return
+        self.show_update_result |= show_result
+        if self.pending["updates"]:
+            return
+
+        def complete(update):
+            self.update_offer.set_visible(bool(update))
+            if update:
+                self.update_offer.set_uri(update["url"])
+                self.update_offer.set_label(f"Download myDrive {update['version']}")
+            elif self.show_update_result:
+                self.announce(f"myDrive {VERSION} is up to date.")
+            self.show_update_result = False
+
+        def failed(_message):
+            if self.show_update_result:
+                self.announce("Could not check for updates. Try again when GitHub is available.")
+            self.show_update_result = False
+
+        self.work("updates", "", lambda: core("update.check", payload={"version": VERSION}),
+                  complete, quiet=True, on_error=failed)
 
     def resize(self):
         if self.window.is_maximized():
@@ -460,6 +493,7 @@ class MyDrive(Gtk.Application):
         page.append(button("Syncthing configuration…", lambda: self.files(
             "Choose Syncthing config.xml", Gtk.FileChooserAction.OPEN, lambda files: self.set_config(files[0]))))
         page.append(button("Open myDrive data folder", lambda: self.open_path(DATA)))
+        page.append(button("Check for updates", lambda: self.check_for_updates(show_result=True)))
         page.append(label(f"myDrive {VERSION} · Linux"))
 
     def change_preference(self, key, value):
