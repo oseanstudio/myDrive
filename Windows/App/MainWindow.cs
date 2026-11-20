@@ -183,7 +183,7 @@ public sealed partial class MainWindow : Window
         activity.Insert(0,entry);if(activity.Count>200)activity.RemoveRange(200,activity.Count-200);
         try{Directory.CreateDirectory(CoreBridge.DataDir);var p=Path.Combine(CoreBridge.DataDir,"activity.json");await File.WriteAllTextAsync(p+".tmp",JsonSerializer.Serialize(activity));File.Move(p+".tmp",p,true);}catch{}
     }
-    private void Render(){ResetSyncControls();UpdateQuickChrome();page.Children.Clear();if(currentView=="transfers")RenderBlip();else if(currentView=="sync-info")RenderSyncInfo();else if(currentView=="sync")RenderSyncthing();else if(currentView=="sync-files")RenderSyncFiles();else if(currentView=="activity")RenderActivity();else if(currentView=="settings")RenderSettings();else if(currentView=="files")RenderFiles();else RenderConnections();SizeQuickMenu();UpdateSmbView();}
+    private void Render(){ResetSyncControls();UpdateQuickChrome();page.Children.Clear();if(currentView=="transfers")RenderBlip();else if(currentView=="sync-info")RenderSyncInfo();else if(currentView=="sync-attention")RenderSyncAttention();else if(currentView=="sync")RenderSyncthing();else if(currentView=="sync-files")RenderSyncFiles();else if(currentView=="activity")RenderActivity();else if(currentView=="settings")RenderSettings();else if(currentView=="files")RenderFiles();else RenderConnections();SizeQuickMenu();UpdateSmbView();}
     private void Heading(string title,string subtitle){page.Children.Add(Text(title,compact?16:30,true));if(compact)return;var sub=Text(subtitle,14);sub.Foreground=Brush("TextFillColorSecondaryBrush");page.Children.Add(sub);}
     private void RenderConnections()
     {

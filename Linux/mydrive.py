@@ -27,6 +27,16 @@ VERSION_FILE = Path(__file__).with_name("version.txt")
 VERSION = VERSION_FILE.read_text(encoding="utf-8").strip() if VERSION_FILE.is_file() else "0.4.17"
 
 
+def folders_needing_attention(snapshot):
+    def has_error(folder):
+        status = folder.get("status") or {}
+        return not folder.get("paused") and (
+            folder.get("error") or (status.get("pullErrors") or 0) > 0 or (status.get("errors") or 0) > 0
+        )
+    return sorted((folder for folder in snapshot.get("folders", []) if has_error(folder)),
+                  key=lambda folder: (folder.get("label") or folder["id"]).casefold())
+
+
 class MyDrive(Gtk.Application):
     def __init__(self, fixture=False):
         super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.NON_UNIQUE if fixture else 0)
@@ -42,6 +52,9 @@ class MyDrive(Gtk.Application):
         self.pending = {key: 0 for key in self.lanes}
         self.window = None
         self.browse = None
+        self.sync_attention = False
+        self.sync_issue_folder = None
+        self.sync_rescanning = False
         self.stopping = False
         self.show_update_result = False
         self.available_update = None
@@ -373,12 +386,14 @@ class MyDrive(Gtk.Application):
         self.dialog("Share over SMB", "Share", [field, account, detail], submit)
 
     def refresh_sync(self, quiet=False):
+        def showing_folders():
+            return not self.browse and not self.sync_attention and self.sync_issue_folder is None
         def updated(snapshot):
             self.snapshot = snapshot
-            if not self.browse:
+            if showing_folders():
                 self.render_sync()
         def failed(message):
-            if not self.browse:
+            if showing_folders():
                 self.render_sync(error=message)
         self.work("sync", "Refresh Syncthing", lambda: self.sync.request("snapshot"), updated,
                   quiet=quiet, on_error=failed)
@@ -391,6 +406,14 @@ class MyDrive(Gtk.Application):
         if error:
             page.append(Gtk.Label(label=error, xalign=0, wrap=True, max_width_chars=42))
         folders = self.snapshot.get("folders", [])
+        attention_count = len(folders_needing_attention(self.snapshot))
+        if attention_count and not error:
+            title = "1 folder needs attention" if attention_count == 1 else f"{attention_count} folders need attention"
+            attention = button(title + " ›", self.show_sync_attention)
+            attention.set_tooltip_text("Open sync errors and fixes")
+            attention.set_halign(Gtk.Align.START)
+            attention.add_css_class("flat")
+            page.append(attention)
         devices = {d["deviceID"]: d for d in self.snapshot.get("devices", []) if not d.get("is_local")}
         for folder in folders:
             identifier = folder["id"]
@@ -505,6 +528,9 @@ class MyDrive(Gtk.Application):
         self.work("sync", "Change file selection", apply, lambda _: self.browse_folder(folder, path))
 
     def sync_details(self, folder, action):
+        if action == "errors":
+            self.show_sync_issue(folder)
+            return
         def loaded(result):
             box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
             if action == "versions":
@@ -515,16 +541,121 @@ class MyDrive(Gtk.Application):
                             "Restore this version?", "myDrive backs up the current local copy first.", "Restore",
                             lambda: self.sync_action(folder, "restore", path=p, version_time=t)))))
             else:
-                items = result.get("errors", []) if action == "errors" else [
-                    item for key in ("progress", "queued", "rest") for item in (result.get(key) or [])]
+                items = [item for key in ("progress", "queued", "rest") for item in (result.get(key) or [])]
                 for item in items:
                     box.append(row(item.get("path") or item.get("name") or "File", item.get("error", "")))
             if not box.get_first_child():
                 box.append(label("No items."))
-            dialog = self.dialog({"errors": "Sync errors", "versions": "Saved versions", "need": "Pending files"}[action],
+            dialog = self.dialog({"versions": "Saved versions", "need": "Pending files"}[action],
                                  "Done", [self.scrolled_list(box)], lambda: None)
             dialog.get_widget_for_response(Gtk.ResponseType.CANCEL).set_visible(False)
         self.work("sync", "Read folder details", lambda: self.sync.request(action, folder_id=folder["id"]), loaded)
+
+    def leave_sync_attention(self):
+        self.sync_attention = False
+        self.sync_issue_folder = None
+        self.render_sync()
+
+    def sync_issues_header(self, title, back, refresh):
+        page = self.pages["Sync"]
+        clear(page)
+        page.append(row(title, "", button("Back", back), button("Refresh", refresh)))
+        return page
+
+    @staticmethod
+    def issue_rows(details):
+        return (details.get("errors") or []) if isinstance(details, dict) else details
+
+    @staticmethod
+    def add_issue_text(container, message):
+        if message:
+            text = Gtk.Label(label=message, xalign=0, wrap=True, max_width_chars=44, selectable=True)
+            text.set_tooltip_text(message)
+            container.append(text)
+
+    def show_sync_attention(self, refresh=False):
+        self.sync_attention = True
+        self.sync_issue_folder = None
+        page = self.sync_issues_header("Sync errors", self.leave_sync_attention,
+                                       lambda: self.show_sync_attention(refresh=True))
+        loading = label("Loading folder errors…")
+        page.append(loading)
+
+        def load():
+            snapshot = self.sync.request("snapshot") if refresh else self.snapshot
+            folders = folders_needing_attention(snapshot)
+            issues = self.sync.request("attention", folder_ids=[folder["id"] for folder in folders]) if folders else {}
+            return snapshot, folders, issues
+
+        def done(result):
+            if loading.get_parent() is not page:
+                return
+            page.remove(loading)
+            self.snapshot, folders, issues = result
+            if not folders:
+                page.append(label("No folders need attention."))
+            for folder in folders:
+                report = issues.get(folder["id"], {})
+                first = next(iter(self.issue_rows(report)), {})
+                box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4, margin_top=4, margin_bottom=5)
+                box.append(label(folder.get("label") or folder["id"], "heading"))
+                if first.get("path"):
+                    box.append(label(first["path"], "dim-label"))
+                self.add_issue_text(box, first.get("error") or first.get("message") or folder.get("error") or
+                                    report.get("failure") or "Syncthing reported a sync problem.")
+                self.add_issue_text(box, first.get("advice") or folder.get("error_advice"))
+                actions = Gtk.Box(spacing=6)
+                actions.append(button("Rescan", lambda f=folder: self.rescan_issue(f)))
+                actions.append(button("View errors", lambda f=folder: self.show_sync_issue(f)))
+                box.append(actions)
+                page.append(box)
+
+        self.work("sync", "Check sync errors", load, done,
+                  on_error=lambda message: loading.set_label(message) if loading.get_parent() is page else None)
+
+    def show_sync_issue(self, folder):
+        self.sync_issue_folder = folder["id"]
+        back = self.show_sync_attention if self.sync_attention else self.leave_sync_attention
+        page = self.sync_issues_header("Folder errors", back, lambda: self.show_sync_issue(folder))
+        page.append(row(folder.get("label") or folder["id"], "", button("Rescan folder", lambda: self.rescan_issue(folder))))
+        loading = label("Loading folder errors…")
+        page.append(loading)
+
+        def done(result):
+            if loading.get_parent() is not page:
+                return
+            page.remove(loading)
+            errors = self.issue_rows(result)
+            if not errors:
+                fresh = next((item for item in self.snapshot.get("folders", [])
+                              if item["id"] == folder["id"]), {})
+                self.add_issue_text(page, fresh.get("error") or "No file errors.")
+            for issue in errors:
+                page.append(label(issue.get("path") or issue.get("file") or "File", "heading"))
+                self.add_issue_text(page, issue.get("error") or issue.get("message"))
+                self.add_issue_text(page, issue.get("advice"))
+
+        self.work("sync", "Read folder errors", lambda: self.sync.request("errors", folder_id=folder["id"]), done,
+                  on_error=lambda message: loading.set_label(message) if loading.get_parent() is page else None)
+
+    def rescan_issue(self, folder):
+        if self.sync_rescanning:
+            return
+        self.sync_rescanning = True
+        identifier = folder["id"]
+        def scan():
+            self.sync.request("scan", folder_id=identifier)
+            return self.sync.request("snapshot")
+        def done(snapshot):
+            self.sync_rescanning = False
+            self.snapshot = snapshot
+            if self.sync_issue_folder == identifier:
+                self.show_sync_issue(folder)
+            elif self.sync_attention and self.sync_issue_folder is None:
+                self.show_sync_attention()
+        def failed(_message):
+            self.sync_rescanning = False
+        self.work("sync", "Rescan folder", scan, done, on_error=failed)
 
     def render_activity(self):
         page = self.pages["Activity"]
@@ -590,9 +721,51 @@ class MyDrive(Gtk.Application):
     def run_fixture(self):
         self.snapshot = {"version": "v2 fixture", "folders": [
             {"id": "folder", "label": "A long studio folder label to verify truncation", "path": "/tmp/mydrive-fixture",
-             "device_ids": ["device"], "status": {"state": "idle", "needFiles": 2}}
+             "device_ids": ["device"], "status": {"state": "idle", "needFiles": 2, "pullErrors": 1}}
         ], "devices": [{"deviceID": "device", "name": "Studio laptop", "connection": {"connected": True}}]}
+        snapshot = self.snapshot
+
+        class FixtureSync:
+            def request(self, action, **fields):
+                issue = {"path": "Projects/Scene.blend", "error": "sharing violation",
+                         "advice": "Close the app using the file, then rescan."}
+                if action == "attention":
+                    assert fields == {"folder_ids": ["folder"]}
+                    return {"folder": {"errors": [issue]}}
+                assert action == "errors" and fields == {"folder_id": "folder"}
+                return {"errors": [issue]}
+
+        self.sync = FixtureSync()
         self.render_sync()
+        self.stack.set_visible_child_name("Sync")
+        sync_page = self.pages["Sync"]
+        warning = sync_page.get_first_child().get_next_sibling()
+        assert warning.get_label() == "1 folder needs attention ›"
+        warning.emit("clicked")
+
+        def verify_attention():
+            if self.pending["sync"]:
+                return GLib.SOURCE_CONTINUE
+            assert self.sync_attention and self.sync_issue_folder is None
+            folder = sync_page.get_last_child()
+            actions = folder.get_last_child()
+            assert actions.get_first_child().get_label() == "Rescan"
+            actions.get_last_child().emit("clicked")
+            GLib.timeout_add(25, verify_detail)
+            return GLib.SOURCE_REMOVE
+
+        def verify_detail():
+            if self.pending["sync"]:
+                return GLib.SOURCE_CONTINUE
+            assert self.sync_attention and self.sync_issue_folder == "folder"
+            assert sync_page.get_last_child().get_label() == "Close the app using the file, then rescan."
+            self.snapshot = snapshot
+            self.leave_sync_attention()
+            print("Linux GTK sync attention and folder error navigation passed", flush=True)
+            GLib.timeout_add(300, verify)
+            return GLib.SOURCE_REMOVE
+
+        GLib.timeout_add(25, verify_attention)
         self.storage_view.render_bookmarks()
         self.transfer_view.render()
         self.stack.set_visible_child_name("Send & Receive")
@@ -628,7 +801,6 @@ class MyDrive(Gtk.Application):
             self.transfer_view.blip = FixtureBlip()
             self.transfer_view.with_send_connection(verify_cold_send)
             return GLib.SOURCE_REMOVE
-        GLib.timeout_add(300, verify)
 
 
 if __name__ == "__main__":

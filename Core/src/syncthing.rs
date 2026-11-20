@@ -135,6 +135,57 @@ impl Api {
         }
         self.get(&["rest", "config", "folders", id], &[])
     }
+
+    fn folder_errors(&self, id: &str, preview: bool) -> Result<Value, String> {
+        let mut query = vec![("folder", id)];
+        if preview {
+            query.extend([("page", "1"), ("perpage", "1")]);
+        }
+        let mut result = self.get(&["rest", "folder", "errors"], &query)?;
+        let rows = if result.is_array() {
+            result.as_array_mut()
+        } else {
+            result.get_mut("errors").and_then(Value::as_array_mut)
+        };
+        for row in rows.into_iter().flatten() {
+            if let Some(advice) = row["error"].as_str().and_then(folder_error_advice) {
+                row["advice"] = json!(advice);
+            }
+        }
+        Ok(result)
+    }
+
+    fn folder_attention(&self, data: &Value) -> Result<Value, String> {
+        let ids = data["folder_ids"]
+            .as_array()
+            .ok_or("Select the folders that need attention.")?;
+        let mut report = serde_json::Map::new();
+        for chunk in ids.chunks(4) {
+            std::thread::scope(|scope| {
+                let workers: Vec<_> = chunk
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .filter(|id| !id.is_empty() && !report.contains_key(*id))
+                    .map(|id| (id, scope.spawn(move || self.folder_errors(id, true))))
+                    .collect();
+                for (id, worker) in workers {
+                    let details = match worker.join() {
+                        Ok(Ok(response)) => {
+                            let errors = response
+                                .as_array()
+                                .or_else(|| response["errors"].as_array());
+                            json!({"errors": errors})
+                        }
+                        Ok(Err(error)) => json!({"failure": error}),
+                        Err(_) => json!({"failure": "Could not load the folder errors."}),
+                    };
+                    report.insert(id.to_string(), details);
+                }
+            });
+        }
+        Ok(Value::Object(report))
+    }
+
     pub fn snapshot(&self) -> Result<Value, String> {
         let version = self.get(&["rest", "system", "version"], &[])?;
         let system = self.get(&["rest", "system", "status"], &[])?;
@@ -184,6 +235,14 @@ impl Api {
                                 .unwrap_or_default());
                             match status {
                                 Ok(s) => {
+                                    if let Some(error) =
+                                        s["error"].as_str().filter(|e| !e.is_empty())
+                                    {
+                                        result["error"] = json!(error);
+                                        if let Some(advice) = folder_error_advice(error) {
+                                            result["error_advice"] = json!(advice);
+                                        }
+                                    }
                                     result["status"] = pick(
                                         &s,
                                         &[
@@ -371,6 +430,7 @@ impl Api {
         match action {
             "share.preview" | "share" => self.share(data, action == "share", data_dir),
             "snapshot" => self.snapshot(),
+            "attention" => self.folder_attention(data),
             "browse" => self.browse(id, data["path"].as_str().unwrap_or("")),
             "ignores" => {
                 self.folder(id)?;
@@ -445,7 +505,7 @@ impl Api {
             }
             "errors" => {
                 self.folder(id)?;
-                self.get(&["rest", "folder", "errors"], &[("folder", id)])
+                self.folder_errors(id, false)
             }
             "events" => {
                 let since = data["since"].as_u64().unwrap_or(0);
@@ -959,6 +1019,51 @@ fn alternative_name(name: &str) -> Option<String> {
     })
 }
 use sha2::Digest;
+fn folder_error_advice(error: &str) -> Option<&'static str> {
+    let error = error.to_lowercase();
+    let contains = |terms: &[&str]| terms.iter().any(|term| error.contains(term));
+    if contains(&[
+        "no space left",
+        "disk full",
+        "not enough free space",
+        "insufficient space",
+    ]) {
+        Some("Free space on the drive, then rescan.")
+    } else if contains(&[
+        "folder path missing",
+        "folder marker missing",
+        "no such file or directory",
+        "path not found",
+    ]) {
+        Some("Make sure the original folder and its drive are available, then rescan.")
+    } else if contains(&[
+        "permission denied",
+        "access is denied",
+        "operation not permitted",
+        "read-only file system",
+    ]) {
+        Some("Check that your account can access the folder, then rescan.")
+    } else if contains(&[
+        "file is in use",
+        "used by another process",
+        "sharing violation",
+        "resource busy",
+    ]) {
+        Some("Close the app using the file, then rescan.")
+    } else if contains(&[
+        "connection refused",
+        "connection reset",
+        "timed out",
+        "timeout",
+    ]) {
+        Some("Check that the other device is online, then rescan.")
+    } else if error.contains("directory has been deleted on a remote device but is not empty") {
+        Some("Review the files still inside this directory before deciding what to keep.")
+    } else {
+        None
+    }
+}
+
 fn pick(value: &Value, keys: &[&str]) -> Value {
     let mut result = serde_json::Map::new();
     for key in keys {

@@ -47,8 +47,9 @@ public sealed partial class MainWindow
     private readonly ObservableCollection<SyncRow> folderRows=new();
     private ListView? syncFolderList,syncFileList;
     private TextBlock? syncTitleText,syncDetailText;
+    private HyperlinkButton? syncAlertLink;
     private Microsoft.UI.Xaml.Shapes.Ellipse? syncStatusDot;
-    private void ResetSyncControls(){syncFolderList=null;syncFileList=null;syncTitleText=null;syncDetailText=null;syncStatusDot=null;folderRows.Clear();}
+    private void ResetSyncControls(){syncFolderList=null;syncFileList=null;syncTitleText=null;syncDetailText=null;syncAlertLink=null;syncStatusDot=null;folderRows.Clear();}
 
     private ListView VirtualRows(object items,string template,double height)
     {

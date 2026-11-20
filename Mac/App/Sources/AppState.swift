@@ -6,13 +6,13 @@ import Combine
 import Foundation
 
 enum PopupViewKind: String, CaseIterable, Identifiable {
-    case sync, syncFiles, syncInfo, connections, activity, transfers, settings
+    case sync, syncFiles, syncInfo, syncAttention, connections, activity, transfers, settings
     var id: String { rawValue }
     var label: String {
         switch self {
         case .sync: return "Sync"
         case .syncFiles: return "Sync files"
-        case .syncInfo: return "Sync"
+        case .syncInfo, .syncAttention: return "Sync"
         case .connections: return "SMB Storage"
         case .activity: return "Activity"
         case .transfers: return "Send & Receive"
@@ -122,6 +122,10 @@ final class AppState: ObservableObject {
     @Published var syncBrowse: SyncBrowseState?
     @Published var storageBrowse: StorageBrowseState?
     @Published var syncInfo: SyncInfoState?
+    @Published private(set) var syncAttentionReport: JSON = [:]
+    @Published private(set) var syncAttentionLoading = false
+    @Published private(set) var syncAttentionFailure: String?
+    private var syncInfoBack: PopupViewKind = .sync
     @Published var syncInfoLoading = false
     @Published var syncInfoFailure: String?
     @Published var pendingItems: [IssueItem] = []
@@ -220,8 +224,8 @@ final class AppState: ObservableObject {
     var statusTitle: String {
         if let snapshotError { return "Syncthing unavailable" }
         guard let snapshot else { return "Checking changes…" }
-        if snapshot.folders.contains(where: \.hasError) {
-            let count = snapshot.folders.filter(\.hasError).count
+        let count = foldersNeedingAttention.count
+        if count > 0 {
             return count == 1 ? "1 folder needs attention" : "\(count) folders need attention"
         }
         if snapshot.folders.contains(where: \.paused) && !snapshot.folders.contains(where: { !$0.paused && $0.status.state == "syncing" }) {
@@ -235,6 +239,11 @@ final class AppState: ObservableObject {
         if states.contains("scanning") { return "Checking changes…" }
         if states.contains("syncing") { return "Syncing changes…" }
         return "Local files up to date"
+    }
+
+    var foldersNeedingAttention: [SyncthingFolder] {
+        (snapshot?.folders ?? []).filter { !$0.paused && $0.hasError }
+            .sorted { $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending }
     }
 
     var statusDetail: String {
@@ -532,6 +541,12 @@ final class AppState: ObservableObject {
             _ = try await self.syncthing.call("scan", payload: ["folder_id": id])
             try? await Task.sleep(nanoseconds: 400_000_000)
             await self.refreshSnapshot()
+            if self.view == .syncAttention { await self.loadSyncAttention() }
+            if self.view == .syncInfo, self.syncInfo?.errors == true, self.syncInfo?.folderId == id {
+                let raw = try await self.syncthing.call("errors", payload: ["folder_id": id], timeout: 25)
+                self.errorItems = IssueItem.rows(from: raw)
+                self.syncInfoFailure = nil
+            }
         }
     }
 
@@ -623,6 +638,33 @@ final class AppState: ObservableObject {
 
     // MARK: - Dialog data
 
+    func openSyncAttention() {
+        guard busy == nil else { return }
+        view = .syncAttention
+        refreshSyncAttention(refreshSnapshot: false)
+    }
+
+    func refreshSyncAttention(refreshSnapshot: Bool = true) {
+        guard busy == nil else { return }
+        perform("Check sync errors") {
+            if refreshSnapshot { await self.refreshSnapshot() }
+            await self.loadSyncAttention()
+        }
+    }
+
+    private func loadSyncAttention() async {
+        syncAttentionLoading = true
+        syncAttentionFailure = snapshotError
+        defer { syncAttentionLoading = false }
+        do {
+            let ids = foldersNeedingAttention.map(\.id)
+            let raw = try await syncthing.call("attention", payload: ["folder_ids": ids], timeout: 35)
+            syncAttentionReport = raw as? JSON ?? [:]
+        } catch {
+            syncAttentionFailure = Self.errorText(error)
+        }
+    }
+
     func openPending(_ folder: SyncthingFolder) {
         openSyncInfo(folder, errors: false)
     }
@@ -633,6 +675,7 @@ final class AppState: ObservableObject {
 
     private func openSyncInfo(_ folder: SyncthingFolder, errors: Bool) {
         guard busy == nil else { return }
+        syncInfoBack = view == .syncAttention ? .syncAttention : .sync
         syncInfo = SyncInfoState(folderId: folder.id, label: folder.displayName, errors: errors)
         errorItems = []; pendingItems = []
         dialog = nil; view = .syncInfo
@@ -661,7 +704,7 @@ final class AppState: ObservableObject {
     }
 
     func closeSyncInfo() {
-        view = .sync
+        view = syncInfoBack
         syncInfo = nil
     }
 

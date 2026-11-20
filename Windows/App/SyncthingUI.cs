@@ -53,6 +53,8 @@ public sealed partial class MainWindow
             var setup=new StackPanel{Spacing=12};setup.Children.Add(Text(syncFailure.Length>0?"Connect to Syncthing":"Connecting to Syncthing…",18,true));setup.Children.Add(Text(syncFailure.Length>0?syncFailure:"Starting the background sync engine. First-time setup may download Syncthing."));setup.Children.Add(Button("Refresh",()=>_=RefreshSyncthing(),true));setup.Children.Add(Button("Connection settings",()=>_=EditSyncthingConnection()));page.Children.Add(Card(setup));return;
         }
         var snapshot=syncSnapshot.Value;
+        var issueCount = FoldersNeedingAttention().Count();
+        if (syncFailure.Length == 0 && issueCount > 0) page.Children.Add(SyncAttentionLink(FolderAttentionTitle(issueCount)));
         var peers=Items(snapshot,"devices").Where(d=>!B(d,"is_local")).Select(d=>new Peer(S(d,"deviceID"),S(d,"name","Unnamed device"),d.TryGetProperty("connection",out var c)&&B(c,"connected"))).OrderByDescending(p=>p.Connected).ThenBy(p=>p.Name).ToList();
         var share=new StackPanel{Spacing=10};share.Children.Add(Text("Sync a folder",18,true));
         var pathBox=new TextBox{Header=compact?null:"Folder",Text=syncSharePath,PlaceholderText="Choose a local folder"};pathBox.TextChanged+=(_,_)=>syncSharePath=pathBox.Text;ToolTipService.SetToolTip(pathBox,"Folder to sync");

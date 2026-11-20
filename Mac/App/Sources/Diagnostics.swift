@@ -345,6 +345,11 @@ enum Diagnostics {
             .environment(\.colorScheme, .dark)
         let errors=PopupRootView().environmentObject(manyState)
         render(errors,height:PopupMetrics.maxHeight,to:directory.appendingPathComponent("quick-sync-errors.png"));captures.append("quick-sync-errors.png")
+        manyState.view = .syncAttention
+        render(PopupRootView().environmentObject(manyState), height: PopupMetrics.maxHeight,
+               to: directory.appendingPathComponent("quick-sync-attention.png"))
+        captures.append("quick-sync-attention.png")
+        manyState.view = .sync
         // Measure the normal folder-list case separately from expanded attention cards.
         manyState.attention=[];manyState.mounts=[]
 

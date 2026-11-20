@@ -66,7 +66,7 @@ public sealed partial class MainWindow
     }
     private void UpdateQuickChrome()
     {
-        quickViews.Content=currentView switch{"sync" or "sync-files" or "sync-info"=>"Sync","transfers"=>"Send & Receive","activity"=>"Activity","settings"=>"Settings",_=>StorageViewName};
+        quickViews.Content=currentView switch{"sync" or "sync-files" or "sync-info" or "sync-attention"=>"Sync","transfers"=>"Send & Receive","activity"=>"Activity","settings"=>"Settings",_=>StorageViewName};
         quickViews.IsEnabled=!busy;
         if (quickExpand != null) quickExpand.Visibility = compact && !busy ? Visibility.Visible : Visibility.Collapsed;
         if(statusFooter!=null){statusFooter.Visibility=compact&&!busy?Visibility.Collapsed:Visibility.Visible;if(statusFooter.Child is Grid footer)footer.Padding=compact?new Thickness(10,5,10,5):new Thickness(24,10,24,10);}
@@ -77,7 +77,7 @@ public sealed partial class MainWindow
         .Where(d=>!B(d,"is_local")).Select(d=>new Peer(S(d,"deviceID"),S(d,"name","Unnamed device"),d.TryGetProperty("connection",out var c)&&B(c,"connected")))
         .OrderByDescending(p=>p.Connected).ThenBy(p=>p.Name).ToList():new();
     private static JsonElement FolderStats(JsonElement folder)=>folder.TryGetProperty("status",out var stats)&&stats.ValueKind==JsonValueKind.Object?stats:folder;
-    private static bool HasFolderError(JsonElement folder)=>S(folder,"error").Length>0||N(FolderStats(folder),"pullErrors")>0;
+    private static bool HasFolderError(JsonElement folder)=>S(folder,"error").Length>0||N(FolderStats(folder),"pullErrors")>0||N(FolderStats(folder),"errors")>0;
     private List<(string Id,string Name,string State)> FolderPeers(JsonElement folder)
     {
         var known=syncSnapshot.HasValue?Items(syncSnapshot.Value,"devices").GroupBy(d=>S(d,"deviceID")).ToDictionary(g=>g.Key,g=>g.First()):new Dictionary<string,JsonElement>();
@@ -131,7 +131,13 @@ public sealed partial class MainWindow
         }
         var (title,detail)=QuickSummary();
         var summary=new Grid{ColumnSpacing=5,Margin=new Thickness(2,2,2,4)};summary.ColumnDefinitions.Add(new(){Width=new GridLength(1,GridUnitType.Star)});summary.ColumnDefinitions.Add(new(){Width=GridLength.Auto});summary.ColumnDefinitions.Add(new(){Width=GridLength.Auto});
-        var info=new StackPanel{Spacing=2};var titleRow=new StackPanel{Orientation=Orientation.Horizontal,Spacing=5};syncStatusDot=StatusDot();titleRow.Children.Add(syncStatusDot);syncTitleText=QuickText(title,13,true);titleRow.Children.Add(syncTitleText);info.Children.Add(titleRow);
+        var info=new StackPanel{Spacing=2};
+        var titleRow=new StackPanel{Orientation=Orientation.Horizontal,Spacing=5};
+        syncStatusDot=StatusDot();titleRow.Children.Add(syncStatusDot);
+        syncTitleText=QuickText(title,13,true);titleRow.Children.Add(syncTitleText);
+        syncAlertLink=SyncAttentionLink(title);titleRow.Children.Add(syncAlertLink);
+        UpdateSyncSummaryTitle(title);
+        info.Children.Add(titleRow);
         syncDetailText=QuickText(detail,11);info.Children.Add(syncDetailText);ToolTipService.SetToolTip(info,syncFailure.Length>0?syncFailure:detail);summary.Children.Add(info);
         var refresh=QuickIcon("\uE72C","Refresh sync status",()=>_=RefreshSyncthing());Grid.SetColumn(refresh,1);summary.Children.Add(refresh);
         var more=QuickIcon("\uE712","Sync tools",()=>{});var tools=new MenuFlyout();MenuAction(tools,"Devices…",()=>_=ShowQuickDevices());MenuAction(tools,"Sync a folder…",()=>_=ShowQuickShare());MenuAction(tools,"Open Syncthing",OpenSyncthing);MenuAction(tools,"Connection settings…",()=>_=EditSyncthingConnection());more.Flyout=tools;Grid.SetColumn(more,2);summary.Children.Add(more);page.Children.Add(summary);
@@ -144,7 +150,7 @@ public sealed partial class MainWindow
     {
         var peers=QuickPeers();var folders=syncSnapshot is {} snapshot?Items(snapshot,"folders").ToList():new List<JsonElement>();var active=folders.Where(f=>!B(f,"paused")).ToList();
         var errors=active.Count(HasFolderError);var need=active.Sum(f=>N(FolderStats(f),"needFiles"));var paused=folders.Count-active.Count;
-        var title=syncFailure.Length>0?"Status unavailable":errors>0?CountLabel(errors,"folder")+(errors==1?" needs attention":" need attention"):folders.Count>0&&active.Count==0?"Sync paused":need>0?CountLabel(need,"file")+" pending":peers.All(p=>!p.Connected)?"Working offline":active.Any(f=>S(FolderStats(f),"state").Contains("scan"))?"Checking changes…":active.Any(f=>S(FolderStats(f),"state")=="syncing")?"Syncing changes…":"Local files up to date";
+        var title=syncFailure.Length>0?"Status unavailable":errors>0?FolderAttentionTitle(errors):folders.Count>0&&active.Count==0?"Sync paused":need>0?CountLabel(need,"file")+" pending":peers.All(p=>!p.Connected)?"Working offline":active.Any(f=>S(FolderStats(f),"state").Contains("scan"))?"Checking changes…":active.Any(f=>S(FolderStats(f),"state")=="syncing")?"Syncing changes…":"Local files up to date";
         var detail=CountLabel(folders.Count,"folder")+" · "+CountLabel(peers.Count(p=>p.Connected),"device")+" online"+(paused>0?$" · {paused} paused":"");
         return (title,detail);
     }
@@ -152,10 +158,20 @@ public sealed partial class MainWindow
     {
         if(syncSnapshot==null||syncTitleText==null||syncDetailText==null||syncFolderList==null)return false;
         if((folderRows.Count==0)!=(!Items(syncSnapshot.Value,"folders").Any()))return false;
-        var (title,detail)=QuickSummary();syncTitleText.Text=title;syncDetailText.Text=detail;
+        var (title,detail)=QuickSummary();UpdateSyncSummaryTitle(title);syncDetailText.Text=detail;
         ToolTipService.SetToolTip(syncDetailText,syncFailure.Length>0?syncFailure:detail);
         if(syncStatusDot!=null)syncStatusDot.Fill=StatusDot().Fill;
         UpdateFolderRows();return true;
+    }
+
+    private void UpdateSyncSummaryTitle(string title)
+    {
+        if (syncTitleText == null || syncAlertLink == null) return;
+        bool actionable = syncFailure.Length == 0 && FoldersNeedingAttention().Any();
+        syncTitleText.Text = title;
+        syncTitleText.Visibility = actionable ? Visibility.Collapsed : Visibility.Visible;
+        syncAlertLink.Content = title;
+        syncAlertLink.Visibility = actionable ? Visibility.Visible : Visibility.Collapsed;
     }
     private async Task ShowQuickDevices()
     {

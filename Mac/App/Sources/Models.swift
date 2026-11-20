@@ -110,8 +110,9 @@ struct SyncthingFolder: Identifiable {
     let deviceIDs: [String]
     let status: FolderStatus
     let error: String?
+    let errorAdvice: String
     var displayName: String { label.isEmpty ? id : label }
-    var hasError: Bool { (error?.isEmpty == false) || status.pullErrors > 0 }
+    var hasError: Bool { (error?.isEmpty == false) || status.pullErrors > 0 || status.errors > 0 }
     var peerDirection: String {
         switch type {
         case "sendonly": return "To"
@@ -133,6 +134,7 @@ struct FolderStatus {
     let needFiles: Int64
     let needDeletes: Int64
     let pullErrors: Int64
+    let errors: Int64
     let receiveOnlyChangedFiles: Int64
 }
 
@@ -182,9 +184,11 @@ struct Snapshot {
                     needFiles: status.int64("needFiles"),
                     needDeletes: status.int64("needDeletes"),
                     pullErrors: status.int64("pullErrors"),
+                    errors: status.int64("errors"),
                     receiveOnlyChangedFiles: status.int64("receiveOnlyChangedFiles")
                 ),
-                error: f.optStr("error")
+                error: f.optStr("error"),
+                errorAdvice: f.str("error_advice")
             )
         }
         devices = dict.array("devices").map { raw in
@@ -288,11 +292,13 @@ struct EventsResult {
 struct IssueItem: Identifiable {
     let path: String
     let message: String
+    let advice: String
     var id: String { path + message }
     init(from raw: Any) {
         let dict = raw as? JSON ?? [:]
         path = dict.str("path").isEmpty ? dict.str("file") : dict.str("path")
         message = dict.str("error").isEmpty ? dict.str("message") : dict.str("error")
+        advice = dict.str("advice")
     }
 
     /// /rest/folder/errors wraps rows in {"errors": [...]} while need returns

@@ -253,6 +253,38 @@ fn syncthing_events_poll_is_bounded_and_returns_cursor() {
 }
 
 #[test]
+fn syncthing_attention_previews_the_real_error_with_a_suggested_fix() {
+    let (host, worker) = server(vec![Exchange {
+        method: "GET",
+        target: "/rest/folder/errors?folder=studio&page=1&perpage=1",
+        status: 200,
+        body: r#"{"errors":[{"path":"Blender/Scene.blend","error":"sharing violation"}]}"#.into(),
+        expect_body: None,
+        expected_header: Some("x-api-key: test-key"),
+    }]);
+    let api = crate::syncthing::Api::new(&crate::syncthing::Connection {
+        endpoint: host,
+        api_key: "test-key".into(),
+        certificate_pem: String::new(),
+    })
+    .unwrap();
+    let result = api
+        .execute(
+            "attention",
+            &serde_json::json!({"folder_ids":["studio"]}),
+            std::path::Path::new(""),
+        )
+        .unwrap();
+    assert_eq!(result["studio"]["errors"][0]["path"], "Blender/Scene.blend");
+    assert_eq!(result["studio"]["errors"][0]["error"], "sharing violation");
+    assert_eq!(
+        result["studio"]["errors"][0]["advice"],
+        "Close the app using the file, then rescan."
+    );
+    worker.join().unwrap();
+}
+
+#[test]
 fn syncthing_browser_preserves_case_distinct_remote_names() {
     let temp = tempfile::tempdir().unwrap();
     std::fs::write(temp.path().join("local.txt"), "local").unwrap();

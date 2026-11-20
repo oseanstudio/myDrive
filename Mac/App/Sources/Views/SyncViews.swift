@@ -72,9 +72,22 @@ struct SyncView: View {
                     .fill(statusColor)
                     .frame(width: 8, height: 8)
                     .accessibilityLabel("Status: \(app.statusTitle)")
-                Text(app.statusTitle)
-                    .font(.system(size: 13, weight: .semibold))
-                    .lineLimit(1)
+                if app.snapshotError == nil && !app.foldersNeedingAttention.isEmpty {
+                    Button { app.openSyncAttention() } label: {
+                        HStack(spacing: 4) {
+                            Text(app.statusTitle).lineLimit(1)
+                            Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold))
+                        }
+                        .font(.system(size: 13, weight: .semibold))
+                    }
+                    .buttonStyle(.link)
+                    .disabled(app.busy != nil)
+                    .accessibilityHint("Open sync errors and fixes")
+                } else {
+                    Text(app.statusTitle)
+                        .font(.system(size: 13, weight: .semibold))
+                        .lineLimit(1)
+                }
                 Spacer(minLength: 4)
                 Menu {
                     Button("Devices…") { app.dialog = .devices }

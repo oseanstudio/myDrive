@@ -204,7 +204,7 @@ struct ErrorsDialog: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             if app.errorItems.isEmpty {
-                Text("No file errors. Your folder is ready to sync.")
+                Text(app.snapshot?.folders.first { $0.id == app.syncInfo?.folderId }?.error ?? "No file errors.")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
             } else {
@@ -218,7 +218,11 @@ struct ErrorsDialog: View {
                         Text(item.message)
                             .font(.system(size: 10))
                             .foregroundStyle(.red)
-                            .lineLimit(2)
+                            .lineLimit(3)
+                            .help(item.message)
+                        if !item.advice.isEmpty {
+                            Text(item.advice).font(.system(size: 10)).foregroundStyle(.secondary)
+                        }
                     }
                     .padding(.vertical, 2)
                 }

@@ -86,6 +86,7 @@ struct PopupRootView: View {
         case .sync: SyncView()
         case .syncFiles: SyncFilesView()
         case .syncInfo: SyncInfoView()
+        case .syncAttention: SyncAttentionView()
         case .connections: ConnectionsView()
         case .activity: ActivityView()
         case .transfers: BlipView(receiver: app.blip)
