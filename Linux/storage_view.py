@@ -40,7 +40,7 @@ def cifs_mounts():
             ["findmnt", "--json", "--list", "--types", "cifs,smb3", "--output", "SOURCE,TARGET"],
             capture_output=True, text=True, timeout=2,
         )
-        return json.loads(result.stdout).get("filesystems", []) if result.returncode == 0 else []
+        return (json.loads(result.stdout).get("filesystems") or []) if result.returncode == 0 else []
     except (OSError, ValueError, subprocess.SubprocessError):
         return []
 

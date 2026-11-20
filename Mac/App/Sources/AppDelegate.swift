@@ -204,6 +204,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         popover.contentViewController?.view.window?.makeKey()
         refreshWindowAppearance()
         appState.popoverVisible = true
+        if appState.view == .connections { SmbMonitor.shared.checkNow("view") }
         Task { await appState.refreshIfStale() }
     }
 
@@ -252,6 +253,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
         refreshWindowAppearance()
         fullWindow?.makeKeyAndOrderFront(nil)
+        if appState.view == .connections { SmbMonitor.shared.checkNow("view") }
         NSApp.activate(ignoringOtherApps: true)
     }
 

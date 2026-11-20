@@ -390,7 +390,7 @@ public sealed partial class MainWindow : Window
             }
             if (changed) UpdateProblemColors();
         }
-        catch (Exception e) when (e is IOException or JsonException or OperationCanceledException) { }
+        catch (Exception e) when (e is IOException or JsonException or OperationCanceledException or System.ComponentModel.Win32Exception) { }
         finally
         {
             monitoring = false;

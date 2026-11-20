@@ -45,11 +45,13 @@ struct State {
     status: String,
     checked_at: u64,
     failures: u8,
+    #[serde(default)]
+    pending: bool,
 }
 
 impl State {
     fn due_in(&self, now: u64, event: bool) -> u64 {
-        if self.checked_at > now {
+        if self.pending || self.checked_at > now {
             return 0;
         }
         let interval = if event {
@@ -117,9 +119,13 @@ pub fn check(payload: Value) -> Result<Value, String> {
                     status: status.into(),
                     checked_at: now,
                     failures,
+                    pending: false,
                 },
             );
         } else {
+            if let Some(state) = states.get_mut(&target.id) {
+                state.pending = true;
+            }
             pending = true;
         }
     }
@@ -241,6 +247,7 @@ mod tests {
             status: "server_reachable".into(),
             checked_at: 1000,
             failures: 0,
+            pending: false,
         };
         assert_eq!(state.due_in(1012, false), 78);
         assert_eq!(state.due_in(1001, true), 1);

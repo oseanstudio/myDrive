@@ -110,6 +110,11 @@ class MyDrive(Gtk.Application):
                 self.change_startup("startup.status")
         view.connect("notify::selected", show_view)
         self.storage_view = StorageView(self, self.pages["SMB Storage"])
+        if not self.fixture:
+            def check_visible_storage(window, _property):
+                if window.get_visible() and self.stack.get_visible_child_name() == "SMB Storage":
+                    self.storage_view.check_now("view")
+            self.window.connect("notify::visible", check_visible_storage)
         self.transfer_view = TransferView(self, self.pages["Send & Receive"], self.blip)
         self.render_activity()
         self.render_settings()
