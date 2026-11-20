@@ -99,7 +99,13 @@ enum DialogKind: Identifiable {
 @MainActor
 final class AppState: ObservableObject {
     @Published var view: PopupViewKind = .sync
-    @Published var bookmarks: [Bookmark] = []
+    @Published var bookmarks: [Bookmark] = [] {
+        didSet {
+            SmbMonitor.shared.bookmarks = bookmarks
+            SmbMonitor.shared.checkNow()
+        }
+    }
+    @Published private(set) var smbBookmarkHealth: [String: String] = [:]
     @Published var snapshot: Snapshot?
     @Published var snapshotError: String?
     @Published var mounts: [SmbMount] = []
@@ -154,8 +160,9 @@ final class AppState: ObservableObject {
         activity = log.activity
         updates = log.updates
         applyFinderFolderCacheFix()
-        SmbMonitor.shared.onMountsChanged = { [weak self] mounts in
+        SmbMonitor.shared.onMountsChanged = { [weak self] mounts, labels in
             self?.applyMountUpdate(mounts)
+            if self?.smbBookmarkHealth != labels { self?.smbBookmarkHealth = labels }
         }
         Task {
             await loadBookmarks()
@@ -247,16 +254,7 @@ final class AppState: ObservableObject {
     }
 
     private func applyMountUpdate(_ updated: [SmbMount]) {
-        let autoRemount = settingsPref.autoRemount
-        for mount in updated {
-            let previous = mounts.first { $0.path == mount.path }
-            if autoRemount, previous?.health == .connected, mount.health == .unavailable {
-                Task {
-                    try? SmbMonitor.shared.mount(mount)
-                    SmbMonitor.shared.checkNow()
-                }
-            }
-        }
+        guard mounts != updated else { return }
         mounts = updated
         recomputeAttention()
     }
@@ -267,7 +265,6 @@ final class AppState: ObservableObject {
         checkForAppUpdate()
         Task { await refreshIfStale() }
         Task { await syncthing.checkBackgroundEngine() }
-        SmbMonitor.shared.checkNow()
     }
 
     func checkForAppUpdate(showResult: Bool = false) {

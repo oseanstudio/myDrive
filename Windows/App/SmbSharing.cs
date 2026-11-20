@@ -137,7 +137,7 @@ public sealed partial class MainWindow
     {
         if (quitting || updatingSmbInventory || (!force && DateTime.UtcNow < nextSmbInventory)) return;
         updatingSmbInventory = true;
-        nextSmbInventory = DateTime.UtcNow.AddSeconds(10);
+        nextSmbInventory = DateTime.UtcNow.AddSeconds(90);
         try
         {
             IReadOnlyList<SmbShareHost.Share> shares;

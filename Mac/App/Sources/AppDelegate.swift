@@ -2,6 +2,7 @@
 // wake/mount notifications, and second-launch activation.
 import AppKit
 import Combine
+import Network
 import SwiftUI
 
 extension Notification.Name {
@@ -17,6 +18,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var fullWindow: NSWindow?
     private lazy var blipNotice=BlipReceiveNotice(receiver:appState.blip,openTransfers:{[weak self] in self?.showPopover(view:.transfers)},anchor:{[weak self] in guard let button=self?.statusItem?.button,let window=button.window else{return nil};return window.convertToScreen(button.convert(button.bounds,to:nil))})
     private var timer: Timer?
+    private let networkMonitor = NWPathMonitor()
     private var cancellables = Set<AnyCancellable>()
     private var eventMonitors: [Any] = []
 
@@ -25,6 +27,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         setupStatusItem()
         setupPopover()
         setupNotifications()
+        networkMonitor.pathUpdateHandler = { _ in
+            Task { @MainActor in SmbMonitor.shared.checkNow("network") }
+        }
+        networkMonitor.start(queue: .main)
         installPopoverDismissMonitors()
         refreshWindowAppearance()
         appState.startup()
@@ -44,6 +50,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         timer?.invalidate()
+        networkMonitor.cancel()
+        SmbMonitor.shared.stop()
         appState.shutdown()
         for monitor in eventMonitors { NSEvent.removeMonitor(monitor) }
         eventMonitors.removeAll()
@@ -261,8 +269,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         let workspaceCenter = NSWorkspace.shared.notificationCenter
         workspaceCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil,
                                     queue: .main) { [weak self] _ in
-            SmbMonitor.shared.retryAfterWake()
-            SmbMonitor.shared.checkNow()
+            SmbMonitor.shared.checkNow("wake")
             self?.appState.tick()
         }
         workspaceCenter.addObserver(forName: NSWorkspace.didMountNotification, object: nil,

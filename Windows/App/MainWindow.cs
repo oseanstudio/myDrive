@@ -6,6 +6,7 @@ using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Automation;
 using Windows.Storage.Pickers;
 using System.Diagnostics;
+using System.Net.NetworkInformation;
 using System.Text.Json;
 using WinRT.Interop;
 
@@ -22,7 +23,12 @@ public sealed partial class MainWindow : Window
     private List<Bookmark> bookmarks=new();
     private List<ActivityEntry> activity=new();
     private readonly Dictionary<string,string> health=new();
-    private readonly DispatcherTimer healthTimer=new(){Interval=TimeSpan.FromSeconds(12)};
+    private readonly Dictionary<string,TextBlock> smbHealthLabels=new();
+    private readonly DispatcherTimer healthTimer=new();
+    private readonly CancellationTokenSource smbMonitoringLifetime=new();
+    private Dictionary<string,JsonElement> smbHealthState=new();
+    private string smbTrigger="periodic";
+    private bool smbViewShown;
     private CancellationTokenSource? operation;
     private TrayIcon? tray;
     private bool busy,quitting,monitoring,storageReady;
@@ -99,10 +105,11 @@ public sealed partial class MainWindow : Window
         try{tray=new TrayIcon(hwnd,ToggleQuickMenu,Quit,()=>SetMode(false),()=>_=OnSystemResume());}catch{compact=false;}
         EnableFileDrop();
         AppWindow.Closing+=(_,e)=>{if(!quitting&&tray!=null){e.Cancel=true;AppWindow.Hide();}};
-        Closed+=(_,_)=>{popupInput.Dispose();healthTimer.Stop();updateTimer.Stop();tray?.Dispose();operation?.Cancel();smbHosting.Dispose();};
-        AppWindow.Changed+=(_,e)=>{if(compact&&AppWindow.IsVisible)popupInput.Start();else popupInput.Stop();};
+        Closed+=(_,_)=>{popupInput.Dispose();StopSmbMonitoring();updateTimer.Stop();tray?.Dispose();operation?.Cancel();smbHosting.Dispose();};
+        AppWindow.Changed+=(_,e)=>{if(compact&&AppWindow.IsVisible)popupInput.Start();else popupInput.Stop();UpdateSmbView();};
         Activated+=(_,e)=>{if(e.WindowActivationState==WindowActivationState.Deactivated)DispatcherQueue.TryEnqueue(()=>{if(!diagnosticMode&&!PopupInput.OurForeground()&&tray?.PointerInside()!=true)DismissQuickPopup();});};
-        healthTimer.Tick+=async(_,_)=>{await MonitorSmb();if(currentView=="connections" && !diagnosticMode)_=RefreshSmbInventory();};
+        healthTimer.Tick+=async(_,_)=>await MonitorSmb();
+        if(!diagnosticMode)NetworkChange.NetworkAddressChanged+=OnSmbNetworkChanged;
         navigation.SelectedItem=navigation.MenuItems[1];
         SetMode(compact);
         if(!diagnosticMode){_=Initialize();StartSyncthingRefresh();StartBlipRefresh();StartUpdateChecks();}
@@ -158,7 +165,7 @@ public sealed partial class MainWindow : Window
     private async void Quit(){if(quitting)return;quitting=true;blipLinks?.ResetSession();await blip.StopAsync();Close();Application.Current.Exit();}
     private async Task Initialize()
     {
-        try{bookmarks=await CoreBridge.Load();storageReady=true;var journal=Path.Combine(CoreBridge.DataDir,"activity.json");if(File.Exists(journal))try{activity=JsonSerializer.Deserialize<List<ActivityEntry>>(await File.ReadAllTextAsync(journal))??new();}catch{}status.Text="Ready · Credentials protected by Windows";healthTimer.Start();Render();if(!diagnosticMode)_=RefreshSyncthing();}
+        try{bookmarks=await CoreBridge.Load();storageReady=true;var journal=Path.Combine(CoreBridge.DataDir,"activity.json");if(File.Exists(journal))try{activity=JsonSerializer.Deserialize<List<ActivityEntry>>(await File.ReadAllTextAsync(journal))??new();}catch{}status.Text="Ready · Credentials protected by Windows";RequestSmbCheck("periodic");Render();if(!diagnosticMode)_=RefreshSyncthing();}
         catch(Exception e){Error(e);status.Text="Could not load connections. The saved file has been preserved.";Render();}
     }
     private void Error(Exception e){notice.Title=e is OperationCanceledException?"Operation canceled":"Something needs attention";notice.Message=e is OperationCanceledException?"The transfer stopped. To resume an SMB copy, retry with the same file and destination.":e.Message;notice.Severity=e is OperationCanceledException?InfoBarSeverity.Informational:InfoBarSeverity.Error;notice.IsOpen=true;SizeQuickMenu();}
@@ -176,11 +183,10 @@ public sealed partial class MainWindow : Window
         activity.Insert(0,entry);if(activity.Count>200)activity.RemoveRange(200,activity.Count-200);
         try{Directory.CreateDirectory(CoreBridge.DataDir);var p=Path.Combine(CoreBridge.DataDir,"activity.json");await File.WriteAllTextAsync(p+".tmp",JsonSerializer.Serialize(activity));File.Move(p+".tmp",p,true);}catch{}
     }
-    private void Render(){ResetSyncControls();UpdateQuickChrome();page.Children.Clear();if(currentView=="transfers")RenderBlip();else if(currentView=="sync-info")RenderSyncInfo();else if(currentView=="sync")RenderSyncthing();else if(currentView=="sync-files")RenderSyncFiles();else if(currentView=="activity")RenderActivity();else if(currentView=="settings")RenderSettings();else if(currentView=="files")RenderFiles();else RenderConnections();SizeQuickMenu();}
+    private void Render(){ResetSyncControls();UpdateQuickChrome();page.Children.Clear();if(currentView=="transfers")RenderBlip();else if(currentView=="sync-info")RenderSyncInfo();else if(currentView=="sync")RenderSyncthing();else if(currentView=="sync-files")RenderSyncFiles();else if(currentView=="activity")RenderActivity();else if(currentView=="settings")RenderSettings();else if(currentView=="files")RenderFiles();else RenderConnections();SizeQuickMenu();UpdateSmbView();}
     private void Heading(string title,string subtitle){page.Children.Add(Text(title,compact?16:30,true));if(compact)return;var sub=Text(subtitle,14);sub.Foreground=Brush("TextFillColorSecondaryBrush");page.Children.Add(sub);}
     private void RenderConnections()
     {
-        if(!diagnosticMode)_=RefreshSmbInventory();
         page.Children.Add(RenderSmbOverview());
         if(compact){RenderQuickConnections();return;}
         var line=new Grid();line.ColumnDefinitions.Add(new(){Width=new GridLength(1,GridUnitType.Star)});line.ColumnDefinitions.Add(new(){Width=new GridLength(260)});line.Children.Add(Text("Saved SMB shares",18,true));
@@ -190,13 +196,14 @@ public sealed partial class MainWindow : Window
     private StackPanel? connectionsPanel;
     private void RenderConnectionList()
     {
+        smbHealthLabels.Clear();
         if(compact){RenderQuickConnectionList();return;}
         if(connectionsPanel==null)return;connectionsPanel.Children.Clear();
         foreach(var b in bookmarks.Where(b=>b.protocol=="smb" && (b.nickname+" "+b.host).Contains(search,StringComparison.OrdinalIgnoreCase)))
         {
             var grid=new Grid{ColumnSpacing=compact?10:18};grid.ColumnDefinitions.Add(new(){Width=GridLength.Auto});grid.ColumnDefinitions.Add(new(){Width=new GridLength(1,GridUnitType.Star)});grid.ColumnDefinitions.Add(new(){Width=GridLength.Auto});
             if(!compact)grid.Children.Add(new Border{Width=46,Height=46,CornerRadius=new(9),Background=Brush("AccentFillColorDefaultBrush"),Child=new FontIcon{Glyph=b.protocol=="local"?"\uE8B7":b.protocol=="smb"?"\uE968":"\uE753",Foreground=new SolidColorBrush(Colors.White),FontSize=22}});
-            var details=new StackPanel{Spacing=4,VerticalAlignment=VerticalAlignment.Center};details.Children.Add(new TextBlock{Text=b.nickname,FontSize=compact?15:17,FontWeight=Microsoft.UI.Text.FontWeights.SemiBold,TextTrimming=TextTrimming.CharacterEllipsis});details.Children.Add(new TextBlock{Text=b.Location,TextTrimming=TextTrimming.CharacterEllipsis,Foreground=Brush("TextFillColorSecondaryBrush"),MaxWidth=compact?190:470,HorizontalAlignment=HorizontalAlignment.Left,FontSize=compact?12:14});var state=health.GetValueOrDefault(b.id,"Ready");var stateText=Text(b.ProtocolName+"  ·  "+state,12);if(state=="Unavailable")stateText.Foreground=new SolidColorBrush(colorTheme==ElementTheme.Dark?Colors.LightCoral:Colors.Firebrick);details.Children.Add(stateText);Grid.SetColumn(details,1);grid.Children.Add(details);
+            var details=new StackPanel{Spacing=4,VerticalAlignment=VerticalAlignment.Center};details.Children.Add(new TextBlock{Text=b.nickname,FontSize=compact?15:17,FontWeight=Microsoft.UI.Text.FontWeights.SemiBold,TextTrimming=TextTrimming.CharacterEllipsis});details.Children.Add(new TextBlock{Text=b.Location,TextTrimming=TextTrimming.CharacterEllipsis,Foreground=Brush("TextFillColorSecondaryBrush"),MaxWidth=compact?190:470,HorizontalAlignment=HorizontalAlignment.Left,FontSize=compact?12:14});details.Children.Add(CreateSmbHealthLabel(b,12));Grid.SetColumn(details,1);grid.Children.Add(details);
             var actions=new StackPanel{Orientation=Orientation.Horizontal,Spacing=8,VerticalAlignment=VerticalAlignment.Center};actions.Children.Add(Button("Browse",()=>_=Browse(b),true));
             var more=new Button{Content="···"};var menu=new MenuFlyout();var explorer=new MenuFlyoutItem{Text="Open in Explorer",Icon=new SymbolIcon(Symbol.OpenLocal)};explorer.Click+=(_,_)=>OpenExplorer(b);menu.Items.Add(explorer);
             var remove=new MenuFlyoutItem{Text="Remove saved share",Icon=new SymbolIcon(Symbol.Delete)};remove.Click+=(_,_)=>_=DeleteBookmark(b);menu.Items.Add(remove);more.Flyout=menu;actions.Children.Add(more);Grid.SetColumn(actions,2);grid.Children.Add(actions);connectionsPanel.Children.Add(Card(grid));
@@ -282,15 +289,113 @@ public sealed partial class MainWindow : Window
         if(statusFooter!=null)statusFooter.BorderBrush=Brush("DividerStrokeColorDefaultBrush");
         Render();
     }
+    private void UpdateSmbView()
+    {
+        bool visible = currentView == "connections" && AppWindow.IsVisible && storageReady;
+        if (visible && !smbViewShown) RequestSmbCheck("view");
+        smbViewShown = visible;
+    }
+
+    private TextBlock CreateSmbHealthLabel(Bookmark bookmark, double size)
+    {
+        var label = Text("", size);
+        smbHealthLabels[bookmark.id] = label;
+        SetSmbHealthLabel(label, health.GetValueOrDefault(bookmark.id, "Checking…"));
+        return label;
+    }
+
+    private void SetSmbHealthLabel(TextBlock label, string value)
+    {
+        label.Text = $"SMB · {value}";
+        label.Foreground = value is "Unavailable" or "Access denied"
+            ? new SolidColorBrush(colorTheme == ElementTheme.Dark ? Colors.LightCoral : Colors.Firebrick)
+            : Brush("TextFillColorSecondaryBrush");
+    }
+
+    private void OnSmbNetworkChanged(object? sender, EventArgs args) =>
+        DispatcherQueue.TryEnqueue(() => RequestSmbCheck("network"));
+
+    private Task OnSystemResume()
+    {
+        RequestSmbCheck("wake");
+        return Task.CompletedTask;
+    }
+
+    private void RequestSmbCheck(string trigger)
+    {
+        if (diagnosticMode || quitting || smbMonitoringLifetime.IsCancellationRequested || !storageReady) return;
+        if (trigger != "periodic") smbTrigger = trigger;
+        if (!monitoring) ScheduleSmbCheck(trigger is "wake" or "network" ? 2 : 1);
+    }
+
+    private void ScheduleSmbCheck(int seconds)
+    {
+        healthTimer.Stop();
+        healthTimer.Interval = TimeSpan.FromSeconds(seconds);
+        healthTimer.Start();
+    }
+
+    private void StopSmbMonitoring()
+    {
+        healthTimer.Stop();
+        smbMonitoringLifetime.Cancel();
+        if (!diagnosticMode) NetworkChange.NetworkAddressChanged -= OnSmbNetworkChanged;
+    }
+
     private async Task MonitorSmb()
     {
-        if(monitoring||busy||modalDepth>0)return;monitoring=true;
-        try{foreach(var b in bookmarks.Where(b=>b.protocol=="smb").ToArray()){using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(10));try{await CoreBridge.List(b,"",timeout.Token);health[b.id]="Connected";}catch{health[b.id]="Unavailable";try{await Native.ConnectSmb(b);health[b.id]="Reconnected";}catch{}}}if(currentView=="connections")RenderConnectionList();}finally{monitoring=false;UpdateProblemColors();}
-    }
-    private async Task OnSystemResume()
-    {
-        await Task.Delay(2000); // let the network stack settle after sleep
-        await MonitorSmb();
+        healthTimer.Stop();
+        if (monitoring || quitting || smbMonitoringLifetime.IsCancellationRequested) return;
+        monitoring = true;
+        var trigger = smbTrigger;
+        smbTrigger = "periodic";
+        int next = 90;
+        try
+        {
+            if (smbViewShown) _ = RefreshSmbInventory(trigger != "periodic");
+            var targets = bookmarks.Where(b => b.protocol == "smb").Select(b => new
+            {
+                b.id,
+                probe = new { kind = "path", value = $@"\\{b.host.Trim('\\')}\{b.path.Trim('/', '\\').Replace('/', '\\')}" },
+            }).ToArray();
+            if (targets.Length == 0)
+            {
+                smbHealthState.Clear();
+                return;
+            }
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(smbMonitoringLifetime.Token);
+            timeout.CancelAfter(TimeSpan.FromSeconds(8));
+            var response = await CoreBridge.Call(new
+            {
+                action = "smb.health",
+                payload = new { trigger, targets, previous = smbHealthState },
+            }, timeout.Token);
+            if (quitting || smbMonitoringLifetime.IsCancellationRequested) return;
+            smbHealthState = response.GetProperty("states").Deserialize<Dictionary<string,JsonElement>>() ?? new();
+            next = response.GetProperty("next_seconds").GetInt32();
+            bool changed = false;
+            foreach (var (id, state) in smbHealthState)
+            {
+                var label = state.GetProperty("status").GetString() switch
+                {
+                    "connected" => "Connected",
+                    "access_denied" => "Access denied",
+                    _ => "Unavailable",
+                };
+                if (health.GetValueOrDefault(id) == label) continue;
+                health[id] = label;
+                if (smbViewShown && smbHealthLabels.TryGetValue(id, out var text))
+                    SetSmbHealthLabel(text, label);
+                changed = true;
+            }
+            if (changed) UpdateProblemColors();
+        }
+        catch (Exception e) when (e is IOException or JsonException or OperationCanceledException) { }
+        finally
+        {
+            monitoring = false;
+            if (!quitting && !smbMonitoringLifetime.IsCancellationRequested) ScheduleSmbCheck(smbTrigger == "periodic" ? next : 2);
+        }
     }
 
     // Color notifications: the tray icon and status text turn orange for

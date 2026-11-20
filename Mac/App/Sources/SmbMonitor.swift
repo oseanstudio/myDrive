@@ -1,20 +1,16 @@
-// SMB/network-drive health for macOS. Mounts are discovered from the OS
-// (getmntinfo); health uses a deadline-bounded stat probe, and remounts go
-// through the system mounter so Keychain credentials apply. This mirrors the
-// original macOS babysitter's 12-second checks plus wake handling, and adds
-// the nsmb.conf folder-cache fix and known-share auto-remount.
+// Discover native mounts and use the shared core to check them.
 import AppKit
 import Foundation
-import Network
 
-enum MountHealth: Equatable {
+enum MountHealth: Equatable, Sendable {
     case checking
     case connected
+    case accessDenied
     case unavailable
     case reconnected
 }
 
-struct SmbMount: Identifiable, Equatable {
+struct SmbMount: Identifiable, Equatable, Sendable {
     let path: String          // mount point, e.g. /Volumes/Dropbox
     let host: String
     let share: String
@@ -37,6 +33,7 @@ struct SmbMount: Identifiable, Equatable {
         switch health {
         case .checking: return "Checking…"
         case .connected: return "Connected"
+        case .accessDenied: return "Access denied"
         case .unavailable: return "Unavailable"
         case .reconnected: return "Reconnected"
         }
@@ -45,15 +42,16 @@ struct SmbMount: Identifiable, Equatable {
 
 final class SmbMonitor {
     static let shared = SmbMonitor()
-    /// Called on the main queue whenever a check pass completes.
-    var onMountsChanged: (([SmbMount]) -> Void)?
-
-    private(set) var mounts: [SmbMount] = []
-    private var checking = false
-    private let healthTimeout: TimeInterval = 3
+    @MainActor var onMountsChanged: (([SmbMount], [String: String]) -> Void)?
+    @MainActor var bookmarks: [Bookmark] = []
+    @MainActor private var mounts: [SmbMount] = []
+    @MainActor private var bookmarkHealth: [String: String] = [:]
+    @MainActor private var states: JSON = [:]
+    @MainActor private var timer: Timer?
+    @MainActor private var running: Task<Void, Never>?
+    @MainActor private var pendingTrigger = "periodic"
+    @MainActor private var stopped = false
     private static let enumerationLock = NSLock()
-    private static let probeLock = NSLock()
-    private static var activeProbes = Set<String>()
 
     /// Enumerates current SMB-family mounts from the OS.
     static func enumerate() -> [SmbMount] {
@@ -61,7 +59,7 @@ final class SmbMonitor {
         var buffer: UnsafeMutablePointer<statfs>? = nil
         let count = getmntinfo(&buffer, MNT_NOWAIT)
         guard count > 0, let stats = buffer else { return [] }
-        let types: Set<String> = ["smbfs", "cifs", "afpfs", "nsmb"]
+        let types: Set<String> = ["smbfs", "cifs", "nsmb"]
         var mounts: [SmbMount] = []
         for index in 0..<Int(count) {
             let fs = stats[index]
@@ -73,14 +71,14 @@ final class SmbMonitor {
             let parts = trimmed.split(separator: "/", maxSplits: 1, omittingEmptySubsequences: true)
             guard let first = parts.first else { continue }
             let host = first.split(separator: "@").last.map(String.init) ?? String(first)
-            let user = first.split(separator: "@").first.map(String.init) ?? ""
+            let user = first.contains("@") ? String(first.prefix { $0 != "@" }) : ""
             let share = parts.count > 1 ? String(parts[1]) : ""
             let free = Int64(fs.f_bavail) * Int64(fs.f_bsize)
             let total = Int64(fs.f_blocks) * Int64(fs.f_bsize)
             mounts.append(SmbMount(path: on, host: host, share: share, user: user,
                                    health: .checking, freeBytes: free, totalBytes: total))
         }
-        return mounts
+        return mounts.sorted { $0.path < $1.path }
     }
 
     /// Reads a fixed-size CChar tuple as a NUL-terminated C string.
@@ -90,96 +88,115 @@ final class SmbMonitor {
         }
     }
 
-    /// Runs one health pass. Each mount root is probed with a deadline so a
-    /// wedged SMB mount cannot hang the monitor. When auto-remount is on,
-    /// remembered shares that dropped off the mount list are mounted again.
-    func checkNow() {
-        guard !checking else { return }
-        checking = true
-        DispatchQueue.global(qos: .utility).async { [weak self] in
-            guard let self else { return }
-            var updated = SmbMonitor.enumerate()
-            for index in updated.indices {
-                let reachable = SmbMonitor.probe(updated[index].path, timeout: self.healthTimeout)
-                updated[index].health = reachable ? .connected : .unavailable
+    @MainActor func checkNow(_ trigger: String = "mount") {
+        guard !stopped else { return }
+        if trigger != "periodic" { pendingTrigger = trigger }
+        if running == nil { schedule(after: trigger == "wake" || trigger == "network" ? 2 : 1) }
+    }
+
+    @MainActor func stop() {
+        stopped = true
+        timer?.invalidate()
+        running?.cancel()
+    }
+
+    @MainActor private func schedule(after seconds: Int) {
+        timer?.invalidate()
+        timer = Timer.scheduledTimer(withTimeInterval: Double(seconds), repeats: false) { [weak self] _ in
+            Task { @MainActor in self?.startPass() }
+        }
+    }
+
+    @MainActor private func startPass() {
+        guard !stopped, running == nil else { return }
+        let trigger = pendingTrigger
+        pendingTrigger = "periodic"
+        running = Task { @MainActor in
+            let next = await check(trigger)
+            running = nil
+            if !stopped { schedule(after: pendingTrigger == "periodic" ? next : 2) }
+        }
+    }
+
+    @MainActor private func check(_ trigger: String) async -> Int {
+        var current = await Task.detached(priority: .utility) { Self.enumerate() }.value
+        rememberShares(current)
+        let missing = droppedShares(current: current)
+        let saved = bookmarks.filter { $0.protocolKind == "smb" }
+        func target(_ id: String, _ kind: String, _ value: String) -> JSON {
+            ["id": id, "probe": ["kind": kind, "value": value]]
+        }
+        let mountedIDs = saved.reduce(into: [String: String]()) { ids, bookmark in
+            if let mount = current.first(where: { mount in
+                if !bookmark.mountPath.isEmpty { return bookmark.mountPath == mount.path }
+                let share = bookmark.path.split(separator: "/").first.map(String.init)
+                return bookmark.host.caseInsensitiveCompare(mount.host) == .orderedSame &&
+                    share?.caseInsensitiveCompare(mount.share.removingPercentEncoding ?? mount.share) == .orderedSame
+            }) { ids[bookmark.id] = "mount:" + mount.id }
+        }
+        let hosts = Set(missing.map(\.host) + saved.filter { mountedIDs[$0.id] == nil }.map(\.host))
+        let targets = current.map { target("mount:" + $0.id, "path", $0.path) }
+            + hosts.sorted().map { target("host:" + $0, "host", $0) }
+
+        let payload: JSON = ["trigger": trigger, "targets": targets, "previous": states]
+        let response = try? await CoreBridge.shared.call(action: "smb.health", request: ["payload": payload], timeout: 8)
+        guard !Task.isCancelled else { return 90 }
+        if let data = response as? JSON { states = data.dict("states") }
+        func status(_ id: String) -> String { (states[id] as? JSON)?.str("status") ?? "" }
+
+        for index in current.indices {
+            let id = current[index].id
+            switch status("mount:" + id) {
+            case "connected":
+                current[index].health = mounts.first(where: { $0.id == id })?.health == .unavailable ? .reconnected : .connected
+            case "access_denied": current[index].health = .accessDenied
+            case "unavailable": current[index].health = .unavailable
+            default: break
             }
-            self.rememberShares(updated)
-            // Self-heal: shares that vanished (sleep, reboot, dead session)
-            // come back on their own, using the Keychain credentials.
-            if PrefStore.shared.preferences.autoRemount {
-                var remounted = false
-                for candidate in self.droppedShares(current: updated) {
-                    let key = SmbMonitor.shareKey(candidate)
+        }
+        var labels: [String: String] = [:]
+        for bookmark in saved {
+            switch status(mountedIDs[bookmark.id] ?? "host:" + bookmark.host) {
+            case "connected": labels[bookmark.id] = "Connected"
+            case "server_reachable": labels[bookmark.id] = "Server reachable"
+            case "access_denied": labels[bookmark.id] = "Access denied"
+            case "unavailable": labels[bookmark.id] = "Unavailable"
+            default: break
+            }
+        }
+        if mounts != current || bookmarkHealth != labels {
+            mounts = current
+            bookmarkHealth = labels
+            onMountsChanged?(current, labels)
+        }
+
+        // Try only shares the OS no longer lists as mounted. Let the native
+        // SMB client recover sessions that still have a mounted volume.
+        if response != nil, recovery == nil, PrefStore.shared.preferences.autoRemount,
+           let candidate = missing.first(where: { status("host:" + $0.host) == "server_reachable" }) {
+            let key = Self.shareKey(candidate)
+            lastAutoAttempt[key] = Date()
+            recovery = Task { @MainActor in
+                let result = await Task.detached(priority: .utility) {
+                    guard !Self.enumerate().contains(where: { Self.shareKey($0) == key }) else { return true }
                     do {
-                        try self.mount(candidate)
-                        self.autoFailCount[key] = 0
-                        remounted = true
-                    } catch {
-                        self.autoFailCount[key, default: 0] += 1
-                    }
-                    self.lastAutoAttempt[key] = Date()
-                }
-                if remounted {
-                    var fresh = SmbMonitor.enumerate()
-                    for index in fresh.indices {
-                        let reachable = SmbMonitor.probe(fresh[index].path, timeout: self.healthTimeout)
-                        fresh[index].health = reachable ? .connected : .unavailable
-                    }
-                    self.rememberShares(fresh)
-                    updated = fresh
-                }
-            }
-            DispatchQueue.main.async {
-                self.checking = false
-                var decorated = updated
-                for index in decorated.indices {
-                    if let previous = self.mounts.first(where: { $0.path == decorated[index].path }),
-                       previous.health == .unavailable, decorated[index].health == .connected {
-                        decorated[index].health = .reconnected
-                    }
-                }
-                self.mounts = decorated
-                self.onMountsChanged?(decorated)
+                        try Self.shared.mount(candidate)
+                        return true
+                    } catch { return false }
+                }.value
+                autoFailCount[key] = result ? 0 : (autoFailCount[key] ?? 0) + 1
+                recovery = nil
+                if result { checkNow() }
             }
         }
-    }
-
-    /// Deadline-bounded filesystem probe. `false` also covers wedged mounts
-    /// whose stat never returns inside the timeout.
-    static func probe(_ path: String, timeout: TimeInterval) -> Bool {
-        // A timed-out stat may remain in the kernel. Reserve its path until
-        // return and cap all such work, instead of leaking a new probe each tick.
-        probeLock.lock()
-        guard !activeProbes.contains(path), activeProbes.count < 4 else { probeLock.unlock(); return false }
-        activeProbes.insert(path); probeLock.unlock()
-        let semaphore = DispatchSemaphore(value: 0)
-        final class Result {
-            var reachable = false
-        }
-        let result = Result()
-        DispatchQueue.global(qos: .utility).async {
-            var status = stat()
-            result.reachable = stat(path, &status) == 0
-            probeLock.lock(); activeProbes.remove(path); probeLock.unlock()
-            semaphore.signal()
-        }
-        if semaphore.wait(timeout: .now() + timeout) == .timedOut {
-            return false
-        }
-        return result.reachable
-    }
-
-    /// After wake, allow an immediate auto-remount attempt again: SMB sessions
-    /// usually die during sleep, so the next check should not wait out the
-    /// per-share backoff.
-    func retryAfterWake() {
-        lastAutoAttempt.removeAll()
+        return (response as? JSON)?["next_seconds"] as? Int ?? 90
     }
 
     // MARK: - Known-share self-heal
 
-    private var autoFailCount: [String: Int] = [:]
-    private var lastAutoAttempt: [String: Date] = [:]
+    @MainActor private var autoFailCount: [String: Int] = [:]
+    @MainActor private var lastAutoAttempt: [String: Date] = [:]
+    @MainActor private var recovery: Task<Void, Never>?
 
     /// Stable identity for a share whether or not it is currently mounted:
     /// `user@host/share` (user omitted when the mount has none).
@@ -205,58 +222,23 @@ final class SmbMonitor {
     /// Persists every share seen mounted, so one that disappears can be
     /// mounted again automatically. Empty lists are ignored so an offline
     /// stretch never wipes the memory.
-    private func rememberShares(_ mounts: [SmbMount]) {
-        let seen = Set(mounts.map { SmbMonitor.shareKey($0) })
-        guard !seen.isEmpty else { return }
-        PrefStore.shared.update { preferences in
-            var known = preferences.knownSmbShares
-            let before = known.count
-            for key in seen where !known.contains(key) { known.append(key) }
-            if known.count != before { preferences.knownSmbShares = known }
-        }
+    @MainActor private func rememberShares(_ mounts: [SmbMount]) {
+        let known = PrefStore.shared.preferences.knownSmbShares
+        let additions = Set(mounts.map { Self.shareKey($0) }).subtracting(known)
+        guard !additions.isEmpty else { return }
+        PrefStore.shared.update { $0.knownSmbShares += additions.sorted() }
     }
 
-    /// Known shares missing from the mount list whose server answers on port
-    /// 445. Safe-retry policy, matching the original babysitter: at most one
-    /// attempt per minute per share, and at most three consecutive failures
-    /// before the share waits for a manual remount to reset the counter.
-    func droppedShares(current: [SmbMount]) -> [SmbMount] {
-        let mounted = Set(current.map { SmbMonitor.shareKey($0) })
-        var hostsUp: [String: Bool] = [:]
-        var candidates: [SmbMount] = []
-        for key in PrefStore.shared.preferences.knownSmbShares where !mounted.contains(key) {
-            guard let parts = SmbMonitor.parseShareKey(key) else { continue }
-            if (autoFailCount[key] ?? 0) >= 3 { continue }
-            if let last = lastAutoAttempt[key], Date().timeIntervalSince(last) < 60 { continue }
-            if hostsUp[parts.host] == nil { hostsUp[parts.host] = SmbMonitor.hostUp(parts.host, timeout: 3) }
-            guard hostsUp[parts.host] == true else { continue }
-            candidates.append(SmbMount(path: "", host: parts.host, share: parts.share, user: parts.user))
+    @MainActor private func droppedShares(current: [SmbMount]) -> [SmbMount] {
+        let prefs = PrefStore.shared.preferences
+        guard prefs.autoRemount else { return [] }
+        let mounted = Set(current.map { Self.shareKey($0) })
+        return prefs.knownSmbShares.compactMap { key in
+            guard !mounted.contains(key), let parts = Self.parseShareKey(key),
+                  (autoFailCount[key] ?? 0) < 3,
+                  lastAutoAttempt[key].map({ Date().timeIntervalSince($0) >= 60 }) ?? true else { return nil }
+            return SmbMount(path: "", host: parts.host, share: parts.share, user: parts.user)
         }
-        return candidates
-    }
-
-    /// TCP 445 reachability so an offline server never spawns mount attempts
-    /// every cycle.
-    static func hostUp(_ host: String, timeout: TimeInterval) -> Bool {
-        let semaphore = DispatchSemaphore(value: 0)
-        var up = false
-        let connection = NWConnection(host: NWEndpoint.Host(host), port: 445, using: .tcp)
-        connection.stateUpdateHandler = { state in
-            switch state {
-            case .ready:
-                up = true
-                connection.cancel()
-                semaphore.signal()
-            case .failed, .cancelled:
-                semaphore.signal()
-            default:
-                break
-            }
-        }
-        connection.start(queue: .global(qos: .utility))
-        _ = semaphore.wait(timeout: .now() + timeout)
-        connection.cancel()
-        return up
     }
 
     // MARK: - Finder blank-folder fix (nsmb.conf)

@@ -44,7 +44,7 @@ def save_settings(name, value):
 def core(action, **fields):
     binary = os.environ.get("MYDRIVE_CORE", str(ROOT / "mydrive-core"))
     resumable = action in {"upload", "download"} and fields.get("bookmark", {}).get("protocol") == "smb"
-    timeout = 11 * 60 if action == "update.install" else None if resumable else 180
+    timeout = 11 * 60 if action == "update.install" else 8 if action == "smb.health" else None if resumable else 180
     process = subprocess.run(
         [binary], input=json.dumps({"action": action, "data_dir": str(DATA), **fields}),
         capture_output=True, encoding="utf-8", timeout=timeout,

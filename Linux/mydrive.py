@@ -37,7 +37,8 @@ class MyDrive(Gtk.Application):
         self.sync.config_path = self.preferences.get("syncthing_config", "")
         self.activity = read_settings("activity.json", [])
         self.snapshot = {}
-        self.lanes = {key: ThreadPoolExecutor(max_workers=1) for key in ("sync", "blip", "storage", "updates", "settings")}
+        self.lanes = {key: ThreadPoolExecutor(max_workers=1)
+                      for key in ("sync", "blip", "storage", "smb-health", "updates", "settings")}
         self.pending = {key: 0 for key in self.lanes}
         self.window = None
         self.browse = None
@@ -104,7 +105,7 @@ class MyDrive(Gtk.Application):
             title = titles[dropdown.get_selected()]
             self.stack.set_visible_child_name(title)
             if title == "SMB Storage" and not self.fixture:
-                self.storage_view.load()
+                self.storage_view.check_now("view")
             if title == "Settings" and not self.fixture:
                 self.change_startup("startup.status")
         view.connect("notify::selected", show_view)
@@ -119,15 +120,17 @@ class MyDrive(Gtk.Application):
         self.tray = Tray(self.window, ROOT / f"{APP_ID}.png")
         self.refresh_sync()
         self.storage_view.load()
+        self.storage_view.start_monitor()
         self.transfer_view.refresh()
         self.tick_updates()
         GLib.timeout_add_seconds(6 * 60 * 60, self.tick_updates)
         GLib.timeout_add_seconds(8, self.tick_sync)
         GLib.timeout_add_seconds(2, self.tick_blip)
-        GLib.timeout_add_seconds(15, self.tick_storage)
 
     def do_shutdown(self):
         self.stopping = True
+        if self.window:
+            self.storage_view.stop_monitor()
         self.lanes["blip"].submit(self.blip.stop)
         for worker in self.lanes.values():
             worker.shutdown(wait=False)
@@ -140,11 +143,6 @@ class MyDrive(Gtk.Application):
 
     def tick_blip(self):
         self.transfer_view.refresh(quiet=True)
-        return not self.stopping
-
-    def tick_storage(self):
-        if self.stack.get_visible_child_name() == "SMB Storage" and self.storage_view.current is None:
-            self.storage_view.load()
         return not self.stopping
 
     def tick_updates(self):

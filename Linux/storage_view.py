@@ -1,8 +1,10 @@
 """Storage bookmarks and the native GNOME virtual file system SMB adapter."""
 
+import json
 import subprocess
 import tempfile
 from pathlib import Path
+from time import monotonic
 from urllib.parse import quote, urlsplit
 from uuid import uuid4
 
@@ -31,6 +33,34 @@ def smb_file(bookmark, relative=""):
     return file.resolve_relative_path(relative) if relative else file
 
 
+def cifs_mounts():
+    # Read the kernel mount table without resolving a possibly stalled network path.
+    try:
+        result = subprocess.run(
+            ["findmnt", "--json", "--list", "--types", "cifs,smb3", "--output", "SOURCE,TARGET"],
+            capture_output=True, text=True, timeout=2,
+        )
+        return json.loads(result.stdout).get("filesystems", []) if result.returncode == 0 else []
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return []
+
+
+def health_targets(bookmarks):
+    mounts = cifs_mounts() if any(bookmark.get("mount_path") for bookmark in bookmarks) else []
+    for bookmark in bookmarks:
+        probe = {"kind": "host", "value": bookmark["host"]}
+        if mount_path := bookmark.get("mount_path"):
+            path = Path(mount_path)
+            expected = f"//{bookmark['host']}/{bookmark['path'].strip('/')}".casefold()
+            if path.is_absolute() and any(
+                mount["source"].casefold() == expected
+                and (path == Path(mount["target"]) or Path(mount["target"]) in path.parents)
+                for mount in mounts
+            ):
+                probe = {"kind": "path", "value": mount_path}
+        yield {"id": bookmark["id"], "probe": probe}
+
+
 class StorageView:
     def __init__(self, app, page):
         self.app = app
@@ -40,6 +70,103 @@ class StorageView:
         self.tail_devices = []
         self.current = None
         self.path = ""
+        self.health = {}
+        self.health_labels = {}
+        self.health_timer = 0
+        self.trigger = "periodic"
+        self.next_inventory = 0
+        self.monitor_handlers = []
+        self.wake_bus = None
+        self.wake_subscription = 0
+
+    def start_monitor(self):
+        network = Gio.NetworkMonitor.get_default()
+        self.monitor_handlers.append((network, network.connect(
+            "network-changed", lambda *_: self.check_now("network"))))
+        volumes = Gio.VolumeMonitor.get()
+        for signal in ("mount-added", "mount-removed"):
+            self.monitor_handlers.append((volumes, volumes.connect(signal, lambda *_: self.check_now("mount"))))
+        Gio.bus_get(Gio.BusType.SYSTEM, None, self.watch_wake, None)
+        self.check_now("periodic")
+
+    def watch_wake(self, _source, result, _data):
+        try:
+            bus = Gio.bus_get_finish(result)
+        except GLib.Error:
+            return
+        if self.app.stopping:
+            return
+        self.wake_bus = bus
+        self.wake_subscription = bus.signal_subscribe(
+            "org.freedesktop.login1", "org.freedesktop.login1.Manager", "PrepareForSleep",
+            "/org/freedesktop/login1", None, Gio.DBusSignalFlags.NONE, self.wake_received,
+        )
+
+    def wake_received(self, _connection, _sender, _path, _interface, _signal, parameters, *_):
+        if parameters.unpack() == (False,):
+            self.check_now("wake")
+
+    def stop_monitor(self):
+        if self.health_timer:
+            GLib.source_remove(self.health_timer)
+            self.health_timer = 0
+        for monitor, handler in self.monitor_handlers:
+            monitor.disconnect(handler)
+        if self.wake_subscription:
+            self.wake_bus.signal_unsubscribe(self.wake_subscription)
+
+    def check_now(self, trigger):
+        if self.app.stopping:
+            return
+        if trigger != "periodic":
+            self.trigger = trigger
+        if not self.app.pending["smb-health"]:
+            self.schedule_health(2 if trigger in {"wake", "network"} else 1)
+
+    def schedule_health(self, seconds):
+        if self.health_timer:
+            GLib.source_remove(self.health_timer)
+        self.health_timer = GLib.timeout_add_seconds(seconds, self.check_health)
+
+    def check_health(self):
+        self.health_timer = 0
+        trigger, self.trigger = self.trigger, "periodic"
+        if self.app.stack.get_visible_child_name() == "SMB Storage" and (
+            trigger != "periodic" or monotonic() >= self.next_inventory
+        ):
+            self.load()
+        bookmarks = [bookmark for bookmark in self.bookmarks if bookmark["protocol"] == "smb"]
+        if not bookmarks:
+            self.health = {}
+            self.schedule_health(90)
+            return GLib.SOURCE_REMOVE
+
+        def check():
+            return core("smb.health", payload={
+                "trigger": trigger, "targets": list(health_targets(bookmarks)), "previous": self.health,
+            })
+
+        def done(result):
+            self.health = result["states"]
+            if self.current is None:
+                for bookmark in bookmarks:
+                    if label := self.health_labels.get(bookmark["id"]):
+                        self.set_health_label(label, bookmark)
+            self.schedule_health(result["next_seconds"] if self.trigger == "periodic" else 2)
+
+        self.app.work("smb-health", "Check SMB shares", check, done, quiet=True,
+                      on_error=lambda _: self.schedule_health(90 if self.trigger == "periodic" else 2))
+        return GLib.SOURCE_REMOVE
+
+    def set_health_label(self, widget, bookmark):
+        status = self.health.get(bookmark["id"], {}).get("status")
+        title = {
+            "connected": "Connected", "server_reachable": "Server reachable",
+            "access_denied": "Access denied", "unavailable": "Unavailable",
+        }.get(status, "Checking…")
+        text = f"{bookmark['host']} · {title}"
+        widget.set_label(text)
+        widget.set_tooltip_text(text)
 
     def load(self):
         def inventory():
@@ -50,10 +177,14 @@ class StorageView:
             return core("bookmarks.load"), list_private_shares(), devices
 
         def done(inventory):
+            bookmarks_changed = self.bookmarks != inventory[0]
+            self.next_inventory = monotonic() + 90
             if (self.bookmarks, self.shared_here, self.tail_devices) != inventory or not self.page.get_first_child():
                 self.bookmarks, self.shared_here, self.tail_devices = inventory
                 if self.current is None:
                     self.render_bookmarks()
+            if bookmarks_changed:
+                self.check_now("mount")
 
         self.app.work("storage", "Read SMB shares", inventory, done, quiet=True,
                       on_error=self.app.announce)
@@ -62,6 +193,7 @@ class StorageView:
         self.current = None
         self.path = ""
         clear(self.page)
+        self.health_labels.clear()
         self.page.append(row("Shared from this computer", "", button("Share folder…", lambda: self.app.files(
             "Choose a folder to share", Gtk.FileChooserAction.SELECT_FOLDER, lambda paths: self.app.smb_share_folder(paths[0])))))
         for share in self.shared_here:
@@ -83,8 +215,12 @@ class StorageView:
         for bookmark in shares:
             choices = [("Connect share…", lambda b=bookmark: self.mount(b)),
                        ("Remove…", lambda b=bookmark: self.remove(b))]
-            self.page.append(row(bookmark["nickname"], bookmark["host"],
-                                 button("Browse", lambda b=bookmark: self.browse(b, "")), menu(choices)))
+            share_row = row(bookmark["nickname"], bookmark["host"],
+                            button("Browse", lambda b=bookmark: self.browse(b, "")), menu(choices))
+            detail = share_row.get_first_child().get_last_child()
+            self.health_labels[bookmark["id"]] = detail
+            self.set_health_label(detail, bookmark)
+            self.page.append(share_row)
 
     def stop_share(self, share):
         name = share["name"]
@@ -189,6 +325,7 @@ class StorageView:
     def replace(self, items):
         self.bookmarks = items
         self.render_bookmarks()
+        self.check_now("mount")
 
     def remove(self, bookmark):
         def remove():

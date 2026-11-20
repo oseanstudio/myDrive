@@ -65,9 +65,10 @@ struct ConnectionsView: View {
                 }
             }
             .task {
+                SmbMonitor.shared.checkNow("view")
                 while !Task.isCancelled {
                     await app.refreshSmbInventory()
-                    try? await Task.sleep(for: .seconds(15))
+                    try? await Task.sleep(for: .seconds(90))
                 }
             }
         }
@@ -163,7 +164,7 @@ struct BookmarkRow: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .help(bookmark.location)
-                Text("\(bookmark.protocolName) · Ready")
+                Text("\(bookmark.protocolName) · \(app.smbBookmarkHealth[bookmark.id] ?? "Checking…")")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)

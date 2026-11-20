@@ -7,6 +7,7 @@ mod relay;
 mod s3;
 mod sftp;
 mod smb_copy;
+mod smb_health;
 mod startup;
 mod storage;
 mod syncthing;
@@ -79,6 +80,7 @@ fn execute(r: Request) -> Result<Value, String> {
     match r.action.as_str() {
         "version" => return Ok(json!({"name":"myDrive","version":env!("CARGO_PKG_VERSION")})),
         "smb.devices" => return automation::smb_action("devices", &json!({})),
+        "smb.health" => return smb_health::check(r.payload),
         "startup.status" => return startup::status(),
         "startup.enable" | "startup.disable" => {
             startup::set_enabled(r.action == "startup.enable")?;
@@ -177,6 +179,9 @@ fn execute(r: Request) -> Result<Value, String> {
 fn main() {
     let mut arguments = std::env::args_os().skip(1);
     if let Some(command) = arguments.next() {
+        if command == "--smb-health-probe" {
+            std::process::exit(smb_health::probe_worker(arguments));
+        }
         if command == "--finish-desktop-update" {
             if let Some(plan) = arguments.next() {
                 desktop_update::finish(Path::new(&plan));

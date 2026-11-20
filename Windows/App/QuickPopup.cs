@@ -215,7 +215,7 @@ public sealed partial class MainWindow
     private void RenderQuickConnections()
     {
         if(bookmarks.Count(b=>b.protocol=="smb")>4||search.Length>0){var filter=new AutoSuggestBox{PlaceholderText="Find SMB shares",Text=search,FontSize=12};filter.TextChanged+=(_,_)=>{search=filter.Text;RenderConnectionList();};page.Children.Add(filter);}
-        connectionsPanel=new StackPanel{Spacing=0};page.Children.Add(connectionsPanel);RenderQuickConnectionList();
+        connectionsPanel=new StackPanel{Spacing=0};page.Children.Add(connectionsPanel);RenderConnectionList();
     }
     private void RenderQuickFiles()
     {
@@ -245,7 +245,7 @@ public sealed partial class MainWindow
         foreach(var b in bookmarks.Where(b=>b.protocol=="smb" && (b.nickname+" "+b.host).Contains(search,StringComparison.OrdinalIgnoreCase)))
         {
             var row=new Grid{ColumnSpacing=4};row.ColumnDefinitions.Add(new(){Width=new GridLength(1,GridUnitType.Star)});row.ColumnDefinitions.Add(new(){Width=GridLength.Auto});
-            var details=new StackPanel{Spacing=1};details.Children.Add(QuickText(b.nickname,13,true));var state=health.GetValueOrDefault(b.id,"Ready");var note=QuickText(b.ProtocolName+" · "+state,11);note.Foreground=state=="Unavailable"?new SolidColorBrush(colorTheme==ElementTheme.Dark?Colors.LightCoral:Colors.Firebrick):Brush("TextFillColorSecondaryBrush");details.Children.Add(note);
+            var details=new StackPanel{Spacing=1};details.Children.Add(QuickText(b.nickname,13,true));details.Children.Add(CreateSmbHealthLabel(b,11));
             var open=QuickButton("",()=>_=Browse(b));open.Content=details;open.HorizontalAlignment=HorizontalAlignment.Stretch;open.HorizontalContentAlignment=HorizontalAlignment.Stretch;open.Padding=new Thickness(3,1,3,1);open.Background=new SolidColorBrush(Colors.Transparent);open.BorderThickness=new Thickness(0);ToolTipService.SetToolTip(open,b.Location);AutomationProperties.SetName(open,"Browse "+b.nickname);row.Children.Add(open);
             var more=QuickIcon("\uE712","Actions for "+b.nickname,()=>{});var menu=new MenuFlyout();MenuAction(menu,"Open in Explorer",()=>OpenExplorer(b));MenuAction(menu,"Remove saved share",()=>_=DeleteBookmark(b));more.Flyout=menu;Grid.SetColumn(more,1);row.Children.Add(more);connectionsPanel.Children.Add(QuickRow(row));
         }
