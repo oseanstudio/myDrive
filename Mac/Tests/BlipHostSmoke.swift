@@ -1,3 +1,4 @@
+import AppKit
 import Darwin
 import Foundation
 
@@ -17,6 +18,7 @@ typealias JSON = [String: Any]
             return
         }
         let fm = FileManager.default
+        precondition(NSRunningApplication.runningApplications(withBundleIdentifier: BlipMacEngine.bundleID).isEmpty)
         try fm.createDirectory(at: cache, withIntermediateDirectories: true)
         try fm.createDirectory(at: storage, withIntermediateDirectories: true)
         func start() throws -> (Process, Pipe) {
@@ -65,6 +67,7 @@ typealias JSON = [String: Any]
         precondition(!first.0.isRunning && first.0.terminationStatus == 0)
         precondition(second.0.isRunning)
         try poll()
+        precondition(NSRunningApplication.runningApplications(withBundleIdentifier: BlipMacEngine.bundleID).isEmpty)
         print("Native engine starts without the UI, serves the local socket, and hands over after EOF")
     }
 }

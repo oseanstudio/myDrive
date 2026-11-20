@@ -8,7 +8,7 @@ enum BlipRPCError: LocalizedError {
     case unavailable, invalid, rejected, limit
     var errorDescription: String? {
         switch self {
-        case .unavailable: return "Open and sign in to desktop Blip on this Mac. Its local connection is unavailable."
+        case .unavailable: return "The Blip connection is unavailable. Refresh Send & Receive to try again."
         case .invalid: return "Blip returned an unsupported local response. Automatic actions are disabled."
         case .rejected: return "Blip did not confirm this request. Refresh before retrying."
         case .limit: return "Blip's local response exceeded its size or time limit."

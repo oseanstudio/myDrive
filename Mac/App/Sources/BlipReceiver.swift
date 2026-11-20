@@ -9,9 +9,9 @@ enum BlipReceiverError: LocalizedError {
 
 extension Notification.Name { static let myDriveIncomingBlip = Notification.Name("io.mydrive.blip.incoming") }
 
-/// Reads desktop Blip through its same-user local socket. No account files or directory watchers.
+/// Uses the same-user local socket served by the headless helper or an existing Blip session.
 @MainActor final class BlipReceiver: ObservableObject {
-    @Published var state = "Waiting for desktop Blip"
+    @Published var state = "Connecting to Blip…"
     @Published var peers: [BlipPeer] = []
     @Published var transfers: [BlipTransfer] = []
     @Published var problem: String?
@@ -39,7 +39,6 @@ extension Notification.Name { static let myDriveIncomingBlip = Notification.Name
     private var backgroundFailure: String?
     private var nextHostAttempt = Date.distantPast
     private var hostStartedAt = Date.distantPast
-    private var fallbackStartedAt = Date.distantPast
     private var selfPeer = ""
     private var connectedPeers = Set<String>()
     private var relayReceived: [String: BlipTransfer] = [:]
@@ -200,7 +199,7 @@ extension Notification.Name { static let myDriveIncomingBlip = Notification.Name
                 self.backgroundProcess = nil
                 try? self.backgroundInput?.close()
                 self.backgroundInput = nil
-                let failure: BlipMacEngine = status == 21 ? .version : status == 22 ? .profile : status == 20 ? .missing : .launch
+                let failure = BlipMacEngine(rawValue: status) ?? .launch
                 self.backgroundFailure = self.backgroundEnabled ? failure.localizedDescription : nil
                 self.nextHostAttempt = self.backgroundEnabled ? Date().addingTimeInterval(30) : .distantPast
             }
@@ -214,29 +213,12 @@ extension Notification.Name { static let myDriveIncomingBlip = Notification.Name
         } catch { backgroundFailure = BlipMacEngine.launch.localizedDescription }
     }
 
-    private func launchDesktopInBackground() {
-        guard backgroundEnabled, !adapterAvailable, let app = desktopAppURL,
-              NSRunningApplication.runningApplications(withBundleIdentifier: BlipMacEngine.bundleID).isEmpty,
-              fallbackStartedAt == .distantPast else { return }
-        fallbackStartedAt = Date()
-        let options = NSWorkspace.OpenConfiguration()
-        options.activates = false
-        options.hides = true
-        options.addsToRecentItems = false
-        NSWorkspace.shared.openApplication(at: app, configuration: options) { [weak self] _, error in
-            if error != nil {
-                Task { @MainActor in self?.backgroundFailure = "macOS could not launch Blip in the background." }
-            }
-        }
-    }
-
     func prepareSend(_ action: @escaping () -> Void, onUnavailable: @escaping () -> Void = {}) {
         guard !sending, !preparingSend else { onUnavailable(); return }
         if connected && adapterAvailable { action(); return }
         preparingSend = true
         reportSend("Connecting to Blip…")
         if !adapterAvailable && backgroundProcess == nil { nextHostAttempt = .distantPast }
-        fallbackStartedAt = .distantPast
         Task {
             defer { preparingSend = false }
             let deadline = Date().addingTimeInterval(35)
@@ -248,7 +230,7 @@ extension Notification.Name { static let myDriveIncomingBlip = Notification.Name
                     return
                 }
                 if desktopAppURL == nil || state == "Sign in in desktop Blip" { break }
-                if !backgroundEnabled && !adapterAvailable { break }
+                if !adapterAvailable && (!backgroundEnabled || backgroundFailure != nil) { break }
                 try? await Task.sleep(for: .milliseconds(500))
             } while Date() < deadline && !Task.isCancelled
             onUnavailable()
@@ -266,7 +248,6 @@ extension Notification.Name { static let myDriveIncomingBlip = Notification.Name
         PrefStore.shared.update { $0.blipBackgroundReceiving = enabled }
         nextHostAttempt = .distantPast
         backgroundFailure = nil
-        fallbackStartedAt = .distantPast
         if !enabled { stopBackground() }
         Task { await refresh() }
     }
@@ -290,10 +271,13 @@ extension Notification.Name { static let myDriveIncomingBlip = Notification.Name
                 stopBackground()
                 backgroundFailure = BlipMacEngine.launch.localizedDescription
             }
-            if !starting && backgroundFailure != nil { launchDesktopInBackground() }
-            let launchingDesktop = Date().timeIntervalSince(fallbackStartedAt) < 15
-            state = starting || launchingDesktop ? "Starting Blip in the background…" : "Blip is unavailable"
-            problem = starting || launchingDesktop ? nil : backgroundFailure
+            if starting {
+                state = "Starting Blip in the background…"
+                problem = nil
+            } else {
+                state = backgroundEnabled ? "Blip background service is unavailable" : "Blip background service is off"
+                problem = backgroundFailure
+            }
             session = ""; selfPeer = ""; setActivity(false)
             return
         }

@@ -5,14 +5,8 @@ import AppKit
 let arguments = CommandLine.arguments
 if arguments.count == 3, arguments[1] == "--blip-background-engine" {
     do { try BlipMacEngine.runInstalled(appPath: arguments[2]) }
-    catch let failure as BlipMacEngine {
-        switch failure {
-        case .missing: exit(20)
-        case .version: exit(21)
-        case .profile: exit(22)
-        case .launch: exit(23)
-        }
-    } catch { exit(23) }
+    catch let failure as BlipMacEngine { exit(failure.rawValue) }
+    catch { exit(BlipMacEngine.launch.rawValue) }
     exit(0)
 }
 if let index = arguments.firstIndex(of: "--diagnose-layout"),index+1<arguments.count {

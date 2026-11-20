@@ -2,15 +2,20 @@ import CryptoKit
 import Darwin
 import Foundation
 
-enum BlipMacEngine: LocalizedError {
-    case missing, version, profile, launch
+enum BlipMacEngine: Int32, LocalizedError {
+    case missing = 20
+    case version = 21
+    case profile = 22
+    case launch = 23
+    case permission = 24
 
     var errorDescription: String? {
         switch self {
         case .missing: return "Install Blip for Mac and sign in once."
-        case .version: return "This Blip version needs the desktop session for compatibility."
-        case .profile: return "Open Blip and sign in once. Allow access to its local data if macOS asks."
+        case .version: return "This Blip version is unsupported by the background service."
+        case .profile: return "Use Open Blip to sign in once, then refresh Send & Receive."
         case .launch: return "The native background Blip engine could not start."
+        case .permission: return "myDrive needs permission to access Blip’s local data. Allow access if macOS asks, then refresh Send & Receive."
         }
     }
 
@@ -35,7 +40,10 @@ enum BlipMacEngine: LocalizedError {
 
     private static func checkProfile(_ profile: URL) throws {
         let descriptor = Darwin.open(profile.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
-        guard descriptor >= 0 else { throw Self.profile }
+        guard descriptor >= 0 else {
+            let failure = errno
+            throw failure == EACCES || failure == EPERM ? Self.permission : Self.profile
+        }
         defer { Darwin.close(descriptor) }
         var state = stat()
         guard fstat(descriptor, &state) == 0, state.st_uid == geteuid(),
