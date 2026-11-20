@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=myDrive
+Comment=Browse storage, sync folders and send files
+Exec=myDrive
+Icon=net.oseanstudio.myDrive
+Terminal=false
+Type=Application
+Categories=Utility;FileTools;Network;

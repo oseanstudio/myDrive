@@ -1,0 +1,4 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net8.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable></PropertyGroup>
+  <ItemGroup><Compile Include="../../Windows/App/BlipModels.cs" Link="BlipModels.cs"/><Compile Include="../../Windows/App/BlipTrustPolicy.cs" Link="BlipTrustPolicy.cs"/><Compile Include="../../Windows/App/BlipReceiveLedger.cs" Link="BlipReceiveLedger.cs"/><Compile Include="../../Windows/App/BlipSenderCatalog.cs" Link="BlipSenderCatalog.cs"/><Compile Include="../../Windows/App/BlipReceivedFiles.cs" Link="BlipReceivedFiles.cs"/></ItemGroup>
+</Project>

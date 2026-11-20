@@ -1,0 +1,247 @@
+import AppKit
+import Darwin
+
+struct BlipSendPayload {
+    let files: [URL]
+    let description: String
+    var stagingDirectory: URL? = nil
+
+    func discard() {
+        guard let stagingDirectory else { return }
+        for file in files where file.deletingLastPathComponent() == stagingDirectory {
+            try? FileManager.default.removeItem(at: file)
+        }
+        // The directory can only be removed while empty.
+        _ = rmdir(stagingDirectory.path)
+    }
+
+    @MainActor static func clipboard(_ clipboard: NSPasteboard, outbox: URL) throws -> Self {
+        let options: [NSPasteboard.ReadingOptionKey: Any] = [.urlReadingFileURLsOnly: true]
+        let files = (clipboard.readObjects(forClasses: [NSURL.self], options: options) as? [URL] ?? [])
+            .filter { $0.isFileURL && ($0.host ?? "").isEmpty }
+        if !files.isEmpty { return forFiles(files) }
+        if let text = clipboard.string(forType: .URL) ?? clipboard.string(forType: .string), !text.isEmpty {
+            return try textPayload(text, outbox: outbox)
+        }
+        if let data = clipboard.data(forType: .png) {
+            return try stage(data, name: "Clipboard image.png", description: "Image from clipboard", outbox: outbox)
+        }
+        if let tiff = clipboard.data(forType: .tiff) {
+            return try stage(tiff, name: "Clipboard image.tiff", description: "Image from clipboard", outbox: outbox)
+        }
+        throw BlipReceiverError.message("Copy a file, folder, image, web link or text first.")
+    }
+
+    static func forFiles(_ files: [URL]) -> Self {
+        Self(files: files, description: files.count == 1 ? files[0].lastPathComponent : "\(files.count) files or folders")
+    }
+
+    static func textPayload(_ text: String, outbox: URL) throws -> Self {
+        let lines = text.split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+        let links = lines.prefix(17).compactMap { link -> URL? in
+            guard link.utf8.count <= 8192, !link.contains(where: \.isWhitespace),
+           link.rangeOfCharacter(from: .controlCharacters) == nil, !link.contains("\\"),
+           let url = URL(string: link), ["http", "https"].contains(url.scheme?.lowercased() ?? ""),
+           let host = url.host, !host.isEmpty, url.user == nil, url.password == nil else { return nil }
+            return url
+        }
+        if !links.isEmpty, links.count <= 16, links.count == lines.count {
+            let items = links.enumerated().map { index, link in
+                let name = links.count == 1 ? "Clipboard link.url" : String(format: "Clipboard link %02d.url", index + 1)
+                return (name, Data("[InternetShortcut]\r\nURL=\(link.absoluteString)\r\n".utf8))
+            }
+            return try stage(items, description: links.count == 1 ? "Web link from clipboard" : "\(links.count) web links from clipboard", outbox: outbox)
+        }
+        return try stage(Data(text.utf8), name: "Clipboard text.txt", description: "Text from clipboard", outbox: outbox)
+    }
+
+    private static func stage(_ data: Data, name: String, description: String, outbox: URL) throws -> Self {
+        try stage([(name, data)], description: description, outbox: outbox)
+    }
+
+    private static func stage(_ items: [(String, Data)], description: String, outbox: URL) throws -> Self {
+        let directory = outbox.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let files = items.map { directory.appendingPathComponent($0.0) }
+        let payload = Self(files: files, description: description, stagingDirectory: directory)
+        do { for (item, file) in zip(items, files) { try item.1.write(to: file, options: .atomic) } }
+        catch { payload.discard(); throw error }
+        return payload
+    }
+}
+
+@MainActor extension BlipReceiver {
+    func chooseFilesToSend() {
+        prepareSend { self.pickFilesForRecipient() }
+    }
+
+    private func pickFilesForRecipient() {
+        guard let peer = chooseRecipient(description: "Click a device to choose what to send.") else { return }
+        let picker = NSOpenPanel()
+        picker.title = "Send with Blip"
+        picker.message = "Send to \(recipientLabel(peer))"
+        picker.prompt = "Choose"
+        picker.canChooseFiles = true
+        picker.canChooseDirectories = true
+        picker.allowsMultipleSelection = true
+        picker.treatsFilePackagesAsDirectories = true
+        guard picker.runModal() == .OK, !picker.urls.isEmpty else { return }
+        send(.forFiles(picker.urls), to: peer)
+    }
+
+    func pasteAndSend() {
+        do {
+            let payload = try BlipSendPayload.clipboard(.general, outbox: outboxDirectory)
+            sendPrepared(payload)
+        }
+        catch { reportSend(error.localizedDescription) }
+    }
+
+    func sendDropped(_ urls: [URL]) {
+        sendPrepared(.forFiles(urls))
+    }
+
+    private func sendPrepared(_ payload: BlipSendPayload) {
+        prepareSend({ self.chooseRecipientAndSend(payload) }, onUnavailable: { payload.discard() })
+    }
+
+    private func chooseRecipientAndSend(_ payload: BlipSendPayload) {
+        guard let peer = chooseRecipient(description: "\(payload.description)\nClick a device to send.") else {
+            payload.discard()
+            return
+        }
+        send(payload, to: peer)
+    }
+
+    private func canChooseRecipient() -> Bool {
+        guard connected, !sending, !recipients.isEmpty else {
+            reportSend("Connect to Blip and wait for a recipient device to appear in Send & Receive.")
+            return false
+        }
+        return true
+    }
+
+    private func chooseRecipient(description: String) -> BlipPeer? {
+        guard canChooseRecipient() else { return nil }
+        var choices = recipients
+        let owner = account
+        let picker = BlipRecipientPicker(labels: choices.map { recipientLabel($0) }, description: description,
+            rename: { index in
+                guard self.account == owner, let updated = self.rename(choices[index]) else { return nil }
+                choices[index] = updated
+                return self.recipientLabel(updated)
+            })
+        picker.dialog.window.appearance = AppDelegate.appearance(for: PrefStore.shared.preferences.appearance)
+        guard let selected = picker.run(), choices.indices.contains(selected) else { return nil }
+        return choices[selected]
+    }
+}
+
+@MainActor final class BlipRecipientTable: NSTableView {
+    var activateRow: ((Int) -> Void)?
+
+    override func keyDown(with event: NSEvent) {
+        if selectedRow >= 0, [36, 49, 76].contains(event.keyCode) {
+            activateRow?(selectedRow)
+        } else {
+            super.keyDown(with: event)
+        }
+    }
+}
+
+@MainActor final class BlipRecipientPicker: NSObject, NSTableViewDataSource, NSTableViewDelegate {
+    let dialog = NSAlert()
+    let table = BlipRecipientTable()
+    private var labels: [String]
+    private var chosenRow: Int?
+    private let rename: ((Int) -> String?)?
+
+    init(labels: [String], description: String, rename: ((Int) -> String?)? = nil) {
+        self.labels = labels
+        self.rename = rename
+        super.init()
+        dialog.messageText = "Send with Blip"
+        dialog.informativeText = description
+        dialog.addButton(withTitle: "Cancel").keyEquivalent = "\u{1b}"
+
+        table.setAccessibilityLabel("Recipient devices")
+        table.headerView = nil
+        table.rowHeight = 32
+        table.allowsMultipleSelection = false
+        table.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
+        let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("recipient"))
+        column.width = 326
+        table.addTableColumn(column)
+        table.dataSource = self
+        table.delegate = self
+        table.activateRow = { [weak self] row in self?.activate(row) }
+
+        let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 340, height: CGFloat(min(labels.count, 6) * 34 + 4)))
+        scroll.borderType = .bezelBorder
+        scroll.hasVerticalScroller = true
+        scroll.autohidesScrollers = true
+        scroll.documentView = table
+        dialog.accessoryView = scroll
+        table.reloadData()
+    }
+
+    func run() -> Int? {
+        chosenRow = nil
+        dialog.window.initialFirstResponder = table
+        return dialog.runModal() == .OK ? chosenRow : nil
+    }
+
+    func numberOfRows(in tableView: NSTableView) -> Int { labels.count }
+
+    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        let label = labels[row]
+        let cell = NSTableCellView()
+        let send = NSButton(title: label, target: self, action: #selector(choseDevice(_:)))
+        send.isBordered = false
+        send.alignment = .left
+        send.font = .systemFont(ofSize: 12)
+        send.lineBreakMode = .byTruncatingTail
+        send.tag = row
+        send.toolTip = label
+        send.setAccessibilityLabel("Send to " + label)
+        send.translatesAutoresizingMaskIntoConstraints = false
+        cell.addSubview(send)
+        let edit = NSButton(title: "", target: self, action: #selector(renameDevice(_:)))
+        edit.image = NSImage(systemSymbolName: "pencil", accessibilityDescription: nil)
+        edit.isBordered = false
+        edit.tag = row
+        edit.toolTip = "Rename " + label
+        edit.setAccessibilityLabel("Rename " + label)
+        edit.translatesAutoresizingMaskIntoConstraints = false
+        cell.addSubview(edit)
+        NSLayoutConstraint.activate([
+            send.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 5),
+            send.trailingAnchor.constraint(equalTo: edit.leadingAnchor, constant: -4),
+            send.topAnchor.constraint(equalTo: cell.topAnchor),
+            send.bottomAnchor.constraint(equalTo: cell.bottomAnchor),
+            edit.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -5),
+            edit.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+            edit.widthAnchor.constraint(equalToConstant: 24),
+            edit.heightAnchor.constraint(equalToConstant: 24),
+        ])
+        return cell
+    }
+
+    @objc private func choseDevice(_ sender: NSButton) {
+        activate(sender.tag)
+    }
+
+    @objc private func renameDevice(_ sender: NSButton) {
+        let row = sender.tag
+        guard labels.indices.contains(row), let updated = rename?(row) else { return }
+        labels[row] = updated
+        table.reloadData(forRowIndexes: IndexSet(integer: row), columnIndexes: IndexSet(integer: 0))
+    }
+
+    private func activate(_ row: Int) {
+        guard chosenRow == nil, labels.indices.contains(row) else { return }
+        chosenRow = row
+        NSApp.stopModal(withCode: .OK)
+    }
+}

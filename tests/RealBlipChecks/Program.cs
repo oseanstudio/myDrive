@@ -1,0 +1,10 @@
+using MyDrive;
+using System.Text.Json;
+if(args.Length is <3 or >4)throw new ArgumentException("Expected adapter bundle, prepared runtime, fresh short profile path and optional Node executable");
+if(Directory.Exists(args[2]))throw new IOException("Real check requires a fresh profile path");
+await using var service=new BlipService(args[0],args[1],args[2],args.Length==4?args[3]:null);
+await service.StartAsync();
+var snapshot=await service.SnapshotAsync();
+if(snapshot.Status.Authenticated||snapshot.Transfers.Count!=0)throw new Exception("Expected unauthenticated empty state");
+await service.StopAsync();
+Console.WriteLine(JsonSerializer.Serialize(new{ok=!service.IsRunning,authenticated=snapshot.Status.Authenticated,devices=snapshot.Devices.Count,transfers=snapshot.Transfers.Count,cleanShutdown=!service.IsRunning},new JsonSerializerOptions{WriteIndented=true}));

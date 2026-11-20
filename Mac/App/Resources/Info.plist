@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleExecutable</key>
+	<string>myDrive</string>
+	<key>CFBundleIdentifier</key>
+	<string>io.mydrive.MyDrive</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>myDrive</string>
+	<key>CFBundleIconFile</key>
+	<string>myDrive</string>
+	<key>CFBundleDisplayName</key>
+	<string>myDrive</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.4.17</string>
+	<key>CFBundleVersion</key>
+	<string>0.4.17</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>14.0</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSAppDataUsageDescription</key>
+	<string>Use your existing Blip sign-in to send and receive files while Blip is closed.</string>
+	<key>NSAppBundlesUsageDescription</key>
+	<string>Load the installed Blip engine so myDrive can send and receive files in the background.</string>
+	<key>NSDownloadsFolderUsageDescription</key>
+	<string>Read files received with myDrive so approved web links can open in your default browser.</string>
+	<key>NSHumanReadableCopyright</key>
+	<string>myDrive macOS preview</string>
+</dict>
+</plist>

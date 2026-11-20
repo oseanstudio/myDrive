@@ -1,0 +1,109 @@
+name: Build macOS DMG
+on:
+  workflow_dispatch:
+  workflow_call:
+permissions:
+  contents: read
+concurrency:
+  group: macos-dmg-${{ github.sha }}
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Check source safety
+        run: node tests/source-safety.mjs .
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version-file: Core/SmbHost/go.mod
+          cache-dependency-path: Core/SmbHost/go.sum
+      - name: Configure external build output
+        run: |
+          echo "CARGO_TARGET_DIR=$RUNNER_TEMP/mydrive-rust" >> "$GITHUB_ENV"
+          echo "MYDRIVE_BUILD_DIR=$RUNNER_TEMP/mydrive-app" >> "$GITHUB_ENV"
+      - name: Check toolchain and build dependencies
+        run: |
+          rustc --version
+          swift --version
+          brew list openssl@3 >/dev/null || brew install openssl@3
+          echo "OPENSSL_DIR=$(brew --prefix openssl@3)" >> "$GITHUB_ENV"
+      - name: Native folder peer regression checks
+        run: |
+          swiftc -swift-version 5 Mac/App/Sources/Models.swift Mac/App/Sources/FolderPeers.swift Mac/Tests/FolderPeersSmoke.swift -o "$RUNNER_TEMP/folder-peers-test"
+          "$RUNNER_TEMP/folder-peers-test"
+          swiftc -swift-version 5 Mac/App/Sources/Preferences.swift Mac/Tests/PreferencesSmoke.swift -o "$RUNNER_TEMP/preferences-test"
+          "$RUNNER_TEMP/preferences-test"
+          swiftc -swift-version 5 Mac/App/Sources/BlipPolicy.swift Mac/Tests/BlipPolicySmoke.swift -o "$RUNNER_TEMP/blip-policy-test"
+          "$RUNNER_TEMP/blip-policy-test"
+          swiftc -swift-version 5 Mac/App/Sources/BlipLocalRPC.swift Mac/Tests/BlipRPCSmoke.swift -o "$RUNNER_TEMP/blip-rpc-test"
+          "$RUNNER_TEMP/blip-rpc-test"
+      - name: Exercise installed Blip framework in isolated processes
+        timeout-minutes: 3
+        run: |
+          fixture=$(mktemp -d /tmp/mdblip.XXXXXX)
+          archive="$RUNNER_TEMP/blip-vendor.zip"
+          framework=Blip.app/Contents/Frameworks/BlipKit.framework/Versions/A/BlipKit
+          curl --fail --location --silent --show-error --max-time 60 https://static.blip.net/mac/Blip-20261029214736.zip -o "$archive"
+          ditto -x -k "$archive" "$RUNNER_TEMP/blip-vendor"
+          swiftc -swift-version 5 Mac/App/Sources/BlipMacEngine.swift Mac/App/Sources/BlipLocalRPC.swift Mac/Tests/BlipHostSmoke.swift -o "$RUNNER_TEMP/blip-host-test"
+          "$RUNNER_TEMP/blip-host-test" "$RUNNER_TEMP/blip-vendor/$framework" "$fixture"
+      - name: Typecheck native shell
+        run: |
+          sources=()
+          while IFS= read -r -d '' source; do sources+=("$source"); done < <(find Mac/App/Sources -name '*.swift' ! -name '._*' -print0)
+          swiftc -typecheck -swift-version 5 -target "$(uname -m)-apple-macos14.0" "${sources[@]}"
+      - name: Test private SMB hosting
+        working-directory: Core/SmbHost
+        env:
+          CGO_ENABLED: '0'
+          GOTOOLCHAIN: local
+        run: go run build.go --test
+      - name: Build native app
+        run: |
+          cargo test --locked --manifest-path Core/Cargo.toml
+          bash Mac/build.sh
+      - name: Verify distributable
+        run: |
+          codesign --verify --deep --strict "$MYDRIVE_BUILD_DIR/myDrive.app"
+          test ! -e "$MYDRIVE_BUILD_DIR/myDrive.app/Contents/Resources/project-root.txt"
+          test -s "$MYDRIVE_BUILD_DIR/myDrive.app/Contents/Resources/ThirdPartyNotices.txt"
+          file "$MYDRIVE_BUILD_DIR/myDrive.app/Contents/MacOS/myDrive"
+          printf '%s\n' '{"action":"list"}' | "$MYDRIVE_BUILD_DIR/myDrive.app/Contents/MacOS/mydrive-smb-host" | grep -Fx '{}'
+          otool -L "$MYDRIVE_BUILD_DIR/myDrive.app/Contents/Resources/mydrive-core"
+          if otool -L "$MYDRIVE_BUILD_DIR/myDrive.app/Contents/Resources/mydrive-core" | tail -n +2 | grep -E '/opt/homebrew|/usr/local|/Users/runner'; then
+            echo 'Unexpected machine-specific library dependency' >&2
+            exit 1
+          fi
+      - name: Render native layout fixtures
+        run: '"$MYDRIVE_BUILD_DIR/myDrive.app/Contents/MacOS/myDrive" --diagnose-layout "$RUNNER_TEMP/mydrive-layout"'
+      - name: Upload layout checks
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: myDrive-macOS-layout
+          path: ${{ runner.temp }}/mydrive-layout
+          retention-days: 7
+          if-no-files-found: error
+      - name: Create DMG
+        id: dmg
+        uses: L-Super/create-dmg-actions@7609ed1777bb1d43972a36bf57853dc1f2f7909a # v1.1.0
+        with:
+          dmg_name: myDrive-macOS-AppleSilicon
+          src_dir: ${{ env.MYDRIVE_BUILD_DIR }}/myDrive.app
+          background: Mac/App/Resources/myDrive.png
+      - name: Verify disk image and write checksum
+        run: |
+          hdiutil verify myDrive-macOS-AppleSilicon.dmg
+          shasum -a 256 myDrive-macOS-AppleSilicon.dmg > myDrive-macOS-AppleSilicon.dmg.sha256
+      - name: Upload build artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: myDrive-macOS-AppleSilicon
+          path: |
+            myDrive-macOS-AppleSilicon.dmg
+            myDrive-macOS-AppleSilicon.dmg.sha256
+          retention-days: 14
+          if-no-files-found: error

@@ -1,0 +1,171 @@
+mod client;
+mod model;
+mod relay;
+mod s3;
+mod sftp;
+mod smb_copy;
+mod storage;
+mod syncthing;
+mod syncthing_engine;
+mod webdav;
+#[cfg(windows)]
+#[path = "../../Windows/Network/smb.rs"]
+mod windows_smb;
+#[cfg(test)]
+mod wire_tests;
+use client::{FileClient, LocalClient};
+use model::*;
+use serde::Deserialize;
+use serde_json::{json, Value};
+use std::{
+    io::{self, Read},
+    path::Path,
+};
+
+#[derive(Deserialize)]
+struct Request {
+    action: String,
+    #[serde(default)]
+    data_dir: String,
+    bookmark: Option<Bookmark>,
+    #[serde(default)]
+    bookmarks: Vec<Bookmark>,
+    #[serde(default)]
+    credentials: Credentials,
+    #[serde(default)]
+    path: String,
+    #[serde(default)]
+    destination: String,
+    #[serde(default)]
+    local_path: String,
+    #[serde(default)]
+    is_dir: bool,
+    #[serde(default)]
+    syncthing: syncthing::Connection,
+    #[serde(default)]
+    payload: Value,
+}
+fn execute(r: Request) -> Result<Value, String> {
+    if let Some(action) = r.action.strip_prefix("relay.") {
+        return relay::run(action, &r.payload, Path::new(&r.data_dir));
+    }
+    if r.action == "engine.ensure" {
+        return syncthing_engine::ensure(&r.payload, Path::new(&r.data_dir));
+    }
+    if r.action == "smb.connect" {
+        #[cfg(windows)]
+        {
+            let b = r.bookmark.as_ref().ok_or("Choose an SMB connection.")?;
+            windows_smb::connect(b, &r.credentials)?;
+            return Ok(json!(null));
+        }
+        #[cfg(not(windows))]
+        {
+            return Err("SMB sessions are managed by this platform's native mount adapter.".into());
+        }
+    }
+    if let Some(action) = r.action.strip_prefix("syncthing.") {
+        return syncthing::Api::new(&r.syncthing)?.execute(
+            action,
+            &r.payload,
+            Path::new(&r.data_dir),
+        );
+    }
+    match r.action.as_str() {
+        "version" => return Ok(json!({"name":"myDrive","version":env!("CARGO_PKG_VERSION")})),
+        "bookmarks.load" => return Ok(json!(storage::load(Path::new(&r.data_dir))?)),
+        "bookmarks.save" => {
+            storage::save(Path::new(&r.data_dir), &r.bookmarks)?;
+            return Ok(json!(null));
+        }
+        _ => {}
+    }
+    let b = r.bookmark.ok_or("A connection is required.")?;
+    b.validate()?;
+    let path = clean_path(&r.path)?;
+    if b.protocol == Protocol::Smb
+        && !r.data_dir.is_empty()
+        && matches!(r.action.as_str(), "upload" | "download")
+    {
+        if path.is_empty() {
+            return Err("Select a file inside the SMB share.".into());
+        }
+        let upload = r.action == "upload";
+        let remote = LocalClient::new(&b)?.resolve(&path, upload)?;
+        let local = Path::new(&r.local_path);
+        let (source, destination) = if upload {
+            (local, remote.as_path())
+        } else {
+            (remote.as_path(), local)
+        };
+        smb_copy::copy(source, destination, Path::new(&r.data_dir), &b.id)?;
+        return Ok(json!(null));
+    }
+    let mut client: Box<dyn FileClient> = match b.protocol {
+        Protocol::Local | Protocol::Smb => Box::new(LocalClient::new(&b)?),
+        Protocol::Webdav => Box::new(webdav::WebDav::new(&b, &r.credentials)?),
+        Protocol::Sftp => Box::new(sftp::SftpClient::new(&b, &r.credentials)?),
+        Protocol::S3 => Box::new(s3::S3Client::new(&b, &r.credentials)?),
+    };
+    match r.action.as_str() {
+        "list" | "test" => {
+            let mut files = client.list(&path)?;
+            files.sort_by(|a, b| {
+                b.is_dir
+                    .cmp(&a.is_dir)
+                    .then(a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+            });
+            Ok(json!(files))
+        }
+        "download" => {
+            let target = Path::new(&r.local_path);
+            if target.exists() {
+                return Err(
+                    "The download destination already exists. Choose a different filename.".into(),
+                );
+            }
+            let mut temp =
+                tempfile::NamedTempFile::new_in(target.parent().ok_or("Invalid download folder")?)
+                    .map_err(|e| e.to_string())?;
+            client.download(&path, temp.path())?;
+            temp.as_file_mut().sync_all().map_err(|e| e.to_string())?;
+            temp.persist_noclobber(target).map_err(|e| e.to_string())?;
+            Ok(json!(null))
+        }
+        "upload" => {
+            client.upload(Path::new(&r.local_path), &path)?;
+            Ok(json!(null))
+        }
+        "mkdir" => {
+            client.mkdir(&path)?;
+            Ok(json!(null))
+        }
+        "delete" => {
+            client.delete(&path, r.is_dir)?;
+            Ok(json!(null))
+        }
+        "rename" => {
+            client.rename(&path, &clean_path(&r.destination)?)?;
+            Ok(json!(null))
+        }
+        _ => Err("Unknown core action.".into()),
+    }
+}
+fn main() {
+    // One JSON request on stdin. Credentials never appear in process arguments or output.
+    let mut input = String::new();
+    if let Err(e) = io::stdin().take(8 * 1024 * 1024).read_to_string(&mut input) {
+        println!("{}", json!({"ok":false,"error":e.to_string()}));
+        return;
+    }
+    let result = serde_json::from_str::<Request>(&input)
+        .map_err(|e| format!("Invalid request: {e}"))
+        .and_then(execute);
+    println!(
+        "{}",
+        match result {
+            Ok(value) => json!({"ok":true,"data":value}),
+            Err(error) => json!({"ok":false,"error":error}),
+        }
+    );
+}
