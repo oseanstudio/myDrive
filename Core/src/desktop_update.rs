@@ -4,7 +4,6 @@ use serde_json::Value;
 use std::{
     env, fs,
     path::{Path, PathBuf},
-    process::{Command, Stdio},
 };
 
 const STAGE_PREFIX: &str = ".mydrive-update-";
@@ -96,17 +95,7 @@ pub fn prepare(payload: Value, data_dir: &Path) -> Result<(), String> {
         serde_json::to_vec(&plan).map_err(|_| "Could not prepare to restart myDrive.")?,
     )
     .map_err(|_| "Could not prepare to restart myDrive.")?;
-    let mut command = Command::new(helper);
-    command
-        .arg("--finish-desktop-update")
-        .arg(&plan_path)
-        .current_dir(staging.path())
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    platform::hide_helper(&mut command);
-    command
-        .spawn()
+    platform::start_helper(&helper, &plan_path, staging.path())
         .map_err(|_| "Could not start the update helper.")?;
     let _ = staging.keep();
     Ok(())
@@ -159,11 +148,17 @@ pub fn finish(plan_path: &Path) {
 #[cfg(windows)]
 mod platform {
     use super::*;
-    use std::os::windows::process::CommandExt;
+    use std::{
+        ffi::{OsStr, OsString},
+        os::windows::ffi::OsStrExt,
+        process::Command,
+        ptr::null,
+    };
     use windows_sys::Win32::{
         Foundation::{CloseHandle, GetLastError, ERROR_INVALID_PARAMETER, WAIT_OBJECT_0},
         System::Threading::{
-            OpenProcess, WaitForSingleObject, CREATE_NO_WINDOW, PROCESS_SYNCHRONIZE,
+            CreateProcessW, OpenProcess, WaitForSingleObject, CREATE_NO_WINDOW,
+            PROCESS_INFORMATION, PROCESS_SYNCHRONIZE, STARTUPINFOW,
         },
     };
 
@@ -183,8 +178,45 @@ mod platform {
         Ok(())
     }
 
-    pub fn hide_helper(command: &mut Command) {
-        command.creation_flags(CREATE_NO_WINDOW);
+    pub fn start_helper(helper: &Path, plan: &Path, directory: &Path) -> std::io::Result<()> {
+        let wide = |value: &OsStr| value.encode_wide().chain([0]).collect::<Vec<_>>();
+        let executable = wide(helper.as_os_str());
+        let working_directory = wide(directory.as_os_str());
+        let mut command = OsString::from("\"");
+        command.push(helper.as_os_str());
+        command.push("\" --finish-desktop-update \"");
+        command.push(plan.as_os_str());
+        command.push("\"");
+        let mut arguments = wide(&command);
+        let startup = STARTUPINFOW {
+            cb: std::mem::size_of::<STARTUPINFOW>() as u32,
+            ..Default::default()
+        };
+        let mut process = PROCESS_INFORMATION::default();
+        // The UI waits for EOF on the core response before it can quit.
+        // The updater must never inherit that pipe or keep the UI waiting.
+        let started = unsafe {
+            CreateProcessW(
+                executable.as_ptr(),
+                arguments.as_mut_ptr(),
+                null(),
+                null(),
+                0,
+                CREATE_NO_WINDOW,
+                null(),
+                working_directory.as_ptr(),
+                &startup,
+                &mut process,
+            )
+        };
+        if started == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        unsafe {
+            CloseHandle(process.hThread);
+            CloseHandle(process.hProcess);
+        }
+        Ok(())
     }
 
     pub fn wait_for_exit(pid: u32) -> bool {
@@ -251,6 +283,7 @@ mod platform {
 mod platform {
     use super::*;
     use std::{
+        process::{Command, Stdio},
         thread,
         time::{Duration, Instant},
     };
@@ -260,7 +293,17 @@ mod platform {
         "replacement"
     };
 
-    pub fn hide_helper(_command: &mut Command) {}
+    pub fn start_helper(helper: &Path, plan: &Path, directory: &Path) -> std::io::Result<()> {
+        Command::new(helper)
+            .arg("--finish-desktop-update")
+            .arg(plan)
+            .current_dir(directory)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map(|_| ())
+    }
 
     pub fn wait_for_exit(pid: u32) -> bool {
         let deadline = Instant::now() + Duration::from_secs(WAIT_SECONDS.into());
