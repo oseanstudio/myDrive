@@ -50,3 +50,13 @@ Configure a local stdio server with the full path to `mydrive-cli.exe` on Window
 ```
 
 The server exposes the same operations under names such as `blip_devices`, `blip_send`, `blip_receive`, `sync_share`, and `smb_browse`. It starts the Blip helper on the first Blip request if you have already signed in and no session is available. The helper lasts for the MCP session. Keep `blip serve` running separately if you want transfers to continue after the client closes. The MCP server uses local stdin and stdout and does not listen on a network port.
+
+## Start before sign-in
+
+**Settings → Start at boot** is on by default. Choose **Set up before-sign-in startup** once, or run `mydrive-cli startup setup` from the installed package. `startup status` reports your preference and whether the operating system has a startup job registered.
+
+- On Windows, approve admin access and enter the account password in Windows Task Scheduler. The scheduler stores the credential and runs the job as that user.
+- On macOS, place myDrive in Applications and approve the administrator prompt for the LaunchDaemon. The service runs as your usual user.
+- On Linux, keep the AppImage at a permanent path. Setup enables your systemd user service and asks logind to keep it active between logins.
+
+The boot service keeps Syncthing and the signed-in Blip backend available. Encrypted home folders, an inaccessible Blip profile or a locked credential store can delay a service until its data is available. The desktop window and browser actions run in the signed-in session. Hosted SMB shares follow their current host-session lifetime.

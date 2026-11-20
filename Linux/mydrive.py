@@ -37,7 +37,7 @@ class MyDrive(Gtk.Application):
         self.sync.config_path = self.preferences.get("syncthing_config", "")
         self.activity = read_settings("activity.json", [])
         self.snapshot = {}
-        self.lanes = {key: ThreadPoolExecutor(max_workers=1) for key in ("sync", "blip", "storage", "updates")}
+        self.lanes = {key: ThreadPoolExecutor(max_workers=1) for key in ("sync", "blip", "storage", "updates", "settings")}
         self.pending = {key: 0 for key in self.lanes}
         self.window = None
         self.browse = None
@@ -45,6 +45,7 @@ class MyDrive(Gtk.Application):
         self.show_update_result = False
         self.available_update = None
         self.read_update_error = True
+        self.startup = {"enabled": True, "configured": False}
 
     def do_activate(self):
         if self.window:
@@ -104,6 +105,8 @@ class MyDrive(Gtk.Application):
             self.stack.set_visible_child_name(title)
             if title == "SMB Storage" and not self.fixture:
                 self.storage_view.load()
+            if title == "Settings" and not self.fixture:
+                self.change_startup("startup.status")
         view.connect("notify::selected", show_view)
         self.storage_view = StorageView(self, self.pages["SMB Storage"])
         self.transfer_view = TransferView(self, self.pages["Send & Receive"], self.blip)
@@ -540,16 +543,30 @@ class MyDrive(Gtk.Application):
             self.apply_appearance()
         appearance.connect("notify::selected", change_theme)
         page.append(row("Appearance", "", appearance))
-        for key, title in [("blip_background", "Keep Blip available in the background"),
-                           ("blip_open", "Open links from approved devices")]:
+        startup = Gtk.Switch(active=self.startup["enabled"], valign=Gtk.Align.CENTER)
+        startup.connect("notify::active", lambda switch, _: self.change_startup(
+            "startup.enable" if switch.get_active() else "startup.disable"))
+        page.append(row("Start at boot", "", startup))
+        if self.startup["enabled"] and not self.startup["configured"]:
+            page.append(button("Set up before-sign-in startup…", lambda: self.change_startup("startup.setup")))
+        for key, title in [("blip_background", "Blip background service"), ("blip_open", "Open approved links")]:
             switch = Gtk.Switch(active=self.preferences.get(key, True), valign=Gtk.Align.CENTER)
             switch.connect("notify::active", lambda s, _, key=key: self.change_preference(key, s.get_active()))
             page.append(row(title, "", switch))
-        page.append(button("Syncthing configuration…", lambda: self.files(
-            "Choose Syncthing config.xml", Gtk.FileChooserAction.OPEN, lambda files: self.set_config(files[0]))))
-        page.append(button("Open myDrive data folder", lambda: self.open_path(DATA)))
         page.append(button("Check for updates", lambda: self.check_for_updates(show_result=True)))
-        page.append(label(f"myDrive {VERSION} · Linux"))
+        page.append(row("Advanced", "", menu([
+            ("Syncthing settings…", lambda: self.files("Choose Syncthing config.xml", Gtk.FileChooserAction.OPEN,
+                                                      lambda files: self.set_config(files[0]))),
+            ("Open app data folder", lambda: self.open_path(DATA)),
+        ])))
+
+    def change_startup(self, action):
+        def loaded(state):
+            self.startup = state
+            self.render_settings()
+
+        self.work("settings", "Set up startup", lambda: core(action), loaded, quiet=True,
+                  on_error=None if action == "startup.status" else self.announce)
 
     def change_preference(self, key, value):
         try:

@@ -7,6 +7,7 @@ mod relay;
 mod s3;
 mod sftp;
 mod smb_copy;
+mod startup;
 mod storage;
 mod syncthing;
 mod syncthing_engine;
@@ -78,6 +79,15 @@ fn execute(r: Request) -> Result<Value, String> {
     match r.action.as_str() {
         "version" => return Ok(json!({"name":"myDrive","version":env!("CARGO_PKG_VERSION")})),
         "smb.devices" => return automation::smb_action("devices", &json!({})),
+        "startup.status" => return startup::status(),
+        "startup.enable" | "startup.disable" => {
+            startup::set_enabled(r.action == "startup.enable")?;
+            return startup::status();
+        }
+        "startup.setup" => {
+            startup::setup(None)?;
+            return startup::status();
+        }
         "update.check" => {
             let installed = r.payload["version"].as_str().ok_or("Missing app version.")?;
             return Ok(json!(updates::check(installed)?));

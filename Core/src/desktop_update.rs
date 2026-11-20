@@ -238,7 +238,9 @@ mod platform {
             app.parent()
                 .ok_or_else(|| "Could not locate the installation folder.".to_string())?,
         );
-        let exit = Command::new(staging.join(updates::asset_name()?))
+        let installer = staging.join(updates::asset_name()?);
+        let restart_startup = crate::startup::pause_for_update();
+        let exit = Command::new(installer)
             .args([
                 "/VERYSILENT",
                 "/SUPPRESSMSGBOXES",
@@ -248,8 +250,11 @@ mod platform {
                 "/NOFORCECLOSEAPPLICATIONS",
             ])
             .arg(directory)
-            .status()
-            .map_err(|_| "Windows could not run the myDrive installer.".to_string())?;
+            .status();
+        if restart_startup {
+            crate::startup::resume_after_update();
+        }
+        let exit = exit.map_err(|_| "Windows could not run the myDrive installer.".to_string())?;
         if !exit.success() {
             return Err("The Windows installer could not finish the update."
                 .to_string()

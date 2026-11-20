@@ -88,6 +88,7 @@ pub const TOOLS: &[Tool] = &[
 
 fn help() {
     println!("myDrive {VERSION}\n\n  mydrive-cli blip serve        Keep the signed-in Blip account online headlessly\n  mydrive-cli mcp               Run the MCP server over stdio\n  mydrive-cli --version\n");
+    println!("  mydrive-cli startup status|enable|disable|setup|run\n      Manage the headless boot service\n");
     for tool in TOOLS {
         let fields = tool
             .fields
@@ -127,6 +128,9 @@ pub fn cli(command: OsString, arguments: impl Iterator<Item = OsString>) -> Resu
     }
     if command == "mcp" && args.len() == 0 {
         return crate::mcp::serve();
+    }
+    if command == "startup" {
+        return crate::startup::cli(&args.collect::<Vec<_>>());
     }
     let Some(operation) = args.next() else {
         return Err("Choose a command. Run mydrive-cli --help.".into());
@@ -229,7 +233,7 @@ fn uuid(value: &str) -> bool {
         })
 }
 
-fn user_data() -> Result<PathBuf, String> {
+pub(crate) fn user_data() -> Result<PathBuf, String> {
     let home = || env::var_os("HOME").map(PathBuf::from);
     let base = if cfg!(windows) {
         env::var_os("LOCALAPPDATA").map(PathBuf::from)
@@ -253,12 +257,9 @@ fn binary_dir() -> Result<PathBuf, String> {
         .ok_or_else(|| "Could not locate the myDrive helpers.".into())
 }
 
-fn sync_action(command: &str, arguments: &Value) -> Result<Value, String> {
+pub(crate) fn sync_action(command: &str, arguments: &Value) -> Result<Value, String> {
     let data = user_data()?;
-    let saved: Value = fs::read(data.join("preferences.json"))
-        .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or(Value::Null);
+    let saved = preferences(&data);
     let path = env::var("MYDRIVE_SYNCTHING_CONFIG").ok().or_else(|| {
         [
             "SyncthingConfigPath",
@@ -289,6 +290,28 @@ fn sync_action(command: &str, arguments: &Value) -> Result<Value, String> {
         other => other,
     };
     syncthing::Api::new(&connection)?.execute(action, &arguments, &data)
+}
+
+fn preferences(data: &std::path::Path) -> Value {
+    fs::read(data.join("preferences.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or(Value::Null)
+}
+
+pub(crate) fn blip_background_enabled() -> bool {
+    let Ok(data) = user_data() else {
+        return false;
+    };
+    let pref = preferences(&data);
+    let key = if cfg!(windows) {
+        "BlipAutoConnectDesktop"
+    } else if cfg!(target_os = "macos") {
+        "blip_background_receiving"
+    } else {
+        "blip_background"
+    };
+    pref[key].as_bool().unwrap_or(true)
 }
 
 pub(crate) fn smb_action(command: &str, arguments: &Value) -> Result<Value, String> {
@@ -513,7 +536,7 @@ fn blip_serve() -> Result<(), String> {
 pub struct BlipHost(Option<Child>);
 
 impl BlipHost {
-    fn ensure(&mut self) -> Result<(), String> {
+    pub(crate) fn ensure(&mut self) -> Result<(), String> {
         if blip_action("status", &Value::Null).is_ok() {
             return Ok(());
         }
@@ -551,7 +574,7 @@ impl BlipHost {
         Err("The background Blip connection could not start. Check the installed runtime, sign-in and local data permissions.".into())
     }
 
-    fn stop(&mut self) {
+    pub(crate) fn stop(&mut self) {
         let Some(mut child) = self.0.take() else {
             return;
         };

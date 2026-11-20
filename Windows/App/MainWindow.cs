@@ -256,9 +256,7 @@ public sealed partial class MainWindow : Window
     }
     private void RenderSettings()
     {
-        Heading("Settings","Make yourself at home.");
-        page.Children.Add(Button(compact?"↗  Open full window":"Open quick menu",()=>SetMode(!compact)));
-        var appearance=new StackPanel{Spacing=12};appearance.Children.Add(Text("Appearance",18,true));
+        var appearance=new StackPanel{Spacing=6};appearance.Children.Add(Text("Appearance",13,true));
         var themes = new[] { "System", "Light", "Dark" };
         var theme = new ComboBox { ItemsSource = themes, SelectedIndex = Math.Max(0, Array.IndexOf(themes, Preferences.Current.Theme)), MinWidth = 220 };
         theme.SelectionChanged+=(_,_)=>{
@@ -268,12 +266,14 @@ public sealed partial class MainWindow : Window
             if(blipIncomingWindow!=null)blipIncomingWindow.Surface.RequestedTheme=RequestedAppearance;
             ApplyCurrentTheme();
         };
-        appearance.Children.Add(theme);page.Children.Add(Card(appearance));
+        appearance.Children.Add(theme);page.Children.Add(appearance);
+        page.Children.Add(StartupControl());
         page.Children.Add(Button("Check for updates",()=>_=CheckForUpdate(showResult:true)));
-        page.Children.Add(Button("Syncthing connection settings",()=>_=EditSyncthingConnection()));
-        var security=new StackPanel{Spacing=10};security.Children.Add(Text("Private by design",18,true));security.Children.Add(Text("Storage connection secrets stay in Windows Credential Manager. Blip manages its own credentials in its separate local profile. Bookmarks and the latest 200 activity entries are stored locally. SFTP verifies server keys against your OpenSSH known_hosts file."));security.Children.Add(Button("Open app data folder",()=>{Directory.CreateDirectory(CoreBridge.DataDir);Process.Start(new ProcessStartInfo("explorer.exe"){ArgumentList={CoreBridge.DataDir},UseShellExecute=true});}));page.Children.Add(Card(security));
-        var smb=new StackPanel{Spacing=10};smb.Children.Add(Text("SMB connection health",18,true));smb.Children.Add(Text("Saved SMB connections are checked every 12 seconds. myDrive attempts a native reconnect if a share becomes unavailable; it does not force unmount files that are in use. Closing the window keeps myDrive in the system tray."));page.Children.Add(Card(smb));
-        var about=new StackPanel{Spacing=10};about.Children.Add(Text($"myDrive {DisplayVersion}",18,true));about.Children.Add(Text("Native WinUI 3 · Shared Rust core\nSync uses your running Syncthing for offline copies, saved changes and version recovery. Network shares open directly over SMB."));page.Children.Add(Card(about));page.Children.Add(Button("Quit myDrive",Quit));
+        var advanced=new DropDownButton{Content="Advanced"};var menu=new MenuFlyout();
+        MenuAction(menu,"Syncthing settings…",()=>_=EditSyncthingConnection());
+        MenuAction(menu,"Open app data folder",()=>{Directory.CreateDirectory(CoreBridge.DataDir);Process.Start(new ProcessStartInfo("explorer.exe"){ArgumentList={CoreBridge.DataDir},UseShellExecute=true});});
+        advanced.Flyout=menu;page.Children.Add(advanced);
+        page.Children.Add(Button("Quit myDrive",Quit));
     }
     private void ApplyCurrentTheme()
     {
