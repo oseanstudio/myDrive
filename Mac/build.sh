@@ -46,6 +46,10 @@ echo "==> Building the private SMB host"
 (cd "$ROOT/Core/SmbHost" && CGO_ENABLED=0 GOTOOLCHAIN=local go run build.go "$APP/Contents/MacOS")
 mv "$APP/Contents/MacOS/SMB-ThirdPartyNotices.txt" "$APP/Contents/Resources/SMB-ThirdPartyNotices.txt"
 cp "$SCRIPT_DIR/App/Resources/Info.plist" "$APP/Contents/Info.plist"
+if [[ -n "${MYDRIVE_VERSION:-}" ]]; then
+    /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $MYDRIVE_VERSION" "$APP/Contents/Info.plist"
+    /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $MYDRIVE_VERSION" "$APP/Contents/Info.plist"
+fi
 cp "$SCRIPT_DIR/App/Resources/myDrive.png" "$APP/Contents/Resources/myDrive.png"
 cp "$SCRIPT_DIR/App/Resources/StatusMark.png" "$APP/Contents/Resources/StatusMark.png"
 node "$ROOT/Core/third-party-notices.mjs" "$ROOT/Core/Cargo.toml" "$APP/Contents/Resources/ThirdPartyNotices.txt"

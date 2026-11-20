@@ -22,7 +22,8 @@ from ui_widgets import button, clear, label, menu, row
 
 
 APP_ID = "net.oseanstudio.myDrive"
-VERSION = "0.4.17"
+VERSION_FILE = Path(__file__).with_name("version.txt")
+VERSION = VERSION_FILE.read_text(encoding="utf-8").strip() if VERSION_FILE.is_file() else "0.4.17"
 
 
 class MyDrive(Gtk.Application):
@@ -522,5 +523,8 @@ class MyDrive(Gtk.Application):
 
 
 if __name__ == "__main__":
+    if sys.argv[1:] == ["--version"]:
+        print(VERSION)
+        sys.exit(0)
     fixture = sys.argv[1:] == ["--smoke-test"]
     sys.exit(MyDrive(fixture).run([sys.argv[0], *([] if fixture else sys.argv[1:])]))

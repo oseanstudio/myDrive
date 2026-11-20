@@ -114,7 +114,8 @@ struct SettingsView: View {
             .pickerStyle(.menu)
             .frame(maxWidth: .infinity, alignment: .leading)
             HStack {
-                Text("myDrive 0.4.17 · macOS preview")
+                let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
+                Text("myDrive \(version) · macOS")
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
                 Spacer()

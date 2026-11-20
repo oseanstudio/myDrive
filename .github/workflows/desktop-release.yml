@@ -23,13 +23,31 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      app: ${{ steps.version.outputs.app }}
+    steps:
+      - id: version
+        run: |
+          # Run 2 was the last build labeled 0.4.17. A rerun keeps its version.
+          echo "app=0.4.$((17 + GITHUB_RUN_NUMBER - 2))" >> "$GITHUB_OUTPUT"
   mac:
+    needs: version
     uses: ./.github/workflows/macos-dmg.yml
+    with:
+      version: ${{ needs.version.outputs.app }}
   linux:
+    needs: version
     uses: ./.github/workflows/linux-appimage.yml
+    with:
+      version: ${{ needs.version.outputs.app }}
   windows:
+    needs: version
     runs-on: windows-2025
     timeout-minutes: 30
+    env:
+      MYDRIVE_VERSION: ${{ needs.version.outputs.app }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -49,7 +67,7 @@ jobs:
           cargo build --locked --release --manifest-path Core/Cargo.toml
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           $payload = Join-Path $env:RUNNER_TEMP 'mydrive-publish'
-          dotnet publish Windows/App/myDrive.csproj -c Release -p:Platform=x64 -o $payload --nologo
+          dotnet publish Windows/App/myDrive.csproj -c Release -p:Platform=x64 "-p:Version=$env:MYDRIVE_VERSION" -o $payload --nologo
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           Copy-Item -LiteralPath (Join-Path $env:CARGO_TARGET_DIR 'release/mydrive-core.exe') -Destination $payload
           & ./Windows/packaging/collect-notices.ps1 -AssetsFile Windows/App/obj/project.assets.json -PublishDirectory $payload
@@ -70,7 +88,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $version = ([xml](Get-Content Windows/App/myDrive.csproj -Raw)).Project.PropertyGroup.Version
+          $version = $env:MYDRIVE_VERSION
           $payload = Join-Path $env:RUNNER_TEMP 'mydrive-publish'
           $output = Join-Path $env:RUNNER_TEMP 'mydrive-windows'
           $compiler = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6/ISCC.exe'
@@ -86,7 +104,7 @@ jobs:
             if (!(Test-Path -LiteralPath (Join-Path $directory $notice) -PathType Leaf)) { throw "Missing installer notice $notice." }
           }
           $app = Get-Item -LiteralPath (Join-Path $directory 'myDrive.exe')
-          if ($app.VersionInfo.ProductVersion -notlike "$version*") { throw 'Installed version differs from the build.' }
+          if ($app.VersionInfo.ProductVersion.Split('+')[0] -ne $version) { throw 'Installed version differs from the build.' }
           $core = Join-Path $directory 'mydrive-core.exe'
           $result = '{"action":"version"}' | & $core | ConvertFrom-Json
           if (!$result.ok) { throw 'The installed core did not respond.' }
@@ -105,16 +123,16 @@ jobs:
           retention-days: 14
 
   release:
-    needs: [mac, linux, windows]
+    needs: [version, mac, linux, windows]
     if: github.repository_id == '1465782893' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: write
+    concurrency:
+      group: desktop-publication
+      cancel-in-progress: false
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          persist-credentials: false
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: myDrive-*-*
@@ -125,12 +143,18 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          MYDRIVE_VERSION: ${{ needs.version.outputs.app }}
         run: |
           set -euo pipefail
           test "$(gh repo view "$GH_REPO" --json isPrivate -q .isPrivate)" = false
-          version="$(python3 -c 'import xml.etree.ElementTree as xml; print(xml.parse("Windows/App/myDrive.csproj").findtext("PropertyGroup/Version"))')"
-          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
-          tag="v${version}-preview-${GITHUB_SHA:0:8}"
+          [[ "$MYDRIVE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          tag="v$MYDRIVE_VERSION"
+          previous="$(gh release list --exclude-drafts --exclude-pre-releases --limit 1 --json tagName --jq '.[0].tagName // empty')"
+          if [[ "$previous" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ && "$previous" != "$tag" &&
+                "$(printf '%s\n' "$previous" "$tag" | sort -V | tail -n 1)" == "$previous" ]]; then
+            echo "Skipping $tag because $previous is already published."
+            exit 0
+          fi
           asset_dir="$RUNNER_TEMP/mydrive-release-assets"
           cd "$asset_dir"
           packages=(myDrive-Windows-x64-Setup.exe myDrive-Linux-x86_64.AppImage myDrive-macOS-AppleSilicon.dmg)
@@ -140,16 +164,18 @@ jobs:
             sha256sum --check "$package.sha256"
             assets+=("$package" "$package.sha256")
           done
-          if existing="$(gh release view "$tag" --json isDraft --jq .isDraft 2>/dev/null)"; then
-            if [[ $existing == false ]]; then
+          if existing="$(gh release view "$tag" --json isDraft,targetCommitish --jq '[.isDraft,.targetCommitish] | @tsv' 2>/dev/null)"; then
+            IFS=$'\t' read -r draft commit <<< "$existing"
+            test "$commit" = "$GITHUB_SHA"
+            if [[ $draft == false ]]; then
               exit 0
             fi
             gh release upload "$tag" "${assets[@]}" --clobber
           else
-            printf 'Desktop preview built from commit %s.\n\nIncludes the Windows x64 installer, Linux x86-64 AppImage, and Apple Silicon macOS DMG.\n\nThe installer is unsigned. The DMG is ad-hoc signed.\n' "$GITHUB_SHA" > "$RUNNER_TEMP/mydrive-release-notes.md"
-            gh release create "$tag" "${assets[@]}" --target "$GITHUB_SHA" --title "myDrive $version Preview (${GITHUB_SHA:0:8})" --notes-file "$RUNNER_TEMP/mydrive-release-notes.md" --draft --prerelease
+            printf 'Desktop release built from commit %s.\n\nIncludes the Windows x64 installer, Linux x86-64 AppImage, and Apple Silicon macOS DMG.\n\nThe installer is unsigned. The DMG is ad-hoc signed.\n' "$GITHUB_SHA" > "$RUNNER_TEMP/mydrive-release-notes.md"
+            gh release create "$tag" "${assets[@]}" --target "$GITHUB_SHA" --title "myDrive $MYDRIVE_VERSION" --notes-file "$RUNNER_TEMP/mydrive-release-notes.md" --draft
           fi
           for asset in "${assets[@]}"; do
             gh release view "$tag" --json assets --jq '.assets[].name' | grep -Fx "$asset" > /dev/null
           done
-          gh release edit "$tag" --draft=false
+          gh release edit "$tag" --draft=false --prerelease=false --latest

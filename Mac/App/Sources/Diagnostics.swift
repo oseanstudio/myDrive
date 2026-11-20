@@ -115,7 +115,8 @@ enum Diagnostics {
 
     @MainActor
     private static func perform(directory: URL) -> JSON {
-        var report: JSON = ["version": "0.4.17"]
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
+        var report: JSON = ["version": version]
         var captures: [String] = []
 
         report["keychain"] = keychainCheck()

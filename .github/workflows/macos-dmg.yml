@@ -2,6 +2,9 @@ name: Build macOS DMG
 on:
   workflow_dispatch:
   workflow_call:
+    inputs:
+      version:
+        type: string
 permissions:
   contents: read
 concurrency:
@@ -11,6 +14,8 @@ jobs:
   build:
     runs-on: macos-15
     timeout-minutes: 35
+    env:
+      MYDRIVE_VERSION: ${{ inputs.version }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -68,6 +73,11 @@ jobs:
           bash Mac/build.sh
       - name: Verify distributable
         run: |
+          if [[ -n "$MYDRIVE_VERSION" ]]; then
+            plist="$MYDRIVE_BUILD_DIR/myDrive.app/Contents/Info.plist"
+            test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$plist")" = "$MYDRIVE_VERSION"
+            test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$plist")" = "$MYDRIVE_VERSION"
+          fi
           codesign --verify --deep --strict "$MYDRIVE_BUILD_DIR/myDrive.app"
           test ! -e "$MYDRIVE_BUILD_DIR/myDrive.app/Contents/Resources/project-root.txt"
           test -s "$MYDRIVE_BUILD_DIR/myDrive.app/Contents/Resources/ThirdPartyNotices.txt"

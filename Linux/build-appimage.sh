@@ -38,6 +38,9 @@ node Core/third-party-notices.mjs Core/Cargo.toml "$appdir/usr/share/doc/mydrive
 install -m644 Linux/packaging/AppImage-Runtime.txt "$appdir/usr/share/doc/mydrive/AppImage-Runtime.txt"
 install -Dm755 Linux/packaging/AppRun.sh "$appdir/AppRun"
 install -m644 Linux/{mydrive,services,storage_view,smb_sharing,transfer_view,tray,ui_widgets}.py "$appdir/usr/lib/mydrive/"
+if [[ -n "${MYDRIVE_VERSION:-}" ]]; then
+    printf '%s\n' "$MYDRIVE_VERSION" > "$appdir/usr/lib/mydrive/version.txt"
+fi
 install -Dm644 Linux/packaging/net.oseanstudio.myDrive.desktop "$appdir/net.oseanstudio.myDrive.desktop"
 install -Dm644 Mac/App/Resources/myDrive.png "$appdir/net.oseanstudio.myDrive.png"
 install -m644 Mac/App/Resources/myDrive.png "$appdir/usr/lib/mydrive/net.oseanstudio.myDrive.png"
@@ -54,6 +57,9 @@ APPIMAGE_EXTRACT_AND_RUN=1 ARCH=x86_64 "$build/appimagetool.AppImage" --no-appst
 
 export XDG_DATA_HOME="$build/fixture-data"
 export APPIMAGE_EXTRACT_AND_RUN=1
+if [[ -n "${MYDRIVE_VERSION:-}" ]]; then
+    test "$("$output" --version)" = "$MYDRIVE_VERSION"
+fi
 printf '%s\n' '{"action":"version"}' | "$output" --core | python3 -c 'import json,sys; assert json.load(sys.stdin)["ok"]'
 timeout 30s dbus-run-session -- xvfb-run -a "$output" --smoke-test
 mkdir "$build/notice-check"
