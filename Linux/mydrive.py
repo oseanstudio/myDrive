@@ -742,7 +742,7 @@ class MyDrive(Gtk.Application):
                                     report.get("failure") or "Syncthing reported a sync problem.")
                 self.add_issue_text(box, first.get("advice") or folder.get("error_advice"))
                 actions = Gtk.Box(spacing=6)
-                if folder.get("can_relocate"):
+                if folder.get("path"):
                     actions.append(button("Choose new location…", lambda f=folder: self.relocate_sync_folder(f)))
                 actions.append(button("Rescan", lambda f=folder: self.rescan_issue(f)))
                 actions.append(button("View errors", lambda f=folder: self.show_sync_issue(f)))
@@ -757,7 +757,7 @@ class MyDrive(Gtk.Application):
         back = self.show_sync_attention if self.sync_attention else self.leave_sync_attention
         page = self.sync_issues_header("Folder errors", back, lambda: self.show_sync_issue(folder))
         actions = []
-        if folder.get("can_relocate"):
+        if folder.get("path"):
             actions.append(button("Choose new location…", lambda: self.relocate_sync_folder(folder)))
         actions.append(button("Rescan folder", lambda: self.rescan_issue(folder)))
         page.append(row(folder.get("label") or folder["id"], "", *actions))
@@ -790,11 +790,10 @@ class MyDrive(Gtk.Application):
             def done(snapshot):
                 self.snapshot = snapshot
                 if self.sync_issue_folder == folder["id"]:
-                    fresh = next((item for item in snapshot["folders"] if item["id"] == folder["id"]), folder)
-                    self.show_sync_issue(fresh)
-                elif self.sync_attention and self.sync_issue_folder is None:
+                    self.sync_issue_folder = None
+                if self.sync_attention and self.sync_issue_folder is None:
                     self.show_sync_attention()
-                else:
+                elif self.sync_issue_folder is None:
                     self.render_sync()
 
             self.work("sync", "Update sync location", relocate, done)
@@ -921,7 +920,8 @@ class MyDrive(Gtk.Application):
             assert self.sync_attention and self.sync_issue_folder is None
             folder = sync_page.get_last_child()
             actions = folder.get_last_child()
-            assert actions.get_first_child().get_label() == "Rescan"
+            assert actions.get_first_child().get_label() == "Choose new location…"
+            assert actions.get_first_child().get_next_sibling().get_label() == "Rescan"
             actions.get_last_child().emit("clicked")
             GLib.timeout_add(25, verify_detail)
             return GLib.SOURCE_REMOVE

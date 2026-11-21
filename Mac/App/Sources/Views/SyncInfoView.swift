@@ -11,19 +11,19 @@ struct SyncInfoView: View {
                               back: app.closeSyncInfo, refresh: app.refreshSyncInfo)
             Text(app.syncInfo?.label ?? "")
                 .font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+            if let info = app.syncInfo, info.errors {
+                HStack(spacing: 6) {
+                    if let folder = app.snapshot?.folders.first(where: { $0.id == info.folderId }), !folder.path.isEmpty {
+                        Button("Choose new location…") { app.relocateSyncFolder(folder) }
+                    }
+                    Button("Rescan folder") { app.rescanFolder(info.folderId) }
+                }.controlSize(.small).disabled(app.busy != nil || app.syncInfoLoading)
+            }
             if app.syncInfoLoading {
                 Text("Loading…").font(.system(size: 12)).foregroundStyle(.secondary)
             } else if let failure = app.syncInfoFailure {
                 Text(failure).font(.system(size: 12)).foregroundStyle(.secondary)
             } else if app.syncInfo?.errors == true {
-                if let id = app.syncInfo?.folderId {
-                    HStack(spacing: 6) {
-                        if let folder = app.snapshot?.folders.first(where: { $0.id == id }), folder.canRelocate {
-                            Button("Choose new location…") { app.relocateSyncFolder(folder) }
-                        }
-                        Button("Rescan folder") { app.rescanFolder(id) }
-                    }.controlSize(.small).disabled(app.busy != nil)
-                }
                 ErrorsDialog()
             } else {
                 PendingDialog()
@@ -65,7 +65,7 @@ struct SyncAttentionView: View {
                             Text(advice).font(.system(size: 11)).foregroundStyle(.secondary)
                         }
                         HStack(spacing: 6) {
-                            if folder.canRelocate {
+                            if !folder.path.isEmpty {
                                 Button("Choose new location…") { app.relocateSyncFolder(folder) }
                             }
                             Button("Rescan") { app.rescanFolder(folder.id) }

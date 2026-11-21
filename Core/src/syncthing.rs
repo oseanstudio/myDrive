@@ -2,7 +2,7 @@
 use reqwest::{blocking::Client, Method};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::{fs, path::Path, time::Duration};
+use std::{fs, io::Read, path::Path, time::Duration};
 use url::Url;
 
 #[derive(Clone, Deserialize, Serialize, Default)]
@@ -101,6 +101,12 @@ impl Api {
         })?;
         let status = response.status();
         if !status.is_success() {
+            if status.is_server_error() && segments == ["rest", "db", "scan"] {
+                // The scan endpoint returns a short plain-text reason with HTTP 500.
+                let mut reason = String::new();
+                let _ = response.take(2048).read_to_string(&mut reason);
+                return Err(scan_failure(&reason, status.as_u16()));
+            }
             return Err(match status.as_u16() {
                 401 | 403 => {
                     "Syncthing rejected the API key. Reconnect using its current local config.xml."
@@ -137,11 +143,21 @@ impl Api {
     }
 
     fn folder_errors(&self, id: &str, preview: bool) -> Result<Value, String> {
+        if id.is_empty() {
+            return Err("Choose a Syncthing folder.".into());
+        }
         let mut query = vec![("folder", id)];
         if preview {
             query.extend([("page", "1"), ("perpage", "1")]);
         }
-        let mut result = self.get(&["rest", "folder", "errors"], &query)?;
+        let mut result = match self.get(&["rest", "folder", "errors"], &query) {
+            Ok(result) => result,
+            Err(error) => {
+                let folder = self.folder(id).map_err(|_| error.clone())?;
+                let reason = unavailable_sync_root(&folder).ok_or(error)?;
+                json!({"errors": [{"path": folder["path"], "error": reason}]})
+            }
+        };
         let rows = if result.is_array() {
             result.as_array_mut()
         } else {
@@ -239,12 +255,8 @@ impl Api {
                                         s["error"].as_str().filter(|e| !e.is_empty())
                                     {
                                         result["error"] = json!(error);
-                                        if missing_sync_root(error) {
-                                            result["can_relocate"] = json!(true);
-                                        }
-                                        if let Some(advice) = folder_error_advice(error) {
-                                            result["error_advice"] = json!(advice);
-                                        }
+                                    } else if s["state"] == "error" {
+                                        result["error"] = json!("Syncthing could not sync this folder.");
                                     }
                                     result["status"] = pick(
                                         &s,
@@ -268,6 +280,17 @@ impl Api {
                                     )
                                 }
                                 Err(e) => result["error"] = json!(e),
+                            }
+                            if let Some((can_relocate, advice)) = result["error"]
+                                .as_str()
+                                .map(|error| (missing_sync_root(error), folder_error_advice(error)))
+                            {
+                                if can_relocate {
+                                    result["can_relocate"] = json!(true);
+                                }
+                                if let Some(advice) = advice {
+                                    result["error_advice"] = json!(advice);
+                                }
                             }
                             result
                         })
@@ -503,14 +526,14 @@ impl Api {
                 )
             }
             "scan" => {
-                self.folder(id)?;
+                let folder = self.folder(id)?;
+                if let Some(reason) = unavailable_sync_root(&folder) {
+                    return Err(scan_failure(reason, 500));
+                }
                 self.call("POST", &["rest", "db", "scan"], &[("folder", id)], None)?;
                 Ok(Value::Null)
             }
-            "errors" => {
-                self.folder(id)?;
-                self.folder_errors(id, false)
-            }
+            "errors" => self.folder_errors(id, false),
             "events" => {
                 let since = data["since"].as_u64().unwrap_or(0);
                 let timeout_s = data["timeout_s"].as_u64().unwrap_or(5);
@@ -733,7 +756,7 @@ impl Api {
         if previous_root == root {
             return Err("Choose the folder's new location.".into());
         }
-        let marker = folder["markerName"].as_str().filter(|name| !name.is_empty()).unwrap_or(".stfolder");
+        let marker = sync_marker(&folder);
         validate_moved_root(&previous_root, &root, marker)?;
         let folders = self.get(&["rest", "config", "folders"], &[])?;
         let mut proposed = folders.clone();
@@ -920,9 +943,55 @@ fn missing_sync_root(error: &str) -> bool {
     lower.contains("folder path missing") || lower.contains("folder marker missing")
 }
 
+fn sync_marker(folder: &Value) -> &str {
+    folder["markerName"].as_str().filter(|name| !name.is_empty()).unwrap_or(".stfolder")
+}
+
+fn valid_sync_marker(marker: &str) -> bool {
+    let mut components = Path::new(marker).components();
+    matches!(components.next(), Some(std::path::Component::Normal(_))) && components.next().is_none()
+}
+
+fn unavailable_sync_root(folder: &Value) -> Option<&'static str> {
+    use std::io::ErrorKind;
+    if !matches!(folder["filesystemType"].as_str(), None | Some("" | "basic")) {
+        return None;
+    }
+    let path = absolute_configured_path(folder["path"].as_str()?).ok()?;
+    match fs::metadata(&path) {
+        Err(error) if matches!(error.kind(), ErrorKind::NotFound | ErrorKind::NotADirectory) => {
+            return Some("Folder path missing.");
+        }
+        Ok(folder) if !folder.is_dir() => return Some("Folder path missing."),
+        Ok(_) => {}
+        Err(_) => return None,
+    }
+    let marker = sync_marker(folder);
+    if valid_sync_marker(marker)
+        && fs::symlink_metadata(path.join(marker)).is_err_and(|error| error.kind() == ErrorKind::NotFound)
+    {
+        return Some("Folder marker missing.");
+    }
+    None
+}
+
+fn scan_failure(reason: &str, status: u16) -> String {
+    if missing_sync_root(reason) {
+        return "Syncthing cannot find the current folder or its marker. Choose new location… if it moved, or reconnect its drive.".into();
+    }
+    let reason = reason.to_ascii_lowercase();
+    if reason.contains("folder is paused") || reason.contains("folder paused") {
+        return "This sync folder is paused. Resume it before rescanning.".into();
+    }
+    if let Some(advice) = folder_error_advice(&reason) {
+        return format!("Syncthing could not rescan the folder. {advice}");
+    }
+    format!("Syncthing could not rescan the folder (HTTP {status}). Open Folder errors for details.")
+}
+
 fn validate_moved_root(old: &Path, new: &Path, marker: &str) -> Result<(), String> {
-    use std::{io::ErrorKind, path::Component};
-    if !matches!(Path::new(marker).components().collect::<Vec<_>>().as_slice(), [Component::Normal(_)]) {
+    use std::io::ErrorKind;
+    if !valid_sync_marker(marker) {
         return Err("The sync folder has an unsupported marker name.".into());
     }
     match fs::symlink_metadata(old.join(marker)) {
@@ -996,7 +1065,7 @@ fn plan_share(
 
 // Resolve aliases even when the last components are temporarily missing.
 // Missing/offline configured paths must not silently bypass overlap checks.
-fn configured_share_path(value: &str) -> Result<std::path::PathBuf, String> {
+fn absolute_configured_path(value: &str) -> Result<std::path::PathBuf, String> {
     let path =
         if value == "~" || value.starts_with("~/") || (cfg!(windows) && value.starts_with("~\\")) {
             let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
@@ -1010,7 +1079,11 @@ fn configured_share_path(value: &str) -> Result<std::path::PathBuf, String> {
             "A configured sync path is not absolute. Repair it in Syncthing before sharing.".into(),
         );
     }
-    let mut ancestor = path.clone();
+    Ok(path)
+}
+
+fn configured_share_path(value: &str) -> Result<std::path::PathBuf, String> {
+    let mut ancestor = absolute_configured_path(value)?;
     let mut missing = Vec::new();
     loop {
         match ancestor.canonicalize() {

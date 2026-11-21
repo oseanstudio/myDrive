@@ -285,6 +285,55 @@ fn syncthing_attention_previews_the_real_error_with_a_suggested_fix() {
 }
 
 #[test]
+fn syncthing_scan_reports_missing_folder_from_a_500_response() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::create_dir(temp.path().join(".stfolder")).unwrap();
+    let (host, worker) = server(vec![
+        Exchange {
+            method: "GET", target: "/rest/config/folders/studio?", status: 200,
+            body: serde_json::json!({"id": "studio", "path": temp.path()}).to_string(),
+            expect_body: None, expected_header: Some("x-api-key: test-key"),
+        },
+        Exchange {
+            method: "POST", target: "/rest/db/scan?folder=studio", status: 500,
+            body: "folder path missing\n".into(),
+            expect_body: None, expected_header: Some("x-api-key: test-key"),
+        },
+    ]);
+    let api = crate::syncthing::Api::new(&crate::syncthing::Connection {
+        endpoint: host, api_key: "test-key".into(), certificate_pem: String::new(),
+    }).unwrap();
+    let error = api.execute("scan", &serde_json::json!({"folder_id": "studio"}), temp.path()).unwrap_err();
+    assert!(error.contains("Choose new location"));
+    worker.join().unwrap();
+}
+
+#[test]
+fn syncthing_folder_errors_remain_actionable_when_the_runner_is_missing() {
+    let temp = tempfile::tempdir().unwrap();
+    let removed = temp.path().join("original");
+    let (host, worker) = server(vec![
+        Exchange {
+            method: "GET", target: "/rest/folder/errors?folder=studio", status: 404,
+            body: "folder is not running\n".into(),
+            expect_body: None, expected_header: Some("x-api-key: test-key"),
+        },
+        Exchange {
+            method: "GET", target: "/rest/config/folders/studio?", status: 200,
+            body: serde_json::json!({"id": "studio", "path": removed}).to_string(),
+            expect_body: None, expected_header: Some("x-api-key: test-key"),
+        },
+    ]);
+    let api = crate::syncthing::Api::new(&crate::syncthing::Connection {
+        endpoint: host, api_key: "test-key".into(), certificate_pem: String::new(),
+    }).unwrap();
+    let response = api.execute("errors", &serde_json::json!({"folder_id": "studio"}), temp.path()).unwrap();
+    assert_eq!(response["errors"][0]["error"], "Folder path missing.");
+    assert!(response["errors"][0]["advice"].as_str().unwrap().contains("choose its new location"));
+    worker.join().unwrap();
+}
+
+#[test]
 fn syncthing_relocates_a_moved_root_without_replacing_the_folder() {
     use serde_json::json;
     let temp = tempfile::tempdir().unwrap();

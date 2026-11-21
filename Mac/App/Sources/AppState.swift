@@ -632,13 +632,11 @@ final class AppState: ObservableObject {
             _ = try await self.syncthing.call("relocate", payload: [
                 "folder_id": folder.id, "expected_path": folder.path, "local_path": destination.path
             ])
+            if self.view == .syncInfo, self.syncInfo?.errors == true, self.syncInfo?.folderId == folder.id {
+                self.closeSyncInfo()
+            }
             await self.refreshSnapshot()
             if self.view == .syncAttention { await self.loadSyncAttention() }
-            if self.view == .syncInfo, self.syncInfo?.errors == true, self.syncInfo?.folderId == folder.id {
-                let raw = try await self.syncthing.call("errors", payload: ["folder_id": folder.id], timeout: 25)
-                self.errorItems = IssueItem.rows(from: raw)
-                self.syncInfoFailure = nil
-            }
         }
     }
 
@@ -1276,6 +1274,10 @@ final class AppState: ObservableObject {
                 await self.pollEvents()
             }
         case .rescan(let id): rescanFolder(id)
+        case .relocate(let id):
+            if let folder = snapshot?.folders.first(where: { $0.id == id }) {
+                relocateSyncFolder(folder)
+            }
         case .resume(let id):
             if let folder = snapshot?.folders.first(where: { $0.id == id }) {
                 pauseFolder(folder, paused: false)

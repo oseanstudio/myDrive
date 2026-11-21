@@ -92,11 +92,12 @@ public sealed partial class MainWindow
         {
             await SyncthingService.Call("relocate", new { folder_id = id, expected_path = oldPath, local_path = selected.Path }, token);
             relocated = true;
+            if (currentView == "sync-info" && syncInfoFolderId == id) currentView = syncInfoBack;
             await RefreshSyncthing();
         });
         if (!relocated) return;
         if (currentView == "sync-attention") await LoadSyncAttention();
-        else if (currentView == "sync-info" && syncInfoFolderId == id) await LoadSyncInfo();
+        else Render();
     }
 
     private void RenderSyncAttention()
@@ -142,7 +143,7 @@ public sealed partial class MainWindow
             content.Children.Add(details);
             if (advice.Length > 0) content.Children.Add(Text(advice, 11));
             var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
-            if (B(folder, "can_relocate")) actions.Children.Add(QuickButton("Choose new location…", () => _ = ChooseMovedSyncFolder(folder)));
+            if (S(folder, "path").Length > 0) actions.Children.Add(QuickButton("Choose new location…", () => _ = ChooseMovedSyncFolder(folder)));
             actions.Children.Add(QuickButton("Rescan", () => _ = RescanFromErrors(id, name)));
             actions.Children.Add(QuickButton("View errors", () => _ = ShowSyncInfo(id, "errors", "Folder errors")));
             content.Children.Add(actions);
@@ -189,17 +190,18 @@ public sealed partial class MainWindow
     {
         RenderSyncInfoHeader(syncInfoTitle, BackFromSyncInfo, () => _ = LoadSyncInfo(), syncInfoLoading);
         var label=QuickText(syncInfoFolderLabel,11);ToolTipService.SetToolTip(label,syncInfoFolderLabel);page.Children.Add(label);
-        if(syncInfoLoading){page.Children.Add(Text("Loading…",12));return;}
-        if(syncInfoFailure.Length>0){page.Children.Add(Text(syncInfoFailure,12));return;}
         var currentFolder=syncSnapshot is {} snapshot?Items(snapshot,"folders").FirstOrDefault(f=>S(f,"id")==syncInfoFolderId):default;
         if(syncInfoAction=="errors" && syncInfoFolderId.Length>0)
         {
             var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
-            if (currentFolder.ValueKind == JsonValueKind.Object && B(currentFolder, "can_relocate"))
+            if (currentFolder.ValueKind == JsonValueKind.Object && S(currentFolder, "path").Length > 0)
                 actions.Children.Add(QuickButton("Choose new location…", () => _ = ChooseMovedSyncFolder(currentFolder)));
             actions.Children.Add(QuickButton("Rescan folder",()=>_=RescanFromErrors(syncInfoFolderId,syncInfoFolderLabel)));
+            foreach (var button in actions.Children.OfType<Button>()) button.IsEnabled = !syncInfoLoading && !busy;
             page.Children.Add(actions);
         }
+        if(syncInfoLoading){page.Children.Add(Text("Loading…",12));return;}
+        if(syncInfoFailure.Length>0){page.Children.Add(Text(syncInfoFailure,12));return;}
         var count=0;
         void Row(string path,string detail,string advice="")
         {

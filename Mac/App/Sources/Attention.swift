@@ -6,6 +6,7 @@ import Foundation
 enum FixKind: Equatable {
     case retrySnapshot
     case rescan(String)              // folder id
+    case relocate(String)            // folder id
     case resume(String)              // folder id
     case showErrors(String)          // folder id
     case showPending(String)         // folder id
@@ -71,7 +72,7 @@ enum ErrorClass: Equatable {
             self = .permissions
         } else if lower.contains("too many open files") {
             self = .tooManyOpenFiles
-        } else if lower.contains("folder path missing") || lower.contains("no such file or directory") {
+        } else if lower.contains("folder path missing") || lower.contains("folder marker missing") || lower.contains("no such file or directory") {
             self = .pathMissing
         } else if lower.contains("timeout") || lower.contains("connection")
             || lower.contains("index") || lower.contains("beacon") {
@@ -96,7 +97,7 @@ enum ErrorClass: Equatable {
         case .tooManyOpenFiles:
             return "This Mac hit its open-file limit while syncing \(count) items."
         case .pathMissing:
-            return "The folder's storage is missing on this Mac. Reconnect its volume, then rescan."
+            return "Choose its new location if the folder moved, or reconnect its drive."
         case .peerConnection:
             return "The other device did not respond for \(count) items. Check that it is online."
         case .other:
@@ -159,10 +160,14 @@ enum AttentionCenter {
             for folder in errorFolders.sorted(by: { $0.displayName < $1.displayName }) {
                 let rows = folderErrors[folder.id] ?? []
                 let first = rows.first
-                let errorClass = ErrorClass(errorText: first?.message ?? folder.error ?? "")
+                let errorClass: ErrorClass = folder.canRelocate ? .pathMissing :
+                    ErrorClass(errorText: first?.message ?? folder.error ?? "")
                 let detail = errorClass.summary(count: max(rows.count, Int(folder.status.pullErrors), 1),
                                                 first: first?.path ?? "")
                 var fixes: [AttentionFix] = []
+                if !folder.path.isEmpty {
+                    fixes.append(AttentionFix(label: "Choose new location…", kind: .relocate(folder.id)))
+                }
                 if errorClass == .leftoverFolders {
                     fixes.append(AttentionFix(label: "Delete leftovers here",
                                               kind: .deleteLeftovers(folder.id)))

@@ -12,6 +12,15 @@ enum Diagnostics {
                 try FileManager.default.createDirectory(at:directory,withIntermediateDirectories:true)
                 var captures:[String]=[]
                 let layout=layoutCheck(directory:directory,captures:&captures)
+                let failedSync = Snapshot(from: ["folders": [
+                    ["id": "moved-folder", "label": "Moved folder", "path": "/tmp/mydrive-old-folder",
+                     "status": ["pullErrors": 1]]
+                ]] as JSON)
+                let syncFixes = AttentionCenter.derive(snapshot: failedSync, snapshotError: nil, mounts: [],
+                                                       folderErrors: [:], incoming: [])
+                guard syncFixes.first?.fixes.first?.kind == .relocate("moved-folder") else {
+                    throw BlipReceiverError.message("A folder error did not offer its new-location picker")
+                }
                 let state=AppState(),receiver=BlipReceiver(root:directory.appendingPathComponent("blip-fixture"))
                 let peer="11111111-1111-4111-8111-111111111111:22222222-2222-4222-8222-222222222222"
                 receiver.state="Ready in the background"
