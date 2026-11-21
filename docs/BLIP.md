@@ -10,7 +10,7 @@ Waiting jobs survive reboot and resume when myDrive runs again. Send multiple fi
 
 Open the popup's view menu → **Send & Receive**, or **＋ → Send with Blip…**. The same controls are available in the full window.
 
-1. On Windows, open myDrive after signing in to Blip once. myDrive keeps the existing device available through a managed headless helper; the official Blip app can be fully quit. The helper uses Blip's own profile paths and native interprocess host election, so the two apps can open and close without concurrent profile writers. No account file or credential is copied, no additional device is registered, and no sign-in code is requested. **Connect… → Use this computer's Blip account → Connect** is also available. Mac uses the same background behavior with the supported installed Blip framework. See Mac/README.md for the build requirement.
+1. On Windows, open myDrive after signing in to Blip once. myDrive's native helper keeps the existing device available when the Blip app is closed. It uses Blip's profile paths and host election, so either app can run the engine. The existing account and device stay in place. **Connect… → Use this computer's Blip account → Connect** is also available. Mac uses the supported installed Blip framework. See Mac/README.md for the build requirement.
 2. For a separate headless device, choose **Connect… → Start separately → Connect**. This creates a separate local myDrive profile and starts the headless engine. Then choose **Connect Blip…**, enter an email, and explicitly choose **Send sign-in code**. Enter the code in the native password field. This separate mode requires its own sign-in; it is optional when reusing the existing Windows desktop device.
 3. In separate mode, wait for receiving settings to verify. Choose **Send…**, add the files or folder, and click the recipient device to send. Desktop mode uses the same account/device shown in Blip.
 4. Incoming invitations have **Receive**. Manual receives in myDrive use separate UUID folders under myDrive's profile downloads directory. In separate mode you can optionally allow future automatic receiving from the exact device. In desktop mode Blip retains its existing automatic receiving rules and download location; those downloads may appear only in desktop Blip's folder, outside myDrive's **Received files** folder.
@@ -56,34 +56,22 @@ The shortcut file itself is never executed. Only the InternetShortcut URL field 
 
 The parser, typed saved-transfer metadata mapping, sender policy, completion handling and duplicate prevention are covered by local fixtures. The user confirmed real Windows automatic acceptance and default-browser opening, including with desktop Blip fully closed. Actual Mac interoperability still requires a fresh approved-sender test on a Mac.
 
-## Runtime preparation
+## Windows engine setup
 
-The source adapter is under `Blip/`; it uses the reviewed private Blip 1.2.8.0 Java/JNI interface. It is not an official Blip CLI. `Blip/runtime-lock.json` pins the reviewed native library and wrapper hashes, and mismatched engines are refused.
+The Windows app, CLI and MCP use the same native myDrive helper. It loads the local x64 `blip-jni.dll` from Blip 1.2.8.0 after verifying its SHA-256, then talks to the engine over a local Windows socket. Java and Node.js are unnecessary. The Windows installer includes the myDrive helper. The Blip DLL comes from a compatible copy of Blip on the computer.
 
-Runtime binaries are kept outside the synchronized project, at `OSEAN_STUDIO_DATA/Runtimes/myDrive Blip`, or the `OseanStudio/storage.json` root followed by `Runtimes/myDrive Blip`. Without either setting, the root is `%LOCALAPPDATA%/OseanStudio`. That directory contains `node.exe`, `jdk-25…`, `blip/app/*.jar`, `blip/bin/blip-jni.dll` and compiled `classes/`. Source and published app scripts contain no vendor binaries or account tokens. The local profile defaults to `%LOCALAPPDATA%/myDrive/Blip`; its socket path must be under 108 UTF-8 bytes.
+Existing prepared installations can keep using their `blip/bin/blip-jni.dll` in the current runtime folder. myDrive also checks the registered Blip Windows package and its standard per-user install location. Set `MYDRIVE_BLIP_DLL` to the absolute path of your compatible local DLL if needed. The expected hash is in `Blip/runtime-lock.json`. The separate myDrive profile defaults to `%LOCALAPPDATA%/myDrive/Blip`.
 
-The Windows app compiles its bundled adapter source once per adapter revision using the prepared local JDK. Status checks use that managed host’s existing process. Older prepared adapters still work with separate status requests.
-
-The development preparation script accepts an already verified proof-of-concept runtime:
-
-```powershell
-./tests/prepare-blip.ps1 -PreparedRuntime 'C:\path\to\blip-poc\.runtime'
-```
-
-It copies the runtime to the external local runtime root, verifies the reviewed Blip hashes (native library, wrapper and desktop path decoder), copies the local Node executable, and compiles this checkout's Java sources there. It does not copy `.profiles`, sign in, change preferences, or start an engine. Blip and JDK use remain subject to their respective licenses; their installation here does not grant redistribution rights. Blip account, discovery and relay services still depend on Blip's infrastructure and plans.
+Status refreshes reuse the managed helper. myDrive preserves existing desktop account data, transfer state and sender permissions in place. Blip account, discovery and relay services still depend on Blip's infrastructure and plans.
 
 ## Checks
 
 `node --test Blip/test/cli.test.mjs` covers CLI safety and framing. The standalone C# service check is `tests/BlipServiceChecks/`; it uses a local fake CLI, not an account or network. `myDrive.exe --diagnose-blip OUTPUT_DIRECTORY` renders stopped, sign-in, pending/active/completed, long-list, error, light/dark and full-window fixtures. That mode skips normal startup and makes no account requests or transfers. Review the generated `blip-report.json` and screenshots. The default profile is not read by fixture diagnostics.
 
-`tests/DesktopBlipChecks/` performs read-only IPC queries against running desktop Blip using a fresh myDrive metadata profile. It checks attachment, disconnect/reconnect, stable identity and absence of an owned host. Arguments: adapter bundle, prepared runtime, Node executable, fresh short profile path. Do not run it against another user's session. Its output omits identities, tokens, device names and transfer details. CLI users can supply `--socket PATH` for status/devices/transfers/send/accept; hosting, sign-in and trust operations are refused with that option.
+`cargo test --manifest-path Core/Cargo.toml private_host_starts_without_java -- --ignored` exercises the native host using a temporary unsigned-in profile and a loopback address. Set `MYDRIVE_BLIP_DLL` to the verified local DLL before running it.
 
 To test real transfers later, use a second device on cellular or a different network with Tailscale disconnected, start with a generated harmless file, and compare its SHA-256 at both ends after native completion. Then test a folder and interruption/resume. Local fixture tests do not establish internet transfer performance or unattended receiver readiness.
 
-
-## Windows link runtime repair
-
-Completed shortcut path decoding uses Windows known-folder lookups through JNA. The prepared runtime must include the complete, matching JNA 5.19.1 artifact in its external support directory. Run `tests/prepare-blip-support.ps1` to download and verify the SHA-256 pinned in `Blip/runtime-lock.json`; the CLI verifies it before use and places it before the packaged JNA classes on its classpath. This fixes the missing `jnidispatch.dll` resource that a real incoming shortcut exposed. No vendor binaries are stored in synchronized source. JNA licensing and redistribution requirements apply; see [upstream JNA](https://github.com/java-native-access/jna).
 
 ## Clipboard shortcut (Windows and macOS)
 

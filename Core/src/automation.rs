@@ -222,7 +222,7 @@ pub fn run_with_host(
     }
 }
 
-fn uuid(value: &str) -> bool {
+pub(crate) fn uuid(value: &str) -> bool {
     value.len() == 36
         && value.bytes().enumerate().all(|(i, byte)| {
             if [8, 13, 18, 23].contains(&i) {
@@ -372,46 +372,15 @@ fn helper_command(executable: impl AsRef<std::ffi::OsStr>) -> Command {
 
 #[cfg(windows)]
 fn blip_command(command: &str, values: &[String], host: bool) -> Result<Command, String> {
-    let data = user_data()?;
-    let studio = data
-        .parent()
-        .ok_or("Cannot locate the Blip runtime folder.")?
-        .join("OseanStudio");
-    let configured: Value = fs::read(studio.join("storage.json"))
-        .ok()
-        .and_then(|data| serde_json::from_slice(&data).ok())
-        .unwrap_or(Value::Null);
-    let runtime = env::var_os("MYDRIVE_BLIP_RUNTIME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            env::var_os("OSEAN_STUDIO_DATA")
-                .map(PathBuf::from)
-                .or_else(|| configured["root"].as_str().map(PathBuf::from))
-                .unwrap_or(studio)
-                .join("Runtimes/myDrive Blip")
-        });
-    let bundled = runtime.join("node.exe");
-    let node = if bundled.is_file() {
-        bundled
-    } else {
-        PathBuf::from("node.exe")
-    };
-    let script = binary_dir()?.join("Blip/cli.mjs");
-    if !script.is_file() {
-        return Err("The Blip adapter is missing from this installation.".into());
-    }
-    let mut child = helper_command(node);
+    let executable = env::current_exe().map_err(|_| "The myDrive helper is unavailable.")?;
+    let mut child = helper_command(executable);
     child
-        .arg(script)
+        .arg("--windows-blip")
         .arg(command)
         .arg("--profile")
-        .arg(data.join("Blip"))
-        .env("MYDRIVE_BLIP_RUNTIME", runtime)
-        .env("MYDRIVE_BLIP_JSONL", "1");
+        .arg(user_data()?.join("Blip"));
     if !host {
-        child
-            .arg("--socket")
-            .arg(env::temp_dir().join("net.blip.desktop/sock"));
+        child.arg("--desktop");
     }
     child.args(values);
     Ok(child)
@@ -444,6 +413,12 @@ fn bridge(mut child: Command) -> Result<Value, String> {
         "Could not start the installed Blip backend. Check the Blip setup documentation."
     })?;
     if !output.status.success() {
+        #[cfg(windows)]
+        if let Ok(result) = serde_json::from_slice::<Value>(&output.stdout) {
+            if let Some(error) = result["error"].as_str() {
+                return Err(crate::windows_blip::error_message(error).into());
+            }
+        }
         let reason = String::from_utf8_lossy(&output.stderr);
         let reason = reason.lines().next().unwrap_or("");
         return Err(if reason.is_empty() {
@@ -462,6 +437,11 @@ fn bridge(mut child: Command) -> Result<Value, String> {
 }
 
 fn blip_action(command: &str, arguments: &Value) -> Result<Value, String> {
+    #[cfg(windows)]
+    if matches!(command, "status" | "devices" | "transfers") {
+        let result = crate::windows_blip::desktop_poll(user_data()?.join("Blip"))?;
+        return Ok(result[command].clone());
+    }
     let mut values = Vec::new();
     let native = match command {
         "send" => {
@@ -501,14 +481,6 @@ fn blip_action(command: &str, arguments: &Value) -> Result<Value, String> {
 }
 
 fn blip_host_command() -> Result<Command, String> {
-    #[cfg(windows)]
-    if !user_data()?.join("Blip/mydrive-profile.json").is_file() {
-        bridge(blip_command(
-            "init",
-            &["--name".into(), "myDrive".into()],
-            true,
-        )?)?;
-    }
     blip_command(
         if cfg!(windows) {
             "desktop-serve"

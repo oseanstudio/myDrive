@@ -119,6 +119,12 @@ jobs:
           $core = Join-Path $directory 'mydrive-core.exe'
           $result = '{"action":"version"}' | & $core | ConvertFrom-Json
           if (!$result.ok) { throw 'The installed core did not respond.' }
+          $blipProfile = Join-Path $env:RUNNER_TEMP 'mbp'
+          $blip = & $core --windows-blip init --profile $blipProfile | ConvertFrom-Json
+          if ($LASTEXITCODE -or !$blip.ok) { throw 'The installed native Blip helper did not respond.' }
+          foreach ($legacy in @('Blip/cli.mjs', 'Blip/java/BlipBridge.java', 'blip-jni.dll')) {
+            if (Test-Path -LiteralPath (Join-Path $directory $legacy)) { throw "Unexpected Windows Blip payload $legacy." }
+          }
           node tests/automation-smoke.mjs (Join-Path $directory 'mydrive-cli.exe')
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           $shareHost = Join-Path $directory 'mydrive-smb-host.exe'

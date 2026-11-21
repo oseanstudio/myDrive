@@ -28,9 +28,6 @@
     <Content Include="Assets\tray-dark.ico" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
   <ItemGroup>
-    <Content Include="..\..\Blip\cli.mjs" Link="Blip\cli.mjs" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
-    <Content Include="..\..\Blip\java\BlipBridge.java" Link="Blip\java\BlipBridge.java" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
-    <Content Include="..\..\Blip\runtime-lock.json" Link="Blip\runtime-lock.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <Content Include="..\..\docs\BLIP.md" Link="Blip\README.md" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
   <Target Name="CopyWinUIResourcesToPublish" AfterTargets="Publish">

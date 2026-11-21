@@ -163,7 +163,7 @@ public sealed partial class MainWindow
         }
         if(signedIn)actions.Children.Add(QuickButton("Senders…",()=>_=ChooseLinkSenders()));
         actions.Children.Add(QuickButton("Received files", OpenBlipDownloads)); page.Children.Add(actions);
-        if (!blip.RuntimeAvailable && !diagnosticMode) page.Children.Add(Card(Text("The Blip transfer engine is not prepared. Open the included Blip setup guide before starting.", 12)));
+        if (!blip.RuntimeAvailable && !diagnosticMode) page.Children.Add(Card(Text("The myDrive Blip helper is missing. Reinstall myDrive.", 12)));
         string failure = blipFailure.Length > 0 ? blipFailure : blip.LastError;
         if (blipRelayWaiting > 0) page.Children.Add(Text($"{blipRelayWaiting} waiting for relay or delivery", 11));
         if (failure.Length > 0) page.Children.Add(Card(Text(failure, 12)));

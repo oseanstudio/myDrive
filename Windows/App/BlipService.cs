@@ -8,7 +8,8 @@ namespace MyDrive;
 // Owns only myDrive's helpers. The native election arbitrates the shared Blip host.
 public sealed class BlipService : IAsyncDisposable
 {
-    private readonly string bundle, runtime, profile, node;
+    private readonly string bundle, runtime, profile, executable;
+    private readonly bool fixture;
     private readonly SemaphoreSlim lifecycle = new(1, 1);
     private Process? host;
     private Task? observer;
@@ -23,7 +24,7 @@ public sealed class BlipService : IAsyncDisposable
     public string LastError { get; private set; } = "";
     public string ProfileDirectory => profile;
     public string DownloadsDirectory => Path.Combine(profile, "downloads");
-    public bool RuntimeAvailable => File.Exists(node) && File.Exists(Path.Combine(bundle, "cli.mjs"));
+    public bool RuntimeAvailable => File.Exists(executable) && (!fixture || File.Exists(Path.Combine(bundle, "cli.mjs")));
     public bool UsesDesktopSession => attachedSocket != null;
     public bool DesktopAvailable => RuntimeAvailable;
     public bool IsRunning { get { try { return host is { HasExited: false }; } catch { return false; } } }
@@ -32,6 +33,8 @@ public sealed class BlipService : IAsyncDisposable
     {
         get
         {
+            var installed = Environment.GetEnvironmentVariable("MYDRIVE_BLIP_RUNTIME");
+            if (!string.IsNullOrWhiteSpace(installed)) return installed;
             var root = Environment.GetEnvironmentVariable("OSEAN_STUDIO_DATA");
             if (string.IsNullOrWhiteSpace(root))
             {
@@ -48,25 +51,30 @@ public sealed class BlipService : IAsyncDisposable
     public BlipService(string bundleDirectory, string runtimeDirectory, string profileDirectory, string? nodeExecutable = null, string? desktopSocketPath = null)
     {
         bundle = Path.GetFullPath(bundleDirectory); runtime = Path.GetFullPath(runtimeDirectory); profile = Path.GetFullPath(profileDirectory);
-        node = nodeExecutable ?? Path.Combine(runtime, OperatingSystem.IsWindows() ? "node.exe" : "node");
-        desktopSocket = Path.GetFullPath(desktopSocketPath ?? Path.Combine(Path.GetTempPath(), "net.blip.desktop", "sock"));
+        fixture = nodeExecutable != null;
+        executable = nodeExecutable ?? Path.Combine(AppContext.BaseDirectory, "mydrive-core.exe");
+        desktopSocket = Path.GetFullPath(desktopSocketPath ?? Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Temp", "net.blip.desktop", "sock"));
     }
     private Process NewProcess(string command, IEnumerable<string>? arguments = null)
     {
-        if (!RuntimeAvailable) throw new IOException("Blip's transfer engine is not prepared. See the Blip setup instructions included with myDrive.");
-        var info = new ProcessStartInfo(node)
+        if (!RuntimeAvailable) throw new IOException("The myDrive Blip helper is missing. Reinstall myDrive.");
+        var info = new ProcessStartInfo(executable)
         {
-            UseShellExecute = false, CreateNoWindow = true, WorkingDirectory = bundle,
+            UseShellExecute = false, CreateNoWindow = true, WorkingDirectory = fixture ? bundle : AppContext.BaseDirectory,
             RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true,
-            StandardOutputEncoding = Encoding.UTF8, StandardErrorEncoding = Encoding.UTF8
+            StandardInputEncoding = new UTF8Encoding(false), StandardOutputEncoding = Encoding.UTF8, StandardErrorEncoding = Encoding.UTF8
         };
-        info.ArgumentList.Add(Path.Combine(bundle, "cli.mjs")); info.ArgumentList.Add(command);
+        info.ArgumentList.Add(fixture ? Path.Combine(bundle, "cli.mjs") : "--windows-blip"); info.ArgumentList.Add(command);
         info.ArgumentList.Add("--profile"); info.ArgumentList.Add(profile);
         if (attachedSocket != null && command is "status" or "devices" or "transfers" or "poll" or "send" or "accept")
-        { info.ArgumentList.Add("--socket"); info.ArgumentList.Add(attachedSocket); }
+        {
+            if (fixture) { info.ArgumentList.Add("--socket"); info.ArgumentList.Add(attachedSocket); }
+            else info.ArgumentList.Add("--desktop");
+        }
         if (arguments != null) foreach (var arg in arguments) info.ArgumentList.Add(arg);
         info.Environment["MYDRIVE_BLIP_RUNTIME"] = runtime;
-        info.Environment["MYDRIVE_BLIP_JSONL"] = "1";
+        if (fixture) info.Environment["MYDRIVE_BLIP_JSONL"] = "1";
         return new Process { StartInfo = info };
     }
     private static void KillOwned(Process process) { try { if (!process.HasExited) process.Kill(true); } catch { } }
@@ -128,6 +136,13 @@ public sealed class BlipService : IAsyncDisposable
         "acceptance_unconfirmed" => "Blip has not confirmed receiving. Check Transfers before trying Receive again.",
         "accept_not_waiting" => "This transfer is no longer waiting to receive. Refresh Transfers to see its current state.",
         "desktop_profile_missing" => "Open and sign in to Blip once on this computer, then reconnect myDrive. No new account is needed.",
+        "native_engine_missing" => "myDrive needs a compatible locally installed Blip engine. See the Windows setup guide.",
+        "native_engine_unsupported" => "This version of Blip’s engine is unsupported. See the Windows setup guide.",
+        "native_engine_load_failed" => "Windows could not load the compatible Blip engine.",
+        "native_connection_unavailable" => "myDrive could not connect to the local Blip engine.",
+        "host_already_running" => "This Blip profile is already running.",
+        "receive_policy_unconfirmed" => "Blip could not verify the receiving settings for this profile.",
+        "sign_in_required" => "Sign in to Blip first.",
         _ => "Blip could not confirm the request. Refresh before trying again."
     };
     public async Task StartAsync(CancellationToken token = default)
@@ -142,14 +157,14 @@ public sealed class BlipService : IAsyncDisposable
             var process = NewProcess("serve"); var ready = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             host?.Dispose(); host = process; process.Start(); observer = ObserveHost(process, ready);
             try { await ready.Task.WaitAsync(TimeSpan.FromSeconds(20), token); }
-            catch { await StopOwned(process); throw new IOException("Blip could not start. Check that the prepared engine matches this build and that its profile path is short enough."); }
+            catch { await StopOwned(process); throw new IOException(LastError.Length > 0 ? LastError : "Blip could not start. Check that the native engine matches this build and that its profile path is short enough."); }
         }
         finally { lifecycle.Release(); }
     }
     private async Task PrepareAsync(CancellationToken token)
     {
         await CommandAsync("doctor", token: token);
-        if (!Directory.Exists(profile)) await CommandAsync("init", new[] { "--name", "myDrive" }, token: token);
+        if (!File.Exists(Path.Combine(profile, "mydrive-profile.json"))) await CommandAsync("init", new[] { "--name", "myDrive" }, token: token);
         if (!File.Exists(Path.Combine(profile, "mydrive-profile.json"))) throw new IOException("The myDrive Blip folder must be a myDrive profile. Use desktop Blip through its local connection, not its account folder.");
     }
     public async Task UseDesktopAsync(CancellationToken token = default)
@@ -159,7 +174,8 @@ public sealed class BlipService : IAsyncDisposable
         {
             if (UsesDesktopSession){if(IsRunning)return;attachedSocket=null;}
             if (IsRunning) throw new IOException("Stop myDrive's separate Blip engine before connecting to desktop Blip.");
-            await PrepareAsync(token);
+            LastError = "";
+            await CommandAsync("doctor", token: token);
             // A managed helper joins Blip's native host election using the existing device.
             // Desktop Blip can quit or reopen; the native mutex prevents competing writers.
             stopping=false;
@@ -169,9 +185,9 @@ public sealed class BlipService : IAsyncDisposable
             try {await ready.Task.WaitAsync(TimeSpan.FromSeconds(20),token);
                 status = SupportsPolling(process)
                     ? (await PollHostAsync(process, token)).GetProperty("status")
-                    : await CommandAsync("status", new[] { "--socket", desktopSocket }, token: token);
+                    : await CommandAsync("status", fixture ? new[] { "--socket", desktopSocket } : new[] { "--desktop" }, token: token);
                 if(!status.TryGetProperty("desktop_session",out var desktop)||desktop.ValueKind!=JsonValueKind.True)throw new IOException("Desktop identity could not be verified.");}
-            catch {await StopOwned(process);throw new IOException("Background Blip could not start. Open and sign in to Blip once, then reconnect myDrive.");}
+            catch {await StopOwned(process);throw new IOException(LastError.Length > 0 ? LastError : "Background Blip could not start. Open and sign in to Blip once, then reconnect myDrive.");}
             attachedSocket = desktopSocket; LastError = "";
         }
         finally { lifecycle.Release(); }
@@ -186,7 +202,12 @@ public sealed class BlipService : IAsyncDisposable
                 try
                 {
                     using var message = JsonDocument.Parse(line);
-                    if (!message.RootElement.TryGetProperty("event", out var name)) continue;
+                    if (!message.RootElement.TryGetProperty("event", out var name))
+                    {
+                        if (message.RootElement.TryGetProperty("error", out var error) && error.ValueKind == JsonValueKind.String)
+                            LastError = FriendlyError(error.GetString());
+                        continue;
+                    }
                     if (name.GetString() == "host_ready")
                     {
                         if (message.RootElement.TryGetProperty("poll_pipe", out var pipe) && pipe.ValueKind == JsonValueKind.True)
@@ -241,7 +262,10 @@ public sealed class BlipService : IAsyncDisposable
             timeout.CancelAfter(TimeSpan.FromSeconds(10));
             await process.StandardInput.WriteLineAsync(("POLL " + request.Id).AsMemory(), timeout.Token);
             await process.StandardInput.FlushAsync(timeout.Token);
-            return await request.Response.Task.WaitAsync(timeout.Token);
+            var response = await request.Response.Task.WaitAsync(timeout.Token);
+            if (response.TryGetProperty("error", out var error) && error.ValueKind == JsonValueKind.String)
+                throw new IOException(FriendlyError(error.GetString()));
+            return response;
         }
         finally
         {
@@ -291,7 +315,8 @@ public sealed class BlipService : IAsyncDisposable
         RequireRunning();
         if (UsesDesktopSession) throw new IOException("Manage sign-in in the Blip desktop app.");
         if (!System.Net.Mail.MailAddress.TryCreate(email, out var parsed) || parsed.Address != email) throw new IOException("Enter a valid Blip email address.");
-        await CommandAsync("login", new[] { "--email", email }, token: token);
+        if (fixture) await CommandAsync("login", new[] { "--email", email }, token: token);
+        else await CommandAsync("login", input: email + "\n", token: token);
     }
     public async Task VerifyAsync(string code, CancellationToken token = default)
     {
