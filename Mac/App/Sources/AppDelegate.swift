@@ -47,10 +47,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         appState.objectWillChange
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
-                DispatchQueue.main.async { self?.updateIcon() }
+                DispatchQueue.main.async { self?.updateStatusTooltip() }
             }
             .store(in: &cancellables)
-        updateIcon()
+        updateStatusTooltip()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -92,17 +92,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private func refreshWindowAppearance() {
         let appearance = AppDelegate.appearance(for: PrefStore.shared.preferences.appearance)
         fullWindow?.appearance = appearance
-        popover.contentViewController?.view.window?.appearance = appearance
+        if let window = popover.contentViewController?.view.window, window !== statusItem?.button?.window {
+            window.appearance = appearance
+        }
         blipNotice.panel.appearance = appearance
     }
 
     // MARK: - Status item
 
     private func setupStatusItem() {
-        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        let item = Self.makeStatusItem()
         if let button = item.button {
-            button.image = Self.statusImage
-            button.imagePosition = .imageLeft
+            button.target = self
             button.action = #selector(statusItemClicked(_:))
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
             button.addSubview(StatusFileDropView(button: button) { [weak self] urls in
@@ -112,6 +113,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             })
         }
         statusItem = item
+    }
+
+    static func makeStatusItem(persistPosition: Bool = true) -> NSStatusItem {
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        if persistPosition { item.autosaveName = "net.oseanstudio.myDrive" }
+        if let button = item.button {
+            button.image = statusImage
+            button.imagePosition = .imageOnly
+            button.setAccessibilityLabel("myDrive")
+        }
+        return item
     }
 
     static let statusImage: NSImage? = {
@@ -124,28 +136,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         return image
     }()
 
-    private func updateIcon() {
-        guard let button = statusItem?.button else { return }
-        switch appState.statusTint {
-        case .green, .gray, .orange:
-            // Everyday states — including warnings — render as a pure template
-            // symbol; a problem count is carried by the colored badge below.
-            button.contentTintColor = nil
-        case .red:
-            button.contentTintColor = .systemRed
+    static func setStatusTooltip(_ button: NSStatusBarButton, attentionCount: Int) {
+        let tooltip = switch attentionCount {
+        case 0: "myDrive"
+        case 1: "myDrive · 1 item needs attention"
+        default: "myDrive · \(attentionCount) items need attention"
         }
-        let count = appState.attentionCount
-        if count > 0 {
-            // The badge only shows with a problem present, so its color
-            // matches the tint: red for errors, otherwise orange.
-            let badgeColor: NSColor = appState.statusTint == .red ? .systemRed : .systemOrange
-            let attributes: [NSAttributedString.Key: Any] = [
-                .font: NSFont.systemFont(ofSize: 10, weight: .semibold),
-                .foregroundColor: badgeColor,
-            ]
-            button.attributedTitle = NSAttributedString(string: " \(count)", attributes: attributes)
-        } else {
-            button.attributedTitle = NSAttributedString(string: "")
+        if button.toolTip != tooltip {
+            button.toolTip = tooltip
+            button.setAccessibilityHelp(tooltip)
+        }
+    }
+
+    private func updateStatusTooltip() {
+        if let button = statusItem?.button {
+            Self.setStatusTooltip(button, attentionCount: appState.attentionCount)
         }
     }
 
@@ -211,7 +216,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     func showPopover(view target: PopupViewKind? = nil) {
         if let target { appState.view = target }
         guard let button = statusItem?.button else { return }
-        if popover.isShown { updateIcon(); return }
+        if popover.isShown { return }
         // An accessory app is not active by default; without activation the
         // transient popover closes immediately after showing.
         NSApp.activate(ignoringOtherApps: true)
@@ -286,6 +291,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             self.popover.performClose(nil)
         }
         let workspaceCenter = NSWorkspace.shared.notificationCenter
+        // AppKit renders the same template for each menu bar's appearance.
+        // Invalidate the button when the system reconfigures its display hosts.
+        workspaceCenter.addObserver(forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil,
+                                    queue: .main) { [weak self] _ in self?.statusItem?.button?.needsDisplay = true }
+        NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification,
+                                               object: NSApp, queue: .main) { [weak self] _ in
+            self?.statusItem?.button?.needsDisplay = true
+        }
         workspaceCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil,
                                     queue: .main) { [weak self] _ in
             SmbMonitor.shared.checkNow("wake")

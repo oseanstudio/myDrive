@@ -38,6 +38,23 @@ enum Diagnostics {
                               mark.colorAt(x: x, y: mark.pixelsHigh - 1 - y)?.alphaComponent == 0
                           }
                       }) else { throw BlipReceiverError.message("The menu bar mark lacks vertical padding") }
+                let statusItem = AppDelegate.makeStatusItem(persistPosition: false)
+                defer { NSStatusBar.system.removeStatusItem(statusItem) }
+                guard let statusButton = statusItem.button else {
+                    throw BlipReceiverError.message("The native menu bar button is unavailable")
+                }
+                let itemLength = statusItem.length
+                for count in [0, 1, 120] {
+                    AppDelegate.setStatusTooltip(statusButton, attentionCount: count)
+                    guard statusItem.length == itemLength, statusButton.image?.isTemplate == true,
+                          statusButton.contentTintColor == nil, statusButton.appearance == nil,
+                          statusButton.imagePosition == .imageOnly, statusButton.attributedTitle.length == 0 else {
+                        throw BlipReceiverError.message("The menu bar item changes size or uses a fixed appearance")
+                    }
+                }
+                guard statusButton.toolTip == "myDrive · 120 items need attention" else {
+                    throw BlipReceiverError.message("The menu bar item lost its attention count")
+                }
                 let notice = BlipReceiveNotice(receiver: receiver, openTransfers: {}, anchor: { nil })
                 guard notice.panel.styleMask.contains([.titled, .closable, .nonactivatingPanel]),
                       !notice.panel.styleMask.contains(.utilityWindow),
@@ -91,7 +108,7 @@ enum Diagnostics {
                 childState.shareBrowsedSubfolder()
                 guard childState.shareFolderPath=="/tmp/demo/0/project" else {throw BlipReceiverError.message("Subfolder sharing selected the wrong root")}
                 render(PopupRootView().environmentObject(childState),height:PopupMetrics.maxHeight,to:directory.appendingPathComponent("subfolder-share.png"));captures.append("subfolder-share.png")
-                let report:JSON=["layout":layout,"captures":captures,"received_files":received,"send_payload_checks":"pass","active_transfers_only":true,"status_mark_padded":true,"native_receive_chrome":true,"visible_recipient_list":true,"fixtures_only":true]
+                let report:JSON=["layout":layout,"captures":captures,"received_files":received,"send_payload_checks":"pass","active_transfers_only":true,"status_mark_padded":true,"status_mark_fixed_template":true,"native_receive_chrome":true,"visible_recipient_list":true,"fixtures_only":true]
                 try JSONSerialization.data(withJSONObject:report,options:[.prettyPrinted,.sortedKeys]).write(to:directory.appendingPathComponent("layout-report.json"))
                 guard layout["result"] as? String == "pass" else {exit(1)}
             } catch { print("Layout diagnostics failed: \(error.localizedDescription)");exit(1) }
