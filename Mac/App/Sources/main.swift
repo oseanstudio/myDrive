@@ -6,8 +6,12 @@ let arguments = CommandLine.arguments
 if arguments.count >= 3, arguments[1] == "--blip-cli" {
     MainActor.assumeIsolated { BlipCommand.run(Array(arguments.dropFirst(2))) }
 }
-if arguments.count == 3, arguments[1] == "--blip-background-engine" {
-    do { try BlipMacEngine.runInstalled(appPath: arguments[2]) }
+if arguments.count >= 2, arguments[1] == "--blip-background-engine" {
+    do {
+        try MainActor.assumeIsolated {
+            try BlipMacEngine.runBackground(allowDownload: arguments.dropFirst(2).contains("--download"))
+        }
+    }
     catch let failure as BlipMacEngine { exit(failure.rawValue) }
     catch { exit(BlipMacEngine.launch.rawValue) }
     exit(0)

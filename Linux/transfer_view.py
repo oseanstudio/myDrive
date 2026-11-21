@@ -103,7 +103,7 @@ class TransferView:
             baseline = self.identity != identity
             if baseline:
                 self.identity = identity
-                self.history = {t["transfer_id"] for t in incoming if completed(t)}
+                self.history = {str(UUID(t["transfer_id"])) for t in incoming if completed(t)}
                 self.notice_states = {}
                 self.relay_states = ()
                 self.relay_waiting = 0
@@ -167,7 +167,7 @@ class TransferView:
                 if state == "Invited" and not transfer.get("has_error") and (
                     permission.get("files") or links and transfer.get("link_only")
                 ) and claim("accept", transfer_id):
-                    self.blip.request("accept", transfer_id)
+                    self.blip.request("accept", transfer["transfer_id"])
                 if completed(transfer) and transfer_id not in self.history and links:
                     for path in locations[:256]:
                         if (url := link_url(path)) and claim("open", transfer_id, url):
@@ -205,6 +205,13 @@ class TransferView:
                              button("Refresh", lambda: self.refresh(quiet=False))))
         if self.error:
             self.page.append(Gtk.Label(label=self.error, xalign=0, wrap=True, max_width_chars=38))
+        if self.error and getattr(self.blip, "arguments", None) is None:
+            self.page.append(button("Set up Blip…", self.set_up_blip))
+        status = self.snapshot.get("status", {})
+        if status and not identity and not status.get("desktop_session"):
+            verifying = status.get("registration") == "CODE_SENT"
+            self.page.append(button("Enter code…" if verifying else "Sign in to Blip…",
+                                    lambda: self.sign_in(verifying)))
         actions = Gtk.Box(spacing=6)
         actions.append(button("Send…", self.choose_files))
         actions.append(button("Paste and send", self.paste))
@@ -343,6 +350,38 @@ class TransferView:
         devices = [d for d in self.snapshot.get("devices", [])
                    if not d.get("history") and str(d.get("peer", "")).lower() != identity]
         return self.names(devices, self.catalog(identity))
+
+    def set_up_blip(self):
+        def setup():
+            return self.blip.monitor(setup=True)
+
+        def done(snapshot):
+            self.snapshot, self.error = snapshot, ""
+            self.next_poll = 0
+            self.render()
+
+        self.app.work("blip", "Set up Blip", setup, done)
+
+    def sign_in(self, verifying):
+        entry = Gtk.Entry(placeholder_text="Sign-in code" if verifying else "Email address",
+                          visibility=not verifying, activates_default=True)
+
+        def accepted():
+            value = entry.get_text().strip()
+            def register():
+                self.blip.sign_in(value, verifying)
+                return self.blip.request("poll")
+
+            def done(snapshot):
+                self.snapshot, self.error = snapshot, ""
+                self.next_poll = 0
+                self.render()
+
+            self.app.work("blip", "Sign in to Blip" if verifying else "Send Blip sign-in code", register, done)
+
+        dialog = self.app.dialog("Sign in to Blip", "Sign in" if verifying else "Send code", [entry], accepted)
+        dialog.set_default_response(Gtk.ResponseType.OK)
+        entry.grab_focus()
 
     def with_send_connection(self, ready, cancelled=lambda: None):
         if self.owner(self.snapshot) and not self.error:

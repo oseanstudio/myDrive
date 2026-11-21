@@ -68,6 +68,22 @@ struct BlipProto {
 
 enum BlipLocalRPC {
     static let maximum = 32*1024*1024
+    static let managedNamespace = "net.oseanstudio.mydrive.blip/"
+    static var managedProfile: URL {
+        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/myDrive/Blip", isDirectory: true)
+    }
+    static var managedCache: URL {
+        FileManager.default.temporaryDirectory.appendingPathComponent("mdblip", isDirectory: true)
+    }
+    static var managedCandidates: [URL] {
+        let fm = FileManager.default
+        return [managedCache, fm.temporaryDirectory.appendingPathComponent(managedNamespace),
+                URL(fileURLWithPath: "/tmp").appendingPathComponent(managedNamespace)]
+            .map { $0.appendingPathComponent("sock") }
+    }
+    static func isManaged(_ socket: URL) -> Bool {
+        managedCandidates.contains { $0.resolvingSymlinksInPath() == socket.resolvingSymlinksInPath() }
+    }
     static func socketURL() -> URL? {
         let fm = FileManager.default, home = fm.homeDirectoryForCurrentUser
         let override = home.appendingPathComponent("Library/Application Support/myDrive/Blip/desktop-socket.txt")
@@ -75,6 +91,7 @@ enum BlipLocalRPC {
         if let configured = try? String(contentsOf:override,encoding:.utf8).trimmingCharacters(in:.whitespacesAndNewlines), configured.hasPrefix("/") {
             candidates = [URL(fileURLWithPath:configured)]
         } else {
+            if let managed = liveSocket(in: managedCandidates) { return managed }
             let group = "AY8UB8KTUX.blip"
             let container = home.appendingPathComponent("Library/Group Containers/" + group)
             candidates = [fm.temporaryDirectory.appendingPathComponent(group + "/sock"),
@@ -99,12 +116,14 @@ enum BlipLocalRPC {
     }
 
     static func liveSocket(in candidates: [URL]) -> URL? {
-        let valid = Set(candidates.map { $0.resolvingSymlinksInPath().standardizedFileURL }).filter { path in
-            guard let descriptor = try? connect(to: path, wait: 0) else { return false }
+        var valid: [URL: URL] = [:]
+        for path in candidates.sorted(by: { $0.path.utf8.count < $1.path.utf8.count }) {
+            let resolved = path.resolvingSymlinksInPath().standardizedFileURL
+            guard valid[resolved] == nil, let descriptor = try? connect(to: path, wait: 0) else { continue }
             Darwin.close(descriptor)
-            return true
+            valid[resolved] = path
         }
-        return valid.count == 1 ? valid.first : nil
+        return valid.count == 1 ? valid.values.first : nil
     }
     static func frame(_ kind: UInt8, _ message: UInt64, _ data: Data) -> Data {
         Data([kind*2+1]) + BlipProto.varint(1) + BlipProto.varint(message) + BlipProto.varint(UInt64(data.count)) + data
@@ -207,6 +226,7 @@ enum BlipLocalRPC {
         let response=try BlipProto(envelope)
         guard let raw=response.bytes(2) else {throw BlipRPCError.invalid}
         let state=try BlipProto(raw), auth=try BlipProto(state.bytes(201) ?? Data())
+        let config=try BlipProto(state.bytes(100) ?? Data()), registration=try BlipProto(state.bytes(200) ?? Data())
         let user=auth.string(202),device=auth.string(204), authenticated=(auth.bytes(201)?.isEmpty==false)
         guard !authenticated || (UUID(uuidString:user) != nil && UUID(uuidString:device) != nil) else {throw BlipRPCError.invalid}
         var peers: [JSON]=[], transfers: [JSON]=[],contacts:[String:String]=[:],userNames:[String:String]=[:]
@@ -275,7 +295,73 @@ enum BlipLocalRPC {
                 let contact=contacts[peer.string(1)] ?? "";peers.append(["peer":peerID,"name":"Previous device","contact":contact,"user_name":userNames[peer.string(1)] ?? contact,"history":true,"name_known":false])
             }
         }
-        return ["ok":true,"status":["authenticated":authenticated,"desktop_session":true,"user_id":user,"device_id":device],"devices":peers,"transfers":transfers]
+        return ["ok":true,"status":["authenticated":authenticated,"desktop_session":true,"user_id":user,"device_id":device,
+                "registration_code_sent":registration.number(1) == 2,"registration_failed":registration.values[999] != nil,
+                "receive_policy_verified":config.number(2) != 0 && config.string(4) == receivedDirectory.path],
+                "devices":peers,"transfers":transfers]
+    }
+
+    static func dispatch(_ name: String, _ body: Data, socket: URL) throws {
+        let event = BlipProto.string(1, "type.googleapis.com/event." + name) + BlipProto.field(2, body)
+        _ = try call(socket: socket, method: "/rpc.Service/Dispatch", body: BlipProto.field(1, event))
+    }
+
+    static func prepareManagedProfile() throws {
+        let deadline = ProcessInfo.processInfo.systemUptime + 12
+        while ProcessInfo.processInfo.systemUptime < deadline {
+            if let socket = liveSocket(in: managedCandidates) {
+                let agent = BlipProto.string(101, "Mac") + BlipProto.numeric(102, 5) +
+                    BlipProto.string(200, "macOS") + BlipProto.string(300, "net.oseanstudio.mydrive") +
+                    BlipProto.string(301, "myDrive")
+                try dispatch("SetUserAgent", BlipProto.field(1, agent), socket: socket)
+                try configureManagedReceive(socket)
+                return
+            }
+            Thread.sleep(forTimeInterval: 0.15)
+        }
+        throw BlipRPCError.unavailable
+    }
+
+    static func configureManagedReceive(_ socket: URL) throws {
+        try FileManager.default.createDirectory(at: receivedDirectory, withIntermediateDirectories: true)
+        try dispatch("TransferSetAutoAccept", BlipProto.numeric(1, 0), socket: socket)
+        try dispatch("TransferSetCustomDefaultSavePath", BlipProto.string(1, receivedDirectory.path), socket: socket)
+    }
+
+    static func register(_ input: String, verifying: Bool, socket: URL) throws {
+        guard isManaged(socket) else { throw BlipRPCError.invalid }
+        let current = try request("poll", arguments: [], socket: socket)["status"] as? JSON
+        guard current?["authenticated"] as? Bool == false else { throw BlipRPCError.rejected }
+        let name = "myDrive on Mac"
+        if verifying {
+            guard input.range(of: "^[A-Za-z0-9-]{4,16}$", options: .regularExpression) != nil else { throw BlipRPCError.invalid }
+            let identityFile = managedProfile.appendingPathComponent("registration-device.txt")
+            let identity: String
+            if let existing = try? String(contentsOf: identityFile, encoding: .utf8), UUID(uuidString: existing) != nil {
+                identity = existing
+            } else {
+                identity = UUID().uuidString.lowercased()
+                try Data(identity.utf8).write(to: identityFile, options: .atomic)
+            }
+            try dispatch("RegistrationRequested", BlipProto.string(1, input) + BlipProto.string(2, identity) +
+                         BlipProto.string(3, name) + BlipProto.numeric(4, 5), socket: socket)
+        } else {
+            guard input.utf8.count <= 254, input.range(of: "^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$", options: .regularExpression) != nil
+            else { throw BlipRPCError.invalid }
+            try dispatch("SendRegistrationCodeRequested", BlipProto.string(1, input) + BlipProto.string(2, name), socket: socket)
+        }
+        let deadline = ProcessInfo.processInfo.systemUptime + 10
+        while ProcessInfo.processInfo.systemUptime < deadline {
+            let status = try request("poll", arguments: [], socket: socket)["status"] as? JSON
+            if verifying && status?["authenticated"] as? Bool == true {
+                try configureManagedReceive(socket)
+                return
+            }
+            if !verifying && status?["registration_code_sent"] as? Bool == true { return }
+            if status?["registration_failed"] as? Bool == true { throw BlipRPCError.rejected }
+            Thread.sleep(forTimeInterval: 0.2)
+        }
+        throw BlipRPCError.rejected
     }
     static func request(_ command: String, arguments: [String], socket: URL) throws -> JSON {
         switch command {

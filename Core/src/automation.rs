@@ -371,15 +371,20 @@ fn helper_command(executable: impl AsRef<std::ffi::OsStr>) -> Command {
 }
 
 #[cfg(windows)]
+fn desktop_blip_profile() -> Result<bool, String> {
+    Ok(!preferences(&user_data()?)["BlipSeparateProfile"].as_bool().unwrap_or(false))
+}
+
+#[cfg(windows)]
 fn blip_command(command: &str, values: &[String], host: bool) -> Result<Command, String> {
     let executable = env::current_exe().map_err(|_| "The myDrive helper is unavailable.")?;
     let mut child = helper_command(executable);
     child
-        .arg("--windows-blip")
+        .arg("--blip-engine")
         .arg(command)
         .arg("--profile")
         .arg(user_data()?.join("Blip"));
-    if !host {
+    if !host && desktop_blip_profile()? {
         child.arg("--desktop");
     }
     child.args(values);
@@ -416,7 +421,7 @@ fn bridge(mut child: Command) -> Result<Value, String> {
         #[cfg(windows)]
         if let Ok(result) = serde_json::from_slice::<Value>(&output.stdout) {
             if let Some(error) = result["error"].as_str() {
-                return Err(crate::windows_blip::error_message(error).into());
+                return Err(crate::blip::error_message(error).into());
             }
         }
         let reason = String::from_utf8_lossy(&output.stderr);
@@ -439,7 +444,7 @@ fn bridge(mut child: Command) -> Result<Value, String> {
 fn blip_action(command: &str, arguments: &Value) -> Result<Value, String> {
     #[cfg(windows)]
     if matches!(command, "status" | "devices" | "transfers") {
-        let result = crate::windows_blip::desktop_poll(user_data()?.join("Blip"))?;
+        let result = crate::blip::poll(user_data()?.join("Blip"), desktop_blip_profile()?)?;
         return Ok(result[command].clone());
     }
     let mut values = Vec::new();
@@ -481,15 +486,11 @@ fn blip_action(command: &str, arguments: &Value) -> Result<Value, String> {
 }
 
 fn blip_host_command() -> Result<Command, String> {
-    blip_command(
-        if cfg!(windows) {
-            "desktop-serve"
-        } else {
-            "serve"
-        },
-        &[],
-        true,
-    )
+    #[cfg(windows)]
+    let command = if desktop_blip_profile()? { "desktop-serve" } else { "serve" };
+    #[cfg(not(windows))]
+    let command = "serve";
+    blip_command(command, &[], true)
 }
 
 fn blip_serve() -> Result<(), String> {

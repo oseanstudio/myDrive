@@ -19,13 +19,15 @@ typealias JSON = [String: Any]
         }
         let fm = FileManager.default
         precondition(NSRunningApplication.runningApplications(withBundleIdentifier: BlipMacEngine.bundleID).isEmpty)
+        let cached = root.appendingPathComponent("BlipKit")
+        try fm.copyItem(at: framework, to: cached)
         try fm.createDirectory(at: cache, withIntermediateDirectories: true)
         try fm.createDirectory(at: storage, withIntermediateDirectories: true)
         func start() throws -> (Process, Pipe) {
             let child = Process()
             let input = Pipe()
             child.executableURL = URL(fileURLWithPath: args[0])
-            child.arguments = [framework.path, root.path, "child"]
+            child.arguments = [cached.path, root.path, "child"]
             child.standardInput = input
             try child.run()
             return (child, input)

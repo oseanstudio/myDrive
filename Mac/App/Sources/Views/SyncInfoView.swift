@@ -17,8 +17,12 @@ struct SyncInfoView: View {
                 Text(failure).font(.system(size: 12)).foregroundStyle(.secondary)
             } else if app.syncInfo?.errors == true {
                 if let id = app.syncInfo?.folderId {
-                    Button("Rescan folder") { app.rescanFolder(id) }
-                        .controlSize(.small).disabled(app.busy != nil)
+                    HStack(spacing: 6) {
+                        if let folder = app.snapshot?.folders.first(where: { $0.id == id }), folder.canRelocate {
+                            Button("Choose new location…") { app.relocateSyncFolder(folder) }
+                        }
+                        Button("Rescan folder") { app.rescanFolder(id) }
+                    }.controlSize(.small).disabled(app.busy != nil)
                 }
                 ErrorsDialog()
             } else {
@@ -61,6 +65,9 @@ struct SyncAttentionView: View {
                             Text(advice).font(.system(size: 11)).foregroundStyle(.secondary)
                         }
                         HStack(spacing: 6) {
+                            if folder.canRelocate {
+                                Button("Choose new location…") { app.relocateSyncFolder(folder) }
+                            }
                             Button("Rescan") { app.rescanFolder(folder.id) }
                             Button("View errors") { app.openErrors(folder) }
                         }

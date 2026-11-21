@@ -1,18 +1,20 @@
-"""Use the shared myDrive core and an installed Blip runtime from the Linux shell."""
+"""Use the shared myDrive core and the verified local Blip engine."""
 
-import base64
 import configparser
 import hashlib
 import json
 import os
 import plistlib
+import re
 import select
 import shutil
 import subprocess
+import tarfile
 import tempfile
 import time
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
+from urllib.request import urlopen
 from uuid import UUID, uuid4
 
 ROOT = Path(__file__).resolve().parent
@@ -149,84 +151,122 @@ def link_url(location):
 
 
 class Blip:
-    LOCK = {
-        "lib/app/desktopApp-desktop-1.2.8.jar": "d30b5172b1a7a6216e0de33e195cf248fc06ef3524ee45de0918a0742a941c51",
-        "lib/app/libblip-jvm.jar": "0632dae7615951811a63788b6f37cfb041474a177f46244a8dd3bc3337734572",
-        "lib/runtime/lib/libblip-jni.so": "4125334ab2cef75a056b7bd542f736374c3f036be4c04ef12818ed4492476335",
+    ARCHIVE = "https://static.blip.net/linux/blip-1.2.8-linux-amd64.tar.gz"
+    ARCHIVE_HASH = "59fd1020f7f193aae4373f45f39bf39e9e3337bf0af6ede91bdb1c8e4c1ac463"
+    ENGINE_MEMBER = "blip-1.2.8/lib/runtime/lib/libblip-jni.so"
+    ENGINE_ERRORS = {
+        "native_engine_missing": "Choose Set up Blip to get the background engine.",
+        "native_engine_unsupported": "This Blip engine does not match the supported release.",
+        "native_connection_unavailable": "The Blip background receiver is unavailable.",
+        "sign_in_required": "Sign in to Blip to send or receive files.",
+        "accept_not_waiting": "This transfer is no longer waiting. Refresh to check its status.",
+        "registration_failed": "Blip could not confirm sign-in. Check the email or code and try again.",
+        "invalid_sign_in_input": "Check the Blip email address or sign-in code.",
     }
 
     def __init__(self):
         state_home = Path(os.environ.get("XDG_RUNTIME_DIR", f"/tmp/mydrive-{os.getuid()}"))
-        self.profile = state_home / "mydrive-blip"
+        self.run_dir = state_home / "mydrive-blip"
+        self.standalone = DATA / "Blip" / "profile"
+        self.desktop_state = DATA.parent / "net.blip.desktop" / "state.dat"
+        self.desktop = self.desktop_state.is_file() and not (self.standalone / "state/state.dat").is_file()
+        self.profile = self.run_dir if self.desktop else self.standalone
         self.inbox = DATA / "Blip" / "downloads"
         self.host = None
         self.host_buffer = b""
         self.host_can_poll = None
         self.next_start = 0
         self.arguments = None
-        self.environment = None
+        self.environment = {key: value for key, value in os.environ.items() if key != "LD_PRELOAD"}
+        self.executable = os.environ.get("MYDRIVE_CORE", str(ROOT / "mydrive-core"))
 
-    def prepare(self):
+    def install_engine(self):
+        self.inbox.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix=".blip-", dir=self.inbox.parent) as work:
+            package = Path(work) / "blip.tar.gz"
+            digest = hashlib.sha256()
+            length = 0
+            with urlopen(self.ARCHIVE, timeout=15) as response, package.open("wb") as output:
+                location = urlsplit(response.url)
+                if location.scheme != "https" or location.hostname != "static.blip.net":
+                    raise RuntimeError("The Blip download redirected to an unexpected server.")
+                deadline = time.monotonic() + 120
+                while data := response.read(256 * 1024):
+                    length += len(data)
+                    if length > 160 * 1024 * 1024 or time.monotonic() >= deadline:
+                        raise RuntimeError("The Blip download did not finish within its limits.")
+                    output.write(data)
+                    digest.update(data)
+            if digest.hexdigest() != self.ARCHIVE_HASH:
+                raise RuntimeError("The downloaded Blip archive failed its checksum.")
+            engine = Path(work) / "libblip-jni.so"
+            with tarfile.open(package, "r:gz") as archive:
+                member = archive.getmember(self.ENGINE_MEMBER)
+                if not member.isfile() or not 0 < member.size <= 64 * 1024 * 1024:
+                    raise RuntimeError("The downloaded archive does not contain the supported Blip engine.")
+                with archive.extractfile(member) as source, engine.open("wb") as output:
+                    shutil.copyfileobj(source, output)
+            self.invoke("import-engine", "--", str(engine))
+
+    def prepare(self, download=False):
         if self.arguments is not None:
             return
-        locations = [Path(os.environ["MYDRIVE_BLIP_DIR"])] if os.environ.get("MYDRIVE_BLIP_DIR") else [
-            Path("/opt/blip"), Path("/usr/local/lib/blip"), Path.home() / ".local/opt/blip"
-        ]
-        if not os.environ.get("MYDRIVE_BLIP_DIR"):
-            for name in ("blip", "Blip"):
-                if launcher := shutil.which(name):
-                    locations.extend(Path(launcher).resolve().parents[:2])
-        folder = next((path for path in locations if (path / "lib/app/libblip-jvm.jar").is_file()), None)
-        if not folder:
-            raise RuntimeError("Install Blip 1.2.8 from its Linux archive and set MYDRIVE_BLIP_DIR to its folder.")
-        for name, expected in self.LOCK.items():
-            path = folder / name
-            if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != expected:
-                raise RuntimeError("This Linux Blip build differs from the supported 1.2.8 release.")
-        bundled_java = folder / "lib/runtime/bin/java"
-        java = os.environ.get("MYDRIVE_JAVA") or (
-            str(bundled_java) if os.access(bundled_java, os.X_OK) else shutil.which("java")
-        )
-        if not java:
-            raise RuntimeError("Java 25 is required for Blip. Install it or set MYDRIVE_JAVA.")
-        native = folder / "lib/runtime/lib"
-        classes = os.environ.get("MYDRIVE_BLIP_CLASSES", str(ROOT / "blip-classes"))
-        self.profile.mkdir(mode=0o700, parents=True, exist_ok=True)
-        for path in (self.profile.parent, self.profile):
-            stat = path.lstat()
-            if path.is_symlink() or stat.st_uid != os.getuid() or stat.st_mode & 0o022:
-                raise RuntimeError("Blip requires a private per-user runtime directory.")
-        (self.profile / "cache").mkdir(mode=0o700, exist_ok=True)
-        self.inbox.mkdir(mode=0o700, parents=True, exist_ok=True)
-        (self.profile / "mydrive-profile.json").touch(mode=0o600, exist_ok=True)
-        self.environment = {k: v for k, v in os.environ.items()
-                            if k not in ("JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS", "JDK_JAVA_OPTIONS", "LD_PRELOAD")}
-        self.arguments = [java, "-Xms16m", "-Djava.awt.headless=true", "--enable-native-access=ALL-UNNAMED",
-                          f"-Dmydrive.inbox={self.inbox.resolve()}",
-                          f"-Djava.library.path={native}", "-cp", f"{classes}:{folder / 'lib/app/*'}", "BlipBridge"]
+        try:
+            self.invoke("doctor")
+        except RuntimeError:
+            known = [Path("/opt/blip"), Path("/usr/local/lib/blip"), Path.home() / ".local/opt/blip"]
+            if configured := os.environ.get("MYDRIVE_BLIP_DIR"):
+                known.insert(0, Path(configured))
+            for folder in known:
+                library = folder / "lib/runtime/lib/libblip-jni.so"
+                if library.is_file():
+                    try:
+                        self.invoke("import-engine", "--", str(library))
+                        break
+                    except RuntimeError:
+                        continue
+            else:
+                if not download:
+                    raise
+                self.install_engine()
+        if not self.desktop:
+            self.invoke("init", "--name", "myDrive on Linux")
+        self.arguments = True
+
+    def command(self, action, *options):
+        mode = ["--desktop"] if self.desktop and action in {"poll", "send", "accept"} else []
+        return [self.executable, "--blip-engine", action, "--profile", str(self.profile), *mode, *options]
+
+    def invoke(self, action, *options, input_text=""):
+        process = subprocess.run(self.command(action, *options), input=input_text,
+                                 capture_output=True, encoding="utf-8", env=self.environment, timeout=30)
+        try:
+            result = json.loads(process.stdout)
+        except ValueError as error:
+            raise RuntimeError("Could not read the background Blip session.") from error
+        return self.checked(result)
+
+    def checked(self, result):
+        if not result.get("ok"):
+            error = self.ENGINE_ERRORS.get(result.get("error"), "Blip could not confirm this request.")
+            raise RuntimeError(error)
+        return result
 
     def request(self, command, *values):
         self.prepare()
-        payload = "".join(base64.b64encode(str(value).encode()).decode() + "\n" for value in values)
-        process = subprocess.run(
-            self.arguments + ["desktop-request", str(self.profile), command],
-            input=payload, capture_output=True, encoding="utf-8", env=self.environment, timeout=15,
-        )
-        replies = [row.removeprefix("MYDRIVE_JSON ") for row in process.stdout.splitlines()
-                   if row.startswith("MYDRIVE_JSON ")]
-        if len(replies) != 1:
-            raise RuntimeError("Could not read the Blip session. Check Java 25 and open Blip once.")
-        result = json.loads(replies[0])
-        if process.returncode or not result.get("ok"):
-            raise RuntimeError("Blip could not confirm the request. Check the existing Blip session before retrying.")
-        return result
+        if command == "accept":
+            return self.invoke(command, "--id", values[0], "--execute")
+        if command == "send":
+            peer, request_id, *paths = values
+            return self.invoke(command, "--peer", peer, "--id", request_id, "--execute", "--", *paths)
+        return self.invoke(command)
 
-    def monitor(self, background=True):
-        self.prepare()
+    def monitor(self, background=True, setup=False):
+        self.prepare(download=setup)
         if background and (self.host is None or self.host.poll() is not None) and time.monotonic() >= self.next_start:
             self.next_start = time.monotonic() + 30
             self.host = subprocess.Popen(
-                self.arguments + ["desktop-host", str(self.profile), "serve"],
+                self.command("desktop-serve" if self.desktop else "serve"),
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=self.environment,
             )
             self.host_buffer = b""
@@ -241,6 +281,17 @@ class Blip:
                     raise
         return self.request("poll")
 
+    def sign_in(self, value, verifying=False):
+        if self.desktop:
+            raise RuntimeError("Sign in from a myDrive-managed profile.")
+        if verifying:
+            if not re.fullmatch(r"[A-Za-z0-9-]{4,16}", value):
+                raise RuntimeError("Enter the Blip sign-in code.")
+            return self.invoke("verify", input_text=value + "\n")
+        if len(value.encode()) > 254 or not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", value):
+            raise RuntimeError("Enter a valid Blip email address.")
+        return self.invoke("login", input_text=value + "\n")
+
     def poll_host(self):
         identifier = None
         deadline = time.monotonic() + 12
@@ -254,15 +305,15 @@ class Blip:
             line, split, remaining = self.host_buffer.partition(b"\n")
             if split:
                 self.host_buffer = remaining
-                if not line.startswith(b"MYDRIVE_JSON "):
-                    continue
-                payload = json.loads(line[13:])
+                payload = json.loads(line)
                 if payload.get("event") == "host_ready":
                     self.host_can_poll = bool(payload.get("poll_pipe"))
                 if payload.get("event") == "poll_result" and payload.get("request_id") == identifier:
                     payload.pop("event")
                     payload.pop("request_id")
-                    return payload
+                    return self.checked(payload)
+                if not payload.get("ok") and not payload.get("event"):
+                    self.checked(payload)
                 continue
             remaining_time = deadline - time.monotonic()
             if remaining_time <= 0 or not select.select([self.host.stdout], [], [], remaining_time)[0]:

@@ -6,12 +6,11 @@ import Foundation
         do {
             let command = arguments[0]
             if command == "serve", arguments.count == 1 {
-                guard let app = BlipMacEngine.installedApplication else { throw BlipMacEngine.missing }
-                try BlipMacEngine.runInstalled(appPath: app.path)
+                try BlipMacEngine.runBackground(allowDownload: true)
                 exit(0)
             }
             guard let socket = BlipLocalRPC.socketURL() else {
-                throw BlipReceiverError.message("Start mydrive-cli blip serve in another terminal after signing in to Blip once.")
+                throw BlipReceiverError.message("Start mydrive-cli blip serve in another terminal, or connect from myDrive.")
             }
             let result: JSON
             switch command {

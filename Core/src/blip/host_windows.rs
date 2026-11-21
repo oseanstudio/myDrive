@@ -1,7 +1,7 @@
 use sha2::{Digest, Sha256};
 use std::ffi::{c_char, c_void, CString};
 use std::fs::{self, File, OpenOptions};
-use std::io;
+use std::io::{self, Seek, SeekFrom};
 use std::os::windows::ffi::OsStrExt;
 use std::os::windows::ffi::OsStringExt;
 use std::os::windows::fs::OpenOptionsExt;
@@ -58,16 +58,7 @@ impl Host {
         ];
         let library = fs::canonicalize(library).map_err(|_| "native_engine_missing")?;
         // Keep the verified file open without write/delete sharing during LoadLibrary.
-        let mut engine = OpenOptions::new()
-            .read(true)
-            .share_mode(1)
-            .open(&library)
-            .map_err(|_| "native_engine_missing")?;
-        let mut hash = Sha256::new();
-        io::copy(&mut engine, &mut hash).map_err(|_| "native_engine_unreadable")?;
-        if hex::encode(hash.finalize()) != SUPPORTED_HASH {
-            return Err("native_engine_unsupported");
-        }
+        let _engine = verified_library(&library)?;
         let wide: Vec<u16> = library.as_os_str().encode_wide().chain([0]).collect();
         // The DLL owns native threads. Its module stays loaded until this helper process exits.
         let (start, stop): (Start, Stop) = unsafe {
@@ -140,6 +131,10 @@ fn path_string(path: &Path) -> Result<CString, &'static str> {
 }
 
 pub(super) fn library(local: &Path) -> Result<PathBuf, &'static str> {
+    let cached = cached_library(local);
+    if verified_library(&cached).is_ok() {
+        return Ok(cached);
+    }
     let studio = local.join("OseanStudio");
     let configured: Option<serde_json::Value> = fs::read(studio.join("storage.json"))
         .ok()
@@ -162,12 +157,69 @@ pub(super) fn library(local: &Path) -> Result<PathBuf, &'static str> {
         Some(legacy_runtime.join("blip/bin/blip-jni.dll")),
         Some(local.join("Programs/Blip/bin/blip-jni.dll")),
     ];
-    candidates
+    let mut error = "native_engine_missing";
+    for path in candidates
         .into_iter()
         .flatten()
         .chain(installed_package_libraries())
-        .find(|path| path.is_absolute() && path.is_file())
-        .ok_or("native_engine_missing")
+        .filter(|path| path.is_absolute() && path.is_file())
+    {
+        match import_library(local, &path) {
+            Ok(path) => return Ok(path),
+            Err(reason) => error = reason,
+        }
+    }
+    Err(error)
+}
+
+fn cached_library(local: &Path) -> PathBuf {
+    local.join("myDrive/Blip/runtime-1.2.8/blip-jni.dll")
+}
+
+fn verified_library(path: &Path) -> Result<File, &'static str> {
+    let mut engine = OpenOptions::new()
+        .read(true)
+        .share_mode(1)
+        .open(path)
+        .map_err(|_| "native_engine_missing")?;
+    let attributes = engine.metadata().map_err(|_| "native_engine_unreadable")?;
+    if !attributes.is_file() || !(1..=64 * 1024 * 1024).contains(&attributes.len()) {
+        return Err("native_engine_unsupported");
+    }
+    let mut hash = Sha256::new();
+    io::copy(&mut engine, &mut hash).map_err(|_| "native_engine_unreadable")?;
+    if hex::encode(hash.finalize()) != SUPPORTED_HASH {
+        return Err("native_engine_unsupported");
+    }
+    engine
+        .seek(SeekFrom::Start(0))
+        .map_err(|_| "native_engine_unreadable")?;
+    Ok(engine)
+}
+
+pub(super) fn import_library(local: &Path, path: &Path) -> Result<PathBuf, &'static str> {
+    if !path.is_absolute() {
+        return Err("native_engine_missing");
+    }
+    let mut source = verified_library(path)?;
+    let cached = cached_library(local);
+    if verified_library(&cached).is_ok() {
+        return Ok(cached);
+    }
+    let directory = cached.parent().ok_or("profile_unavailable")?;
+    fs::create_dir_all(directory).map_err(|_| "profile_unavailable")?;
+    super::check_plain_directory(directory)?;
+    let mut output =
+        tempfile::NamedTempFile::new_in(directory).map_err(|_| "profile_unavailable")?;
+    io::copy(&mut source, &mut output).map_err(|_| "native_engine_unreadable")?;
+    output
+        .as_file()
+        .sync_all()
+        .map_err(|_| "native_engine_unreadable")?;
+    if output.persist(&cached).is_err() && verified_library(&cached).is_err() {
+        return Err("profile_unavailable");
+    }
+    Ok(cached)
 }
 
 fn installed_package_libraries() -> impl Iterator<Item = PathBuf> {

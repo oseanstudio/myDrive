@@ -111,6 +111,7 @@ struct SyncthingFolder: Identifiable {
     let status: FolderStatus
     let error: String?
     let errorAdvice: String
+    let canRelocate: Bool
     var displayName: String { label.isEmpty ? id : label }
     var hasError: Bool { (error?.isEmpty == false) || status.pullErrors > 0 || status.errors > 0 }
     var peerDirection: String {
@@ -188,7 +189,8 @@ struct Snapshot {
                     receiveOnlyChangedFiles: status.int64("receiveOnlyChangedFiles")
                 ),
                 error: f.optStr("error"),
-                errorAdvice: f.str("error_advice")
+                errorAdvice: f.str("error_advice"),
+                canRelocate: f.bool("can_relocate")
             )
         }
         devices = dict.array("devices").map { raw in

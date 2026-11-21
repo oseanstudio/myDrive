@@ -46,7 +46,7 @@ jobs:
           "$RUNNER_TEMP/blip-policy-test"
           swiftc -swift-version 5 Mac/App/Sources/BlipLocalRPC.swift Mac/Tests/BlipRPCSmoke.swift -o "$RUNNER_TEMP/blip-rpc-test"
           "$RUNNER_TEMP/blip-rpc-test"
-      - name: Exercise installed Blip framework in isolated processes
+      - name: Exercise cached Blip engine without the desktop app
         timeout-minutes: 3
         run: |
           fixture=$(mktemp -d /tmp/mdblip.XXXXXX)

@@ -10,17 +10,17 @@ Waiting jobs survive reboot and resume when myDrive runs again. Send multiple fi
 
 Open the popup's view menu → **Send & Receive**, or **＋ → Send with Blip…**. The same controls are available in the full window.
 
-1. On Windows, open myDrive after signing in to Blip once. myDrive's native helper keeps the existing device available when the Blip app is closed. It uses Blip's profile paths and host election, so either app can run the engine. The existing account and device stay in place. **Connect… → Use this computer's Blip account → Connect** is also available. Mac uses the supported installed Blip framework. See Mac/README.md for the build requirement.
-2. For a separate headless device, choose **Connect… → Start separately → Connect**. This creates a separate local myDrive profile and starts the headless engine. Then choose **Connect Blip…**, enter an email, and explicitly choose **Send sign-in code**. Enter the code in the native password field. This separate mode requires its own sign-in; it is optional when reusing the existing Windows desktop device.
+1. myDrive can reuse the existing Blip device on the computer when its saved profile is available. The native helper keeps it available while myDrive runs. If the engine is missing on macOS or Linux, choose **Set up Blip…**. Windows can copy a compatible installed engine or use **Blip options → Add Blip engine…**.
+2. On a fresh profile, sign in from myDrive using your existing Blip email and the sign-in code. On Windows, select **Connect… → Start separately** to set up that profile. This creates a device in your Blip account.
 3. In separate mode, wait for receiving settings to verify. Choose **Send…**, add the files or folder, and click the recipient device to send. Desktop mode uses the same account/device shown in Blip.
 4. Incoming invitations have **Receive**. Manual receives in myDrive use separate UUID folders under myDrive's profile downloads directory. In separate mode you can optionally allow future automatic receiving from the exact device. In desktop mode Blip retains its existing automatic receiving rules and download location; those downloads may appear only in desktop Blip's folder, outside myDrive's **Received files** folder.
 5. **Refresh** reads real native state. A requested transfer is not a delivery confirmation. myDrive shows Completed only when both native completion fields agree and there is no reported error.
 
-The popup can close while transfers run. **Disconnect** stops myDrive's managed helper and opts out of automatic background receiving. A separately open Blip app continues through the native election. **Stop** in separate mode stops only myDrive's separate engine. Quitting myDrive stops its Blip helper; receiving continues if desktop Blip is still open. Syncthing is preserved. Stopping/cancelling a UI request never claims to cancel an already dispatched transfer; refresh before retrying an uncertain request. Automatic background receiving defaults on, including older preference files. Explicit Disconnect or choosing a separate engine turns it off. Re-enable it from Transfers → gear → **Keep Blip available in the background**, or connect manually. Startup failures back off for 30 seconds. Receiving rules and existing account/device identity are preserved.
+The popup can close while transfers run. **Disconnect** stops myDrive's managed helper and opts out of automatic background receiving. A separately open Blip app can continue through the native host election. Quitting myDrive stops its Blip helper. Automatic background receiving defaults on and remembers explicit opt-outs. Re-enable it from **Send & Receive** → gear → **Keep Blip available in the background**.
 
-Syncthing runs independently of its GUI. The desktop apps refresh folder status more frequently while Sync is visible and about every two minutes in the background. Windows and macOS can verify an unresponsive managed engine between status refreshes. Active sync uses the selected Syncthing configuration and file watchers. The engine continues independently when myDrive quits.
+If you move a synced folder, open the sync errors and select **Choose new location…**. Select the moved folder including its hidden Syncthing marker. myDrive updates the existing folder path, keeping the folder ID, peers, pause state and settings.
 
-Windows live testing confirmed both a file and a fresh link received from an approved device with the official Blip app fully closed, and the link opened automatically. The background host reuses the existing signed-in identity and saved sender approvals. An isolated native election test also confirms endpoint availability when either participant quits. Separate-profile registration, interrupted large transfers and final checksums still require testing; no new sign-in code was requested. The Mac runner exercises the installed framework, socket and two-host handoff with a new isolated profile. A signed-in live Mac transfer remains to be tested. Linux remains deferred.
+Windows live testing confirmed a received file and automatic link opening from an approved device while the Blip app was closed. Native test profiles exercise startup and local status separately from signed-in transfers.
 
 After login, Blip manages its own account tokens and local logs in its separate profile directory, outside Windows Credential Manager. Keep that directory private; it is not included in source or runtime copies.
 
@@ -38,7 +38,7 @@ Sender names/IDs are cached only in the account-scoped local sender catalog, out
 
 ### Cross-platform default
 
-Automatic opening of received Blip web links defaults to **enabled** on Windows, macOS and the future Linux version. A missing preference means enabled, including when upgrading an older preferences file; an explicit saved `false` remains off. This is a product requirement for each native receiver, rather than an optional feature that starts disabled.
+Automatic opening of received Blip web links defaults to **enabled** on Windows, macOS and Linux. A missing preference means enabled, including when upgrading. An explicit saved `false` stays off.
 
 All ports must open new completed incoming root shortcut links from explicitly approved senders once in the system default browser, continue processing while their popup is hidden, and keep outgoing/pending/failed transfers, unsupported schemes and completed history from launching. Use the same opt-out and persistence behavior described below. Headless deployments can explicitly disable opening when no desktop browser is available.
 
@@ -46,7 +46,7 @@ All ports must open new completed incoming root shortcut links from explicitly a
 | --- | --- |
 | Windows | Implemented; `Preferences.BlipAutoOpenLinks` defaults to `true`, including when the field is missing from saved JSON. |
 | macOS | The source preference `Preferences.blipAutoOpenLinks` defaults to `true`; `blip_auto_open_links` is optional in saved JSON so existing sync settings survive upgrades. Native desktop-session polling, manual receive, exact-sender approval and browser opening are implemented. CI exercises isolated native fixtures; a live Mac transfer is still required. |
-| Linux | Future native port. Its receiver and preference loader must implement this same enabled-by-default behavior and preserve explicit opt-outs. No Linux app exists yet. |
+| Linux | The GTK receiver uses the native backend and keeps the `blip_open` preference enabled by default. |
 
 **Transfers → gear → Open received links automatically** is enabled by default. While myDrive is connected to Blip, new completed incoming `.url` (InternetShortcut) and `.webloc` files shared as top-level transfer items open their HTTP/HTTPS address in the system's default browser. This works while the popup is hidden or another view is selected; polling runs every two seconds. In Send & Receive, approve exact sender devices using Sender permissions. The approval list starts empty and is scoped to the current account. myDrive accepts pending link-only requests from approved senders; other requests require Receive in its own popup. Desktop Blip receiving rules remain independently in effect.
 
@@ -56,19 +56,21 @@ The shortcut file itself is never executed. Only the InternetShortcut URL field 
 
 The parser, typed saved-transfer metadata mapping, sender policy, completion handling and duplicate prevention are covered by local fixtures. The user confirmed real Windows automatic acceptance and default-browser opening, including with desktop Blip fully closed. Actual Mac interoperability still requires a fresh approved-sender test on a Mac.
 
-## Windows engine setup
+## Background engine setup
 
-The Windows app, CLI and MCP use the same native myDrive helper. It loads the local x64 `blip-jni.dll` from Blip 1.2.8.0 after verifying its SHA-256, then talks to the engine over a local Windows socket. Java and Node.js are unnecessary. The Windows installer includes the myDrive helper. The Blip DLL comes from a compatible copy of Blip on the computer.
+The myDrive app, CLI and MCP use the same native transfer backend on desktop. The engine lives in myDrive's local data folder and is verified before use. The desktop installers contain the myDrive helper.
 
-Existing prepared installations can keep using their `blip/bin/blip-jni.dll` in the current runtime folder. myDrive also checks the registered Blip Windows package and its standard per-user install location. Set `MYDRIVE_BLIP_DLL` to the absolute path of your compatible local DLL if needed. The expected hash is in `Blip/runtime-lock.json`. The separate myDrive profile defaults to `%LOCALAPPDATA%/myDrive/Blip`.
+- Windows uses the verified x64 `blip-jni.dll` from Blip 1.2.8.0. myDrive can copy it from a compatible installed package, an existing prepared runtime or a DLL you select. Microsoft Store package downloads can require Microsoft Entra ID authentication, so a clean Windows setup needs the compatible file.
+- macOS retains the verified native framework in myDrive's data folder. **Set up Blip** can fetch it directly from Blip when needed.
+- Linux extracts only the native shared library from the verified Blip archive. It reuses the same state and transfer code as the Windows helper.
 
 Status refreshes reuse the managed helper. myDrive preserves existing desktop account data, transfer state and sender permissions in place. Blip account, discovery and relay services still depend on Blip's infrastructure and plans.
 
 ## Checks
 
-`node --test Blip/test/cli.test.mjs` covers CLI safety and framing. The standalone C# service check is `tests/BlipServiceChecks/`; it uses a local fake CLI, not an account or network. `myDrive.exe --diagnose-blip OUTPUT_DIRECTORY` renders stopped, sign-in, pending/active/completed, long-list, error, light/dark and full-window fixtures. That mode skips normal startup and makes no account requests or transfers. Review the generated `blip-report.json` and screenshots. The default profile is not read by fixture diagnostics.
+The C# service check in `tests/BlipServiceChecks/` uses a local fake CLI. `myDrive.exe --diagnose-blip OUTPUT_DIRECTORY` renders isolated UI fixtures.
 
-`cargo test --manifest-path Core/Cargo.toml private_host_starts_without_java -- --ignored` exercises the native host using a temporary unsigned-in profile and a loopback address. Set `MYDRIVE_BLIP_DLL` to the verified local DLL before running it.
+`cargo test --manifest-path Core/Cargo.toml private_host_starts_without_java -- --ignored` exercises the native host using a temporary unsigned-in profile and a loopback address. Set `MYDRIVE_BLIP_DLL` on Windows or `MYDRIVE_BLIP_LIBRARY` on Linux to the verified engine before running it.
 
 To test real transfers later, use a second device on cellular or a different network with Tailscale disconnected, start with a generated harmless file, and compare its SHA-256 at both ends after native completion. Then test a folder and interruption/resume. Local fixture tests do not establish internet transfer performance or unattended receiver readiness.
 

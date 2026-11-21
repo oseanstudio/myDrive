@@ -12,7 +12,7 @@ def run(arguments):
     bridge = Blip()
     if arguments == ["serve"]:
         try:
-            bridge.monitor()
+            bridge.monitor(setup=True)
             while sys.stdin.buffer.read(4096):
                 pass
         except KeyboardInterrupt:

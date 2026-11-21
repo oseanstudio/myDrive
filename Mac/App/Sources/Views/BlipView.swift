@@ -18,11 +18,17 @@ struct BlipView: View {
                 Menu {
                     Toggle("Keep Blip available in the background",
                            isOn: Binding(get: { receiver.backgroundEnabled }, set: receiver.setBackground))
-                    Button("Open Blip") { receiver.openBlip() }
                 } label: { Image(systemName: "gearshape") }
                 .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
                 .accessibilityLabel("Blip options")
             }.controlSize(.small)
+            if receiver.canSetUpBlip {
+                Button("Set up Blip…", action: receiver.setUpBlip).controlSize(.small)
+            }
+            if receiver.needsSignIn {
+                Button(receiver.registrationCodeSent ? "Enter code…" : "Sign in to Blip…", action: receiver.signIn)
+                    .controlSize(.small).disabled(receiver.signingIn)
+            }
             if let message = receiver.sendMessage {
                 Text(message).font(.system(size: 11)).foregroundStyle(.secondary)
             }

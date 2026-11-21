@@ -285,6 +285,46 @@ fn syncthing_attention_previews_the_real_error_with_a_suggested_fix() {
 }
 
 #[test]
+fn syncthing_relocates_a_moved_root_without_replacing_the_folder() {
+    use serde_json::json;
+    let temp = tempfile::tempdir().unwrap();
+    let original = temp.path().join("old");
+    let moved = temp.path().join("moved");
+    std::fs::create_dir_all(moved.join(".stfolder")).unwrap();
+    std::fs::write(moved.join(".stignore"), "#include local.rules\n").unwrap();
+    let folder = json!({"id":"studio","path":original,"paused":false,"devices":[{"deviceID":"peer"}]});
+    let proposed_path = crate::syncthing::friendly_path(&moved.canonicalize().unwrap());
+    let mut updated = folder.clone();
+    updated["path"] = json!(proposed_path);
+    let index = json!([folder]);
+    let get = |target, body: serde_json::Value| Exchange {
+        method: "GET", target, status: 200, body: body.to_string(),
+        expect_body: None, expected_header: Some("x-api-key: test-key"),
+    };
+    let patch = json!({"path":proposed_path}).to_string();
+    let (host, worker) = server(vec![
+        get("/rest/config/folders/studio?", folder),
+        get("/rest/config/folders?", index.clone()),
+        get("/rest/system/status?", json!({"myID":"local"})),
+        get("/rest/config/folders?", index),
+        Exchange { method: "PATCH", target: "/rest/config/folders/studio?", status: 200,
+            body: String::new(), expect_body: Some(patch.into_bytes()), expected_header: Some("x-api-key: test-key") },
+        get("/rest/config/folders/studio?", updated),
+    ]);
+    let api = crate::syncthing::Api::new(&crate::syncthing::Connection {
+        endpoint: host, api_key: "test-key".into(), certificate_pem: String::new(),
+    }).unwrap();
+    let response = api.execute("relocate", &json!({
+        "folder_id":"studio", "expected_path":original, "local_path":moved
+    }), temp.path()).unwrap();
+    assert_eq!(response["folder_id"], "studio");
+    assert_eq!(response["path"], proposed_path);
+    assert!(!original.exists());
+    assert_eq!(std::fs::read_to_string(moved.join(".stignore")).unwrap(), "#include local.rules\n");
+    worker.join().unwrap();
+}
+
+#[test]
 fn syncthing_browser_preserves_case_distinct_remote_names() {
     let temp = tempfile::tempdir().unwrap();
     std::fs::write(temp.path().join("local.txt"), "local").unwrap();

@@ -65,7 +65,7 @@ public sealed class BlipService : IAsyncDisposable
             RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true,
             StandardInputEncoding = new UTF8Encoding(false), StandardOutputEncoding = Encoding.UTF8, StandardErrorEncoding = Encoding.UTF8
         };
-        info.ArgumentList.Add(fixture ? Path.Combine(bundle, "cli.mjs") : "--windows-blip"); info.ArgumentList.Add(command);
+        info.ArgumentList.Add(fixture ? Path.Combine(bundle, "cli.mjs") : "--blip-engine"); info.ArgumentList.Add(command);
         info.ArgumentList.Add("--profile"); info.ArgumentList.Add(profile);
         if (attachedSocket != null && command is "status" or "devices" or "transfers" or "poll" or "send" or "accept")
         {
@@ -136,7 +136,7 @@ public sealed class BlipService : IAsyncDisposable
         "acceptance_unconfirmed" => "Blip has not confirmed receiving. Check Transfers before trying Receive again.",
         "accept_not_waiting" => "This transfer is no longer waiting to receive. Refresh Transfers to see its current state.",
         "desktop_profile_missing" => "Open and sign in to Blip once on this computer, then reconnect myDrive. No new account is needed.",
-        "native_engine_missing" => "myDrive needs a compatible locally installed Blip engine. See the Windows setup guide.",
+        "native_engine_missing" => "Choose Add Blip engine to use a compatible copy of blip-jni.dll.",
         "native_engine_unsupported" => "This version of Blip’s engine is unsupported. See the Windows setup guide.",
         "native_engine_load_failed" => "Windows could not load the compatible Blip engine.",
         "native_connection_unavailable" => "myDrive could not connect to the local Blip engine.",
@@ -323,6 +323,10 @@ public sealed class BlipService : IAsyncDisposable
         RequireRunning(); if (UsesDesktopSession) throw new IOException("Manage sign-in in the Blip desktop app.");
         if (!Regex.IsMatch(code, "^[a-zA-Z0-9-]{4,16}$")) throw new IOException("Enter the sign-in code from Blip.");
         await CommandAsync("verify", input: code + "\n", token: token);
+    }
+    public async Task ImportEngineAsync(string path, CancellationToken token = default)
+    {
+        await CommandAsync("import-engine", new[] { "--", path }, token: token);
     }
     public static void ValidatePeer(string peer)
     {

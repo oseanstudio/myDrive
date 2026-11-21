@@ -1,15 +1,27 @@
 use socket2::{Domain, SockAddr, Socket, Type};
 use std::io::{BufReader, Read, Write};
+#[cfg(windows)]
 use std::os::windows::ffi::OsStrExt;
+#[cfg(target_os = "linux")]
+use std::os::{
+    fd::AsRawFd,
+    unix::fs::{FileTypeExt, MetadataExt},
+};
 use std::path::Path;
+#[cfg(windows)]
 use std::ptr;
 use std::time::{Duration, Instant};
+#[cfg(windows)]
 use windows_sys::Win32::Foundation::{CloseHandle, LocalFree, INVALID_HANDLE_VALUE};
+#[cfg(windows)]
 use windows_sys::Win32::Security::Authorization::{GetNamedSecurityInfoW, SE_FILE_OBJECT};
+#[cfg(windows)]
 use windows_sys::Win32::Security::{
     EqualSid, GetTokenInformation, TokenUser, OWNER_SECURITY_INFORMATION, TOKEN_QUERY, TOKEN_USER,
 };
+#[cfg(windows)]
 use windows_sys::Win32::Storage::FileSystem::{FindClose, FindFirstFileW, WIN32_FIND_DATAW};
+#[cfg(windows)]
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
 pub(super) type Result<T> = std::result::Result<T, &'static str>;
@@ -26,6 +38,10 @@ pub(super) fn connect(path: &Path) -> Result<Socket> {
     socket
         .connect_timeout(&address, Duration::from_millis(500))
         .map_err(|_| CONNECTION)?;
+    #[cfg(target_os = "linux")]
+    if !same_user(&socket) {
+        return Err(CONNECTION);
+    }
     socket
         .set_read_timeout(Some(Duration::from_secs(2)))
         .map_err(|_| CONNECTION)?;
@@ -35,6 +51,7 @@ pub(super) fn connect(path: &Path) -> Result<Socket> {
     Ok(socket)
 }
 
+#[cfg(windows)]
 fn local_endpoint(path: &Path) -> bool {
     let Some(parent) = path.parent() else {
         return false;
@@ -75,6 +92,7 @@ fn local_endpoint(path: &Path) -> bool {
     }
 }
 
+#[cfg(windows)]
 unsafe fn current_user_owns(owner: windows_sys::Win32::Security::PSID) -> bool {
     let mut token = ptr::null_mut();
     if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
@@ -95,12 +113,46 @@ unsafe fn current_user_owns(owner: windows_sys::Win32::Security::PSID) -> bool {
     success && EqualSid(owner, (*storage.as_ptr().cast::<TOKEN_USER>()).User.Sid) != 0
 }
 
+#[cfg(target_os = "linux")]
+fn local_endpoint(path: &Path) -> bool {
+    path.parent()
+        .is_some_and(|parent| super::check_plain_directory(parent).is_ok())
+        && std::fs::symlink_metadata(path).is_ok_and(|file| {
+            file.file_type().is_socket() && file.uid() == unsafe { libc::geteuid() }
+        })
+}
+
+#[cfg(target_os = "linux")]
+fn same_user(socket: &Socket) -> bool {
+    let mut credentials = libc::ucred {
+        pid: 0,
+        uid: 0,
+        gid: 0,
+    };
+    let mut length = std::mem::size_of_val(&credentials) as libc::socklen_t;
+    unsafe {
+        libc::getsockopt(
+            socket.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            (&mut credentials as *mut libc::ucred).cast(),
+            &mut length,
+        ) == 0
+            && length as usize == std::mem::size_of_val(&credentials)
+            && credentials.uid == libc::geteuid()
+    }
+}
+
 // DRPC stream framing, shared with the local macOS Blip client.
 pub(super) fn call(path: &Path, method: &str, body: &[u8]) -> Result<Vec<u8>> {
     let mut socket = connect(path)?;
     let metadata = field(
         1,
-        &[string(1, "user-agent"), string(2, "myDrive-Windows")].concat(),
+        &[
+            string(1, "user-agent"),
+            string(2, concat!("myDrive/", env!("CARGO_PKG_VERSION"))),
+        ]
+        .concat(),
     );
     let mut request = Vec::new();
     frame(&mut request, 7, 1, &metadata);

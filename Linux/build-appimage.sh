@@ -8,7 +8,6 @@ cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
 mkdir -p "$MYDRIVE_BUILD_DIR"
 build=$(mktemp -d "$MYDRIVE_BUILD_DIR/build.XXXXXX")
 appdir="$build/myDrive.AppDir"
-vendor="$build/blip-1.2.8"
 
 download() {
     local url=$1 file=$2 hash=$3
@@ -18,19 +17,11 @@ download() {
 
 download https://static.blip.net/linux/blip-1.2.8-linux-amd64.tar.gz "$build/blip.tar.gz" \
     59fd1020f7f193aae4373f45f39bf39e9e3337bf0af6ede91bdb1c8e4c1ac463
-tar -xf "$build/blip.tar.gz" -C "$build"
-classes="$appdir/usr/lib/mydrive/blip-classes"
-mkdir -p "$classes"
-javac -encoding UTF-8 -d "$classes" -cp "$vendor/lib/app/*" Blip/java/BlipBridge.java
-
-# Exercise the reviewed native library on isolated, unauthenticated loopback profiles.
-mkdir -p "$build/host-check" "$build/test-classes"
-javac -encoding UTF-8 -d "$build/test-classes" -cp "$vendor/lib/app/*" Blip/java/HostElectionCheck.java
-timeout 80s java -Djava.awt.headless=true --enable-native-access=ALL-UNNAMED \
-    -Djava.library.path="$vendor/lib/runtime/lib" -cp "$build/test-classes:$vendor/lib/app/*" \
-    HostElectionCheck check "$build/host-check"
+tar -xOf "$build/blip.tar.gz" blip-1.2.8/lib/runtime/lib/libblip-jni.so > "$build/libblip-jni.so"
 
 cargo test --locked --manifest-path Core/Cargo.toml
+MYDRIVE_BLIP_LIBRARY="$build/libblip-jni.so" \
+    cargo test --locked --manifest-path Core/Cargo.toml private_host_starts_without_java -- --ignored
 cargo build --release --locked --manifest-path Core/Cargo.toml
 install -Dm755 "$CARGO_TARGET_DIR/release/mydrive-core" "$appdir/usr/bin/mydrive-core"
 (cd Core/SmbHost && CGO_ENABLED=0 GOTOOLCHAIN=local go run build.go "$appdir/usr/bin")
@@ -64,6 +55,11 @@ if [[ -n "${MYDRIVE_VERSION:-}" ]]; then
 fi
 printf '%s\n' '{"action":"version"}' | "$output" --core | python3 -c 'import json,sys; assert json.load(sys.stdin)["ok"]'
 node tests/automation-smoke.mjs "$output" --cli
+fixture=$(mktemp -d /tmp/md-blip.XXXXXX)
+if ! MYDRIVE_BLIP_LIBRARY="$build/libblip-jni.so" XDG_RUNTIME_DIR="$fixture" \
+        XDG_DATA_HOME="$fixture/data" timeout 25s "$output" --cli blip serve </dev/null; then
+    exit 1
+fi
 timeout 30s dbus-run-session -- xvfb-run -a "$output" --smoke-test
 mkdir "$build/notice-check"
 (cd "$build/notice-check" && "$output" --appimage-extract 'usr/share/doc/mydrive/*' >/dev/null)

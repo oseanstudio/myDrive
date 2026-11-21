@@ -619,6 +619,29 @@ final class AppState: ObservableObject {
         }
     }
 
+    func relocateSyncFolder(_ folder: SyncthingFolder) {
+        guard busy == nil else { return }
+        let picker = NSOpenPanel()
+        picker.title = "Choose new location"
+        picker.message = "Select the sync folder you moved."
+        picker.prompt = "Use this location"
+        picker.canChooseFiles = false
+        picker.canChooseDirectories = true
+        guard picker.runModal() == .OK, let destination = picker.url else { return }
+        perform("Update sync location") {
+            _ = try await self.syncthing.call("relocate", payload: [
+                "folder_id": folder.id, "expected_path": folder.path, "local_path": destination.path
+            ])
+            await self.refreshSnapshot()
+            if self.view == .syncAttention { await self.loadSyncAttention() }
+            if self.view == .syncInfo, self.syncInfo?.errors == true, self.syncInfo?.folderId == folder.id {
+                let raw = try await self.syncthing.call("errors", payload: ["folder_id": folder.id], timeout: 25)
+                self.errorItems = IssueItem.rows(from: raw)
+                self.syncInfoFailure = nil
+            }
+        }
+    }
+
     func protectHistory(_ folder: SyncthingFolder) {
         perform("Protect version history · \(folder.displayName)") {
             _ = try await self.syncthing.call("protect", payload: ["folder_id": folder.id])

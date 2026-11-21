@@ -239,6 +239,9 @@ impl Api {
                                         s["error"].as_str().filter(|e| !e.is_empty())
                                     {
                                         result["error"] = json!(error);
+                                        if missing_sync_root(error) {
+                                            result["can_relocate"] = json!(true);
+                                        }
                                         if let Some(advice) = folder_error_advice(error) {
                                             result["error_advice"] = json!(advice);
                                         }
@@ -431,6 +434,7 @@ impl Api {
             "share.preview" | "share" => self.share(data, action == "share", data_dir),
             "snapshot" => self.snapshot(),
             "attention" => self.folder_attention(data),
+            "relocate" => self.relocate(id, data),
             "browse" => self.browse(id, data["path"].as_str().unwrap_or("")),
             "ignores" => {
                 self.folder(id)?;
@@ -711,6 +715,51 @@ impl Api {
             _ => Err("Unknown Syncthing action.".into()),
         }
     }
+    fn relocate(&self, id: &str, data: &Value) -> Result<Value, String> {
+        let folder = self.folder(id)?;
+        let old = folder["path"].as_str().ok_or("The configured folder has no path.")?;
+        if data["expected_path"].as_str() != Some(old) {
+            return Err("The folder location changed. Refresh and choose its new location again.".into());
+        }
+        if !matches!(folder["filesystemType"].as_str(), None | Some("" | "basic")) {
+            return Err("Choose a local folder managed by Syncthing's basic filesystem.".into());
+        }
+        let selected = Path::new(data["local_path"].as_str().ok_or("Choose the moved folder.")?);
+        let root = selected.canonicalize().map_err(|_| "The moved folder is unavailable.")?;
+        if !selected.is_absolute() || !root.is_dir() || root.parent().is_none() {
+            return Err("Choose the moved folder on this computer.".into());
+        }
+        let previous_root = configured_share_path(old)?;
+        if previous_root == root {
+            return Err("Choose the folder's new location.".into());
+        }
+        let marker = folder["markerName"].as_str().filter(|name| !name.is_empty()).unwrap_or(".stfolder");
+        validate_moved_root(&previous_root, &root, marker)?;
+        let folders = self.get(&["rest", "config", "folders"], &[])?;
+        let mut proposed = folders.clone();
+        let current = proposed.as_array_mut()
+            .and_then(|rows| rows.iter_mut().find(|row| row["id"] == id))
+            .filter(|row| **row == folder)
+            .ok_or("The folder configuration changed. Refresh and try again.")?;
+        let destination = friendly_path(&root);
+        current["path"] = json!(destination);
+        let system = self.get(&["rest", "system", "status"], &[])?;
+        let local = system["myID"].as_str().ok_or("Cannot identify the local Syncthing device.")?;
+        // Reuse the same duplicate and nested-device checks as adding a share.
+        plan_share(&root, &proposed, local, local)?;
+        if self.get(&["rest", "config", "folders"], &[])? != folders {
+            return Err("The sync configuration changed. Refresh and try again.".into());
+        }
+        validate_moved_root(&previous_root, &root, marker)?;
+        self.call("PATCH", &["rest", "config", "folders", id], &[], Some(&json!({"path":destination})))?;
+        let actual = self.folder(id)?;
+        let saved = actual["path"].as_str().and_then(|path| configured_share_path(path).ok());
+        if saved.as_deref() != Some(root.as_path()) {
+            return Err("Syncthing did not confirm the new folder location. Refresh to see the saved path.".into());
+        }
+        Ok(json!({"folder_id": id, "path": destination, "paused": actual["paused"]}))
+    }
+
     fn share(&self, data: &Value, apply: bool, data_dir: &Path) -> Result<Value, String> {
         let input = data["local_path"]
             .as_str()
@@ -865,6 +914,29 @@ impl Api {
         Ok(result)
     }
 }
+
+fn missing_sync_root(error: &str) -> bool {
+    let lower = error.to_ascii_lowercase();
+    lower.contains("folder path missing") || lower.contains("folder marker missing")
+}
+
+fn validate_moved_root(old: &Path, new: &Path, marker: &str) -> Result<(), String> {
+    use std::{io::ErrorKind, path::Component};
+    if !matches!(Path::new(marker).components().collect::<Vec<_>>().as_slice(), [Component::Normal(_)]) {
+        return Err("The sync folder has an unsupported marker name.".into());
+    }
+    match fs::symlink_metadata(old.join(marker)) {
+        Err(error) if error.kind() == ErrorKind::NotFound => {}
+        _ => return Err("The original folder is still available or cannot be verified. Refresh before changing its location.".into()),
+    }
+    let found = fs::symlink_metadata(new.join(marker))
+        .map_err(|_| format!("Choose the original moved folder, including its hidden {marker} marker."))?;
+    if !(found.is_dir() || found.is_file()) || found.file_type().is_symlink() {
+        return Err("The selected folder has an invalid Syncthing marker.".into());
+    }
+    Ok(())
+}
+
 // A local hub may relay parent A to device B and child C to device D. Never
 // create two overlapping roots shared with the same remote: that can loop edits.
 fn plan_share(
@@ -1029,12 +1101,9 @@ fn folder_error_advice(error: &str) -> Option<&'static str> {
         "insufficient space",
     ]) {
         Some("Free space on the drive, then rescan.")
-    } else if contains(&[
-        "folder path missing",
-        "folder marker missing",
-        "no such file or directory",
-        "path not found",
-    ]) {
+    } else if missing_sync_root(&error) {
+        Some("If the folder moved, choose its new location. If its drive is offline, reconnect it and rescan.")
+    } else if contains(&["no such file or directory", "path not found"]) {
         Some("Make sure the original folder and its drive are available, then rescan.")
     } else if contains(&[
         "permission denied",

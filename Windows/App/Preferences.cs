@@ -6,6 +6,7 @@ public sealed class Preferences
     public bool AutoInstallUpdates {get;set;}
     public bool BlipAutoOpenLinks {get;set;}=true;
     public bool BlipAutoConnectDesktop {get;set;}=true;
+    public bool BlipSeparateProfile {get;set;}
     public string BlipAutoOpenAccount {get;set;}="";
     public List<string> BlipAutoOpenPeers {get;set;}=new();
     public List<string> BlipAutoReceivePeers {get;set;}=new();

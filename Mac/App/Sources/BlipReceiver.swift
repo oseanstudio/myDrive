@@ -188,19 +188,32 @@ extension Notification.Name { static let myDriveIncomingBlip = Notification.Name
     }
     func stop() { task?.cancel(); task = nil; stopBackground(); setActivity(false) }
 
-    private var desktopAppURL: URL? { BlipMacEngine.installedApplication }
+    @Published private(set) var needsSignIn = false
+    @Published private(set) var registrationCodeSent = false
+    @Published private(set) var signingIn = false
+    private var provisioning = false
+    private var downloadRequested = false
+    var canSetUpBlip: Bool { backgroundFailure != nil && backgroundProcess == nil }
+
+    func setUpBlip() {
+        guard backgroundProcess == nil else { return }
+        downloadRequested = true
+        setBackground(true)
+    }
 
     private func ensureBackground() {
         guard backgroundEnabled, backgroundProcess == nil, Date() >= nextHostAttempt else { return }
         nextHostAttempt = Date().addingTimeInterval(30)
-        guard let app = desktopAppURL, let executable = Bundle.main.executableURL else {
+        guard (downloadRequested || BlipMacEngine.engineAvailable), let executable = Bundle.main.executableURL else {
             backgroundFailure = BlipMacEngine.missing.localizedDescription
             return
         }
         let process = Process()
         let input = Pipe()
         process.executableURL = executable
-        process.arguments = ["--blip-background-engine", app.path]
+        provisioning = downloadRequested
+        downloadRequested = false
+        process.arguments = ["--blip-background-engine"] + (provisioning ? ["--download"] : [])
         process.standardInput = input
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
@@ -209,6 +222,7 @@ extension Notification.Name { static let myDriveIncomingBlip = Notification.Name
             Task { @MainActor in
                 guard let self, self.backgroundProcess === child else { return }
                 self.backgroundProcess = nil
+                self.provisioning = false
                 try? self.backgroundInput?.close()
                 self.backgroundInput = nil
                 let failure = BlipMacEngine(rawValue: status) ?? .launch
@@ -241,7 +255,7 @@ extension Notification.Name { static let myDriveIncomingBlip = Notification.Name
                     action()
                     return
                 }
-                if desktopAppURL == nil || state == "Sign in in desktop Blip" { break }
+                if needsSignIn { break }
                 if !adapterAvailable && (!backgroundEnabled || backgroundFailure != nil) { break }
                 try? await Task.sleep(for: .milliseconds(500))
             } while Date() < deadline && !Task.isCancelled
@@ -278,25 +292,40 @@ extension Notification.Name { static let myDriveIncomingBlip = Notification.Name
         guard !refreshing else { return }; refreshing = true; defer { refreshing = false }
         ensureBackground()
         guard adapterAvailable else {
-            let starting = backgroundEnabled && backgroundInput != nil && Date().timeIntervalSince(hostStartedAt) < 20
+            let starting = backgroundEnabled && backgroundInput != nil &&
+                Date().timeIntervalSince(hostStartedAt) < (provisioning ? 150 : 30)
             if backgroundInput != nil && !starting {
                 stopBackground()
                 backgroundFailure = BlipMacEngine.launch.localizedDescription
             }
             if starting {
-                state = "Starting Blip in the background…"
+                state = provisioning ? "Setting up Blip…" : "Starting Blip in the background…"
                 problem = nil
             } else {
                 state = backgroundEnabled ? "Blip background service is unavailable" : "Blip background service is off"
                 problem = backgroundFailure
             }
+            needsSignIn = false
             session = ""; selfPeer = ""; setActivity(false)
             return
         }
         do {
             let value = try await request("poll"), status = value.dict("status")
             guard !Task.isCancelled else { return }
-            guard status.bool("authenticated"), status.bool("desktop_session") else { state = "Sign in in desktop Blip"; account="";session="";selfPeer="";peers=[];transfers=[];setActivity(false);return }
+            let managed = BlipLocalRPC.socketURL().map(BlipLocalRPC.isManaged) ?? false
+            provisioning = false
+            needsSignIn = managed && !status.bool("authenticated")
+            if !signingIn { registrationCodeSent = needsSignIn && status.bool("registration_code_sent") }
+            guard status.bool("authenticated"), status.bool("desktop_session") else {
+                state = "Sign in to Blip"
+                problem = needsSignIn ? nil : "Set up a myDrive Blip profile to sign in here."
+                account="";session="";selfPeer="";peers=[];transfers=[];setActivity(false);return
+            }
+            if managed && !status.bool("receive_policy_verified") {
+                state = "Checking receiving settings…"
+                selfPeer = ""
+                return
+            }
             account = status.str("user_id"); guard UUID(uuidString:account) != nil else { throw BlipReceiverError.message("Blip identity could not be verified.") }
             let identity = account + ":" + status.str("device_id")
             let data = try JSONSerialization.data(withJSONObject:value.array("transfers"))
@@ -356,6 +385,32 @@ extension Notification.Name { static let myDriveIncomingBlip = Notification.Name
                 }
             }
         } catch { problem = error.localizedDescription; state = "Blip needs attention"; session = "";selfPeer="";setActivity(false) }
+    }
+    func signIn() {
+        guard needsSignIn, !signingIn, let socket = BlipLocalRPC.socketURL() else { return }
+        let verifying = registrationCodeSent
+        let prompt = NSAlert()
+        prompt.messageText = verifying ? "Enter your Blip sign-in code" : "Sign in to Blip"
+        let input: NSTextField = verifying ? NSSecureTextField() : NSTextField()
+        input.frame = NSRect(x: 0, y: 0, width: 240, height: 24)
+        input.placeholderString = verifying ? "Sign-in code" : "Email address"
+        prompt.accessoryView = input
+        prompt.window.initialFirstResponder = input
+        prompt.addButton(withTitle: verifying ? "Sign in" : "Send code")
+        prompt.addButton(withTitle: "Cancel")
+        guard prompt.runModal() == .alertFirstButtonReturn else { return }
+        let value = input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        signingIn = true
+        Task {
+            defer { signingIn = false }
+            do {
+                try await Task.detached(priority: .utility) {
+                    try BlipLocalRPC.register(value, verifying: verifying, socket: socket)
+                }.value
+                registrationCodeSent = !verifying
+                await refresh()
+            } catch { problem = "Blip could not confirm sign-in. Check the email or code and try again." }
+        }
     }
     func setTrusted(_ peer: BlipPeer, _ enabled: Bool,files:Bool=false) {
         guard canSavePolicy, UUID(uuidString:account) != nil, BlipPolicy.exactPeer(peer.peer) else { return }

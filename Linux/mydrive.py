@@ -742,6 +742,8 @@ class MyDrive(Gtk.Application):
                                     report.get("failure") or "Syncthing reported a sync problem.")
                 self.add_issue_text(box, first.get("advice") or folder.get("error_advice"))
                 actions = Gtk.Box(spacing=6)
+                if folder.get("can_relocate"):
+                    actions.append(button("Choose new location…", lambda f=folder: self.relocate_sync_folder(f)))
                 actions.append(button("Rescan", lambda f=folder: self.rescan_issue(f)))
                 actions.append(button("View errors", lambda f=folder: self.show_sync_issue(f)))
                 box.append(actions)
@@ -754,7 +756,11 @@ class MyDrive(Gtk.Application):
         self.sync_issue_folder = folder["id"]
         back = self.show_sync_attention if self.sync_attention else self.leave_sync_attention
         page = self.sync_issues_header("Folder errors", back, lambda: self.show_sync_issue(folder))
-        page.append(row(folder.get("label") or folder["id"], "", button("Rescan folder", lambda: self.rescan_issue(folder))))
+        actions = []
+        if folder.get("can_relocate"):
+            actions.append(button("Choose new location…", lambda: self.relocate_sync_folder(folder)))
+        actions.append(button("Rescan folder", lambda: self.rescan_issue(folder)))
+        page.append(row(folder.get("label") or folder["id"], "", *actions))
         loading = label("Loading folder errors…")
         page.append(loading)
 
@@ -774,6 +780,26 @@ class MyDrive(Gtk.Application):
 
         self.work("sync", "Read folder errors", lambda: self.sync.request("errors", folder_id=folder["id"]), done,
                   on_error=lambda message: loading.set_label(message) if loading.get_parent() is page else None)
+
+    def relocate_sync_folder(self, folder):
+        def chosen(paths):
+            def relocate():
+                self.sync.request("relocate", folder_id=folder["id"], expected_path=folder["path"], local_path=paths[0])
+                return self.sync.request("snapshot")
+
+            def done(snapshot):
+                self.snapshot = snapshot
+                if self.sync_issue_folder == folder["id"]:
+                    fresh = next((item for item in snapshot["folders"] if item["id"] == folder["id"]), folder)
+                    self.show_sync_issue(fresh)
+                elif self.sync_attention and self.sync_issue_folder is None:
+                    self.show_sync_attention()
+                else:
+                    self.render_sync()
+
+            self.work("sync", "Update sync location", relocate, done)
+
+        self.files("Choose the moved sync folder", Gtk.FileChooserAction.SELECT_FOLDER, chosen)
 
     def rescan_issue(self, folder):
         if self.sync_rescanning:

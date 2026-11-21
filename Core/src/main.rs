@@ -17,8 +17,8 @@ mod webdav;
 #[cfg(windows)]
 #[path = "../../Windows/Network/smb.rs"]
 mod windows_smb;
-#[cfg(windows)]
-mod windows_blip;
+#[cfg(any(windows, target_os = "linux"))]
+mod blip;
 #[cfg(test)]
 mod wire_tests;
 use client::{FileClient, LocalClient};
@@ -189,9 +189,9 @@ fn execute(r: Request) -> Result<Value, String> {
 fn main() {
     let mut arguments = std::env::args_os().skip(1);
     if let Some(command) = arguments.next() {
-        #[cfg(windows)]
-        if command == "--windows-blip" {
-            std::process::exit(windows_blip::run(arguments));
+        #[cfg(any(windows, target_os = "linux"))]
+        if command == "--blip-engine" || (cfg!(windows) && command == "--windows-blip") {
+            std::process::exit(blip::run(arguments));
         }
         if command == "--smb-health-probe" {
             std::process::exit(smb_health::probe_worker(arguments));

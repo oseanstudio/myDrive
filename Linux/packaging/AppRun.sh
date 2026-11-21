@@ -2,7 +2,6 @@
 set -eu
 root=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 export MYDRIVE_CORE="$root/usr/bin/mydrive-core"
-export MYDRIVE_BLIP_CLASSES="$root/usr/lib/mydrive/blip-classes"
 export MYDRIVE_BLIP_SCRIPT="$root/usr/lib/mydrive/blip_cli.py"
 if [ "${1:-}" = "--cli" ]; then
     shift

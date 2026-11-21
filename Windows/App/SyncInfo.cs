@@ -1,6 +1,8 @@
 using System.Text.Json;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Windows.Storage.Pickers;
+using WinRT.Interop;
 
 namespace MyDrive;
 public sealed partial class MainWindow
@@ -75,6 +77,28 @@ public sealed partial class MainWindow
         else if (currentView == "sync-info" && syncInfoFolderId == id) await LoadSyncInfo();
     }
 
+    private async Task ChooseMovedSyncFolder(JsonElement folder)
+    {
+        if (busy || modalDepth > 0) return;
+        var id = S(folder, "id");
+        var oldPath = S(folder, "path");
+        var picker = new FolderPicker { CommitButtonText = "Use this location" };
+        InitializeWithWindow.Initialize(picker, hwnd);
+        picker.FileTypeFilter.Add("*");
+        var selected = await Modal(async () => await picker.PickSingleFolderAsync());
+        if (selected is null) return;
+        bool relocated = false;
+        await Run("Update sync location", async token =>
+        {
+            await SyncthingService.Call("relocate", new { folder_id = id, expected_path = oldPath, local_path = selected.Path }, token);
+            relocated = true;
+            await RefreshSyncthing();
+        });
+        if (!relocated) return;
+        if (currentView == "sync-attention") await LoadSyncAttention();
+        else if (currentView == "sync-info" && syncInfoFolderId == id) await LoadSyncInfo();
+    }
+
     private void RenderSyncAttention()
     {
         RenderSyncInfoHeader("Sync errors", () => NavigateQuick("sync"), () => _ = LoadSyncAttention(true), syncAttentionLoading);
@@ -118,6 +142,7 @@ public sealed partial class MainWindow
             content.Children.Add(details);
             if (advice.Length > 0) content.Children.Add(Text(advice, 11));
             var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+            if (B(folder, "can_relocate")) actions.Children.Add(QuickButton("Choose new location…", () => _ = ChooseMovedSyncFolder(folder)));
             actions.Children.Add(QuickButton("Rescan", () => _ = RescanFromErrors(id, name)));
             actions.Children.Add(QuickButton("View errors", () => _ = ShowSyncInfo(id, "errors", "Folder errors")));
             content.Children.Add(actions);
@@ -166,8 +191,15 @@ public sealed partial class MainWindow
         var label=QuickText(syncInfoFolderLabel,11);ToolTipService.SetToolTip(label,syncInfoFolderLabel);page.Children.Add(label);
         if(syncInfoLoading){page.Children.Add(Text("Loading…",12));return;}
         if(syncInfoFailure.Length>0){page.Children.Add(Text(syncInfoFailure,12));return;}
+        var currentFolder=syncSnapshot is {} snapshot?Items(snapshot,"folders").FirstOrDefault(f=>S(f,"id")==syncInfoFolderId):default;
         if(syncInfoAction=="errors" && syncInfoFolderId.Length>0)
-            page.Children.Add(QuickButton("Rescan folder",()=>_=RescanFromErrors(syncInfoFolderId,syncInfoFolderLabel)));
+        {
+            var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+            if (currentFolder.ValueKind == JsonValueKind.Object && B(currentFolder, "can_relocate"))
+                actions.Children.Add(QuickButton("Choose new location…", () => _ = ChooseMovedSyncFolder(currentFolder)));
+            actions.Children.Add(QuickButton("Rescan folder",()=>_=RescanFromErrors(syncInfoFolderId,syncInfoFolderLabel)));
+            page.Children.Add(actions);
+        }
         var count=0;
         void Row(string path,string detail,string advice="")
         {
@@ -186,8 +218,7 @@ public sealed partial class MainWindow
         }
         if(count==0)
         {
-            var folder=syncSnapshot is {} snapshot?Items(snapshot,"folders").FirstOrDefault(f=>S(f,"id")==syncInfoFolderId):default;
-            var message=folder.ValueKind==JsonValueKind.Object?S(folder,"error"):"";
+            var message=currentFolder.ValueKind==JsonValueKind.Object?S(currentFolder,"error"):"";
             page.Children.Add(Text(syncInfoAction=="errors"?(message.Length>0?message:"No file errors."):"No pending files on this computer.",12));
         }
         else if(syncInfoAction!="errors")page.Children.Add(Text("Showing up to 50 pending files. Sync resumes when another device is available.",11));

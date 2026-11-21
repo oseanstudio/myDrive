@@ -1,3 +1,8 @@
+#[cfg(windows)]
+#[path = "blip/host_windows.rs"]
+mod host;
+#[cfg(target_os = "linux")]
+#[path = "blip/host_linux.rs"]
 mod host;
 mod rpc;
 mod state;
@@ -10,19 +15,27 @@ use std::collections::{BTreeSet, HashSet};
 use std::ffi::OsString;
 use std::fs::{self, OpenOptions};
 use std::io::{self, BufRead, Read, Write};
+#[cfg(target_os = "linux")]
+use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+#[cfg(windows)]
 use std::os::windows::fs::MetadataExt;
+#[cfg(windows)]
 use std::os::windows::io::{AsRawHandle, FromRawHandle};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
+#[cfg(windows)]
 use windows_sys::Win32::Foundation::{DuplicateHandle, DUPLICATE_SAME_ACCESS};
+#[cfg(windows)]
 use windows_sys::Win32::System::Console::{
     GetStdHandle, SetStdHandle, STD_ERROR_HANDLE, STD_OUTPUT_HANDLE,
 };
+#[cfg(windows)]
 use windows_sys::Win32::System::Threading::GetCurrentProcess;
 
 const SERVER: &str = "https://prod.blip.net";
+const PLATFORM: &str = if cfg!(windows) { "Windows" } else { "Linux" };
 const PROFILE_MARKER: &str = "mydrive-profile.json";
 
 struct Arguments {
@@ -94,6 +107,7 @@ struct Session {
 
 impl Session {
     fn new(local: &Path, profile: PathBuf, desktop: bool) -> Self {
+        #[cfg(windows)]
         let (cache, state, lock) = if desktop {
             (
                 local.join("Temp/net.blip.desktop"),
@@ -103,8 +117,26 @@ impl Session {
         } else {
             (profile.join("cache"), profile.join("state"), "host.lock")
         };
+        #[cfg(target_os = "linux")]
+        let (cache, state, lock) = if desktop {
+            (
+                state::xdg_path("XDG_CACHE_HOME", ".cache").join("net.blip.desktop"),
+                local.join("net.blip.desktop"),
+                "desktop-host.lock",
+            )
+        } else {
+            (
+                state::runtime_dir().join("standalone"),
+                profile.join("state"),
+                "host.lock",
+            )
+        };
+        #[cfg(windows)]
+        let inbox = profile.join("downloads");
+        #[cfg(target_os = "linux")]
+        let inbox = local.join("myDrive/Blip/downloads");
         Self {
-            inbox: profile.join("downloads"),
+            inbox,
             socket: cache.join("sock"),
             lock: profile.join(lock),
             profile,
@@ -127,7 +159,7 @@ impl Session {
     fn start(&self, library: &Path) -> Result<Option<host::Host>> {
         let host = match host::Host::start(library, &self.cache, &self.state, SERVER, &self.lock) {
             Ok(host) => Some(host),
-            Err("host_already_running") if self.desktop => None,
+            Err("host_already_running") => None,
             Err(error) => return Err(error),
         };
         let deadline = Instant::now() + Duration::from_secs(10);
@@ -143,7 +175,10 @@ impl Session {
     fn serve(&self, library: &Path, output: &mut impl Write) -> Result<()> {
         let mut host = self.start(library)?;
         let mut policy = SeparatePolicy::default();
-        if !self.desktop {
+        if !self.desktop && host.is_some() {
+            #[cfg(target_os = "linux")]
+            fs::create_dir_all(self.inbox.parent().ok_or("profile_unavailable")?)
+                .map_err(|_| "profile_unavailable")?;
             create_plain_directory(&self.inbox)?;
             self.dispatch("TransferSetAutoAccept", number(1, 0))?;
             self.dispatch(
@@ -202,7 +237,7 @@ impl Session {
             }
             if Instant::now() >= next_maintenance {
                 next_maintenance = Instant::now() + maintenance_interval;
-                if !self.desktop {
+                if !self.desktop && host.is_some() {
                     if let Err(error) = self.configure(true, &mut policy) {
                         if error == "receive_policy_unconfirmed" {
                             emit(output, &json!({"ok": false, "event": error}))?;
@@ -219,12 +254,15 @@ impl Session {
     }
 
     fn configure(&self, owner: bool, policy: &mut SeparatePolicy) -> Result<()> {
+        if !owner {
+            return Ok(());
+        }
         let snapshot = self.snapshot()?;
-        if snapshot.app_id_missing && owner {
+        if snapshot.app_id_missing {
             let agent = [
-                string(101, "Windows PC"),
+                string(101, PLATFORM),
                 number(102, 5),
-                string(200, "Windows"),
+                string(200, PLATFORM),
                 string(
                     300,
                     if self.desktop {
@@ -478,7 +516,10 @@ fn path_text(path: &Path) -> Result<&str> {
 }
 
 fn create_plain_directory(path: &Path) -> Result<()> {
-    match fs::create_dir(path) {
+    let builder = &mut fs::DirBuilder::new();
+    #[cfg(target_os = "linux")]
+    builder.mode(0o700);
+    match builder.create(path) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => check_plain_directory(path),
         Err(_) => Err("profile_unavailable"),
@@ -487,7 +528,11 @@ fn create_plain_directory(path: &Path) -> Result<()> {
 
 fn check_plain_directory(path: &Path) -> Result<()> {
     let metadata = fs::symlink_metadata(path).map_err(|_| "profile_unavailable")?;
-    if metadata.is_dir() && metadata.file_attributes() & 0x400 == 0 {
+    #[cfg(windows)]
+    let plain = metadata.file_attributes() & 0x400 == 0;
+    #[cfg(target_os = "linux")]
+    let plain = metadata.uid() == unsafe { libc::geteuid() } && metadata.mode() & 0o022 == 0;
+    if metadata.is_dir() && plain {
         Ok(())
     } else {
         Err("profile_unavailable")
@@ -580,6 +625,10 @@ fn command(args: &Arguments) -> Result<Value> {
             host::library(&local)?;
             return Ok(json!({"ok": true, "native": true}));
         }
+        "import-engine" if args.files.len() == 1 => {
+            host::import_library(&local, &args.files[0])?;
+            return Ok(json!({"ok": true, "native": true}));
+        }
         "init" if !desktop => return prepare(&args.profile, args.name.as_deref()),
         "serve" | "desktop-serve" => {
             if desktop && !session.state.join("state.dat").is_file() {
@@ -632,12 +681,14 @@ fn command(args: &Arguments) -> Result<Value> {
     Ok(result)
 }
 
+#[cfg(windows)]
 struct HostOutput {
     original_out: windows_sys::Win32::Foundation::HANDLE,
     original_err: windows_sys::Win32::Foundation::HANDLE,
     _null: fs::File,
 }
 
+#[cfg(windows)]
 impl HostOutput {
     fn quiet() -> Result<(fs::File, Self)> {
         unsafe {
@@ -677,11 +728,56 @@ impl HostOutput {
     }
 }
 
+#[cfg(windows)]
 impl Drop for HostOutput {
     fn drop(&mut self) {
         unsafe {
             SetStdHandle(STD_OUTPUT_HANDLE, self.original_out);
             SetStdHandle(STD_ERROR_HANDLE, self.original_err);
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+struct HostOutput {
+    saved: [std::os::fd::OwnedFd; 2],
+}
+
+#[cfg(target_os = "linux")]
+impl HostOutput {
+    fn quiet() -> Result<(fs::File, Self)> {
+        use std::os::fd::{AsRawFd, FromRawFd};
+        fn duplicate(fd: i32) -> Result<std::os::fd::OwnedFd> {
+            let copy = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 3) };
+            if copy < 0 {
+                return Err("reply_unavailable");
+            }
+            Ok(unsafe { std::os::fd::OwnedFd::from_raw_fd(copy) })
+        }
+        let output = fs::File::from(duplicate(1)?);
+        let saved = Self {
+            saved: [duplicate(1)?, duplicate(2)?],
+        };
+        let null = OpenOptions::new()
+            .write(true)
+            .open("/dev/null")
+            .map_err(|_| "reply_unavailable")?;
+        if unsafe { libc::dup2(null.as_raw_fd(), 1) } < 0
+            || unsafe { libc::dup2(null.as_raw_fd(), 2) } < 0
+        {
+            return Err("reply_unavailable");
+        }
+        Ok((output, saved))
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for HostOutput {
+    fn drop(&mut self) {
+        use std::os::fd::AsRawFd;
+        unsafe {
+            libc::dup2(self.saved[0].as_raw_fd(), 1);
+            libc::dup2(self.saved[1].as_raw_fd(), 2);
         }
     }
 }
@@ -698,13 +794,15 @@ pub(crate) fn run(arguments: impl Iterator<Item = OsString>) -> i32 {
     }
 }
 
-pub(crate) fn desktop_poll(profile: PathBuf) -> std::result::Result<Value, String> {
+#[cfg(windows)]
+pub(crate) fn poll(profile: PathBuf, desktop: bool) -> std::result::Result<Value, String> {
     state::local()
-        .and_then(|local| Session::new(&local, profile, true).snapshot())
+        .and_then(|local| Session::new(&local, profile, desktop).snapshot())
         .map(Snapshot::poll)
         .map_err(|_| "The local Blip connection is unavailable.".into())
 }
 
+#[cfg(windows)]
 pub(crate) fn error_message(error: &str) -> &'static str {
     match error {
         "native_engine_missing" => {
@@ -739,10 +837,17 @@ mod tests {
     use std::time::{Duration, Instant};
 
     #[test]
-    #[ignore = "Requires the approved Blip DLL in MYDRIVE_BLIP_DLL"]
+    #[ignore = "Requires the approved local Blip library"]
     fn private_host_starts_without_java() {
-        let library = PathBuf::from(std::env::var_os("MYDRIVE_BLIP_DLL").expect("engine path"));
+        let variable = if cfg!(windows) {
+            "MYDRIVE_BLIP_DLL"
+        } else {
+            "MYDRIVE_BLIP_LIBRARY"
+        };
+        let library = PathBuf::from(std::env::var_os(variable).expect("engine path"));
         let profile = tempfile::Builder::new().prefix("mdb-").tempdir().unwrap();
+        let library = host::import_library(profile.path(), &library).unwrap();
+        assert!(library.starts_with(profile.path()));
         let cache = profile.path().join("c");
         let state = profile.path().join("s");
         let socket = cache.join("sock");

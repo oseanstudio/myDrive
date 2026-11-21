@@ -2,20 +2,24 @@ use super::rpc::{self, Proto, Result};
 use crate::automation::uuid;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap};
-use std::ffi::OsString;
-use std::os::windows::ffi::OsStringExt;
-use std::path::{Component, Path, PathBuf, Prefix};
-use std::ptr;
+use std::path::{Component, Path, PathBuf};
+#[cfg(windows)]
+use std::{ffi::OsString, os::windows::ffi::OsStringExt, path::Prefix, ptr};
+#[cfg(windows)]
 use windows_sys::core::GUID;
+#[cfg(windows)]
 use windows_sys::Win32::System::Com::CoTaskMemFree;
+#[cfg(windows)]
 use windows_sys::Win32::UI::Shell::{
     FOLDERID_Documents, FOLDERID_Downloads, FOLDERID_LocalAppData, SHGetKnownFolderPath,
 };
 
+#[cfg(windows)]
 pub(super) fn local() -> Result<PathBuf> {
     known_folder(&FOLDERID_LocalAppData).ok_or("profile_unavailable")
 }
 
+#[cfg(windows)]
 fn known_folder(id: &GUID) -> Option<PathBuf> {
     let mut result = ptr::null_mut();
     unsafe {
@@ -31,6 +35,63 @@ fn known_folder(id: &GUID) -> Option<PathBuf> {
         CoTaskMemFree(result.cast());
         folder
     }
+}
+
+#[cfg(target_os = "linux")]
+pub(super) fn local() -> Result<PathBuf> {
+    crate::automation::user_data()
+        .ok()
+        .and_then(|path| path.parent().map(Path::to_owned))
+        .ok_or("profile_unavailable")
+}
+
+#[cfg(target_os = "linux")]
+fn home() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+}
+
+#[cfg(target_os = "linux")]
+pub(super) fn xdg_path(variable: &str, fallback: &str) -> PathBuf {
+    std::env::var_os(variable)
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .or_else(|| home().map(|path| path.join(fallback)))
+        .unwrap_or_default()
+}
+
+#[cfg(target_os = "linux")]
+pub(super) fn runtime_dir() -> PathBuf {
+    std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .unwrap_or_else(|| PathBuf::from(format!("/tmp/mydrive-{}", unsafe { libc::geteuid() })))
+        .join("mydrive-blip")
+}
+
+#[cfg(target_os = "linux")]
+fn user_directory(key: &str, fallback: &str) -> Option<PathBuf> {
+    let home = home()?;
+    let configured =
+        std::fs::read_to_string(xdg_path("XDG_CONFIG_HOME", ".config").join("user-dirs.dirs"))
+            .ok()
+            .and_then(|settings| {
+                settings.lines().find_map(|line| {
+                    let (name, value) = line.split_once('=')?;
+                    let value = value.trim();
+                    if name.trim() != key {
+                        return None;
+                    }
+                    let value = value.strip_prefix('"')?.strip_suffix('"')?;
+                    if let Some(relative) = value.strip_prefix("$HOME/") {
+                        return join_relative(&home, relative);
+                    }
+                    let path = PathBuf::from(value);
+                    path.is_absolute().then_some(path)
+                })
+            });
+    configured.or_else(|| Some(home.join(fallback)))
 }
 
 pub(super) fn peer_id(value: &str) -> Option<(&str, &str)> {
@@ -94,9 +155,15 @@ impl Snapshot {
             3 => "REGISTERING",
             _ => "NOT_STARTED",
         };
+        #[cfg(windows)]
         let paths = LocalPaths {
             downloads: known_folder(&FOLDERID_Downloads),
             documents: known_folder(&FOLDERID_Documents),
+        };
+        #[cfg(target_os = "linux")]
+        let paths = LocalPaths {
+            downloads: user_directory("XDG_DOWNLOAD_DIR", "Downloads"),
+            documents: user_directory("XDG_DOCUMENTS_DIR", "Documents"),
         };
         let mut devices = BTreeMap::new();
         let mut names = HashMap::new();
@@ -248,9 +315,12 @@ impl LocalPaths {
         } else {
             PathBuf::from(value)
         };
-        let drive = matches!(path.components().next(), Some(Component::Prefix(prefix))
+        #[cfg(windows)]
+        let allowed = matches!(path.components().next(), Some(Component::Prefix(prefix))
             if matches!(prefix.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_)));
-        (drive
+        #[cfg(target_os = "linux")]
+        let allowed = true;
+        (allowed
             && path.is_absolute()
             && !path
                 .components()
@@ -326,14 +396,18 @@ fn join_relative(root: &Path, suffix: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::windows_blip::rpc::{field, number, string};
+    use crate::blip::rpc::{field, number, string};
 
     #[test]
     fn finished_root_shortcuts_keep_paths_and_exact_invitation_ids() {
         let id = "ABCD1234-EF56-4789-ABCD-123456789ABC";
         let user = "11111111-1111-4111-8111-111111111111";
         let device = "22222222-2222-4222-8222-222222222222";
-        let path = r"C:\Downloads\Studio link.url";
+        let path = if cfg!(windows) {
+            r"C:\Downloads\Studio link.url"
+        } else {
+            "/home/test/Downloads/Studio link.url"
+        };
         let root = "Studio link.url";
         let file = field(1, &number(1, 43));
         let item = field(1, &[string(1, root), field(2, &file)].concat());

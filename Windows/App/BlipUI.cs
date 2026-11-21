@@ -55,7 +55,10 @@ public sealed partial class MainWindow
             {
                 Interlocked.Exchange(ref nextDesktopBlipAttempt, Environment.TickCount64 + 30_000);
                 using var attachTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
-                await blip.UseDesktopAsync(attachTimeout.Token).ConfigureAwait(false);
+                if (Preferences.Current.BlipSeparateProfile)
+                    await blip.StartAsync(attachTimeout.Token).ConfigureAwait(false);
+                else
+                    await blip.UseDesktopAsync(attachTimeout.Token).ConfigureAwait(false);
                 blipSnapshot = null; LinkOpener.ResetSession();
             }
             if (blip.IsRunning)
@@ -150,6 +153,7 @@ public sealed partial class MainWindow
         var autoConnect = new ToggleMenuFlyoutItem { Text = "Keep Blip available in the background", IsChecked = Preferences.Current.BlipAutoConnectDesktop };
         autoConnect.Click += (_, _) => { if (diagnosticMode) return; Preferences.Current.BlipAutoConnectDesktop = autoConnect.IsChecked; Preferences.Save(); Interlocked.Exchange(ref nextDesktopBlipAttempt, 0); if (autoConnect.IsChecked) _ = RefreshBlip(); };
         menu.Items.Add(autoConnect);
+        if (!running) MenuAction(menu, "Add Blip engine…", () => _ = ImportBlipEngine());
         var senders = new MenuFlyoutItem { Text = "Sender permissions…", IsEnabled = signedIn };
         senders.Click += (_,_) => _ = ChooseLinkSenders(); menu.Items.Add(senders);
         if (running) MenuAction(menu, BlipDesktop ? "Disconnect Blip" : "Stop Blip", () => _ = StopBlip());
@@ -213,8 +217,23 @@ public sealed partial class MainWindow
         var (dialog, desktop) = BlipConnectionDialog();
         if (await ShowDialog(dialog) != ContentDialogResult.Primary) return;
         if (desktop.IsChecked == true)
-        { await Run("Connect to desktop Blip", async token => { blipSnapshot = null; LinkOpener.ResetSession(); await blip.UseDesktopAsync(token); Preferences.Current.BlipAutoConnectDesktop = true; Preferences.Save(); await RefreshBlip(); }); Render(); }
+        { await Run("Connect to existing Blip device", async token => { blipSnapshot = null; LinkOpener.ResetSession(); await blip.UseDesktopAsync(token); Preferences.Current.BlipSeparateProfile = false; Preferences.Current.BlipAutoConnectDesktop = true; Preferences.Save(); await RefreshBlip(); }); Render(); }
         else await StartBlip();
+    }
+    private async Task ImportBlipEngine()
+    {
+        if (busy || diagnosticMode || blip.IsRunning) return;
+        var picker = new FileOpenPicker { CommitButtonText = "Add engine" };
+        InitializeWithWindow.Initialize(picker, hwnd);
+        picker.FileTypeFilter.Add(".dll");
+        var selected = await Modal(async () => await picker.PickSingleFileAsync());
+        if (selected is null) return;
+        await Run("Add Blip engine", async token =>
+        {
+            await blip.ImportEngineAsync(selected.Path, token);
+            Interlocked.Exchange(ref nextDesktopBlipAttempt, 0);
+        });
+        await RefreshBlip();
     }
     private async Task ChooseLinkSenders()
     {
@@ -281,7 +300,7 @@ public sealed partial class MainWindow
     private async Task StartBlip()
     {
         if (busy || diagnosticMode) return;
-        await Run("Start Blip engine", async token => { blipSnapshot = null; LinkOpener.ResetSession(); await blip.StartAsync(token); Preferences.Current.BlipAutoConnectDesktop = false; Preferences.Save(); await RefreshBlip(); }); Render();
+        await Run("Start Blip engine", async token => { blipSnapshot = null; LinkOpener.ResetSession(); await blip.StartAsync(token); Preferences.Current.BlipSeparateProfile = true; Preferences.Current.BlipAutoConnectDesktop = true; Preferences.Save(); await RefreshBlip(); }); Render();
     }
     private async Task StopBlip()
     {
@@ -289,6 +308,8 @@ public sealed partial class MainWindow
         if (BlipDesktop) { Preferences.Current.BlipAutoConnectDesktop = false; Preferences.Save(); LinkOpener.ResetSession(); await Run("Disconnect desktop Blip", async _ => { await blip.StopAsync(); blipSnapshot = null; }); Render(); return; }
         var dialog = new ContentDialog { XamlRoot = root.XamlRoot, Title = "Stop Blip?", Content = Text("Ongoing transfers may pause. Received files stay on this computer. Syncthing and the separate Blip desktop app keep running."), PrimaryButtonText = "Stop Blip", CloseButtonText = "Keep running", DefaultButton = ContentDialogButton.Close };
         if (await ShowDialog(dialog) != ContentDialogResult.Primary) return;
+        Preferences.Current.BlipAutoConnectDesktop = false;
+        Preferences.Save();
         LinkOpener.ResetSession(); await Run("Stop Blip engine", async _ => await blip.StopAsync()); Render();
     }
     private void OpenBlipDownloads()
