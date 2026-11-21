@@ -1,15 +1,16 @@
-use reqwest::{blocking::Client, redirect::Policy, StatusCode};
+use reqwest::{blocking::Client, header, redirect::Policy, StatusCode};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     fs::File,
-    io::{Read, Write},
+    io::{BufReader, Read, Write},
     path::Path,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
-const RELEASE_API: &str = "https://api.github.com/repos/oseanstudio/myDrive/releases/latest";
+const RELEASE_API: &str = "https://api.github.com/repos/oseanstudio/myDrive/releases";
 const DOWNLOAD_BASE: &str = "https://github.com/oseanstudio/myDrive/releases/download";
+const CHECK_TIMEOUT: Duration = Duration::from_secs(8);
 
 #[derive(Deserialize)]
 struct Release {
@@ -52,24 +53,54 @@ pub fn asset_name() -> Result<&'static str, String> {
 pub fn check(installed: &str) -> Result<Option<Update>, String> {
     let installed = version_parts(installed).ok_or("Invalid installed app version.")?;
     let asset = asset_name()?;
-    let response = Client::builder()
+    let client = Client::builder()
         .https_only(true)
         .redirect(Policy::none())
         .user_agent("myDrive")
-        .timeout(Duration::from_secs(8))
         .build()
-        .and_then(|client| client.get(RELEASE_API).send())
         .map_err(|_| "Could not reach GitHub to check for updates.")?;
-    if response.status() == StatusCode::NOT_FOUND {
-        return Ok(None);
+    let deadline = Instant::now() + CHECK_TIMEOUT;
+    let mut minimum = installed;
+    let mut latest = None;
+    for page in 1u32.. {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err("GitHub did not finish listing releases in time.".into());
+        }
+        let response = client
+            .get(RELEASE_API)
+            .query(&[("per_page", 100), ("page", page)])
+            .header(header::CACHE_CONTROL, "no-cache")
+            .timeout(remaining)
+            .send()
+            .map_err(|_| "Could not reach GitHub to check for updates.")?;
+        if response.status() == StatusCode::NOT_FOUND && page == 1 {
+            return Ok(None);
+        }
+        if response.status() != StatusCode::OK {
+            return Err("GitHub could not check for updates. Try again later.".into());
+        }
+        let more = response.headers().get_all(header::LINK).iter().any(|link| {
+            link.to_str().is_ok_and(|value| {
+                value.split(',').any(|part| {
+                    part.split(';')
+                        .skip(1)
+                        .any(|parameter| parameter.trim() == "rel=\"next\"")
+                })
+            })
+        });
+        let releases: Vec<Release> =
+            serde_json::from_reader(BufReader::new(response.take(16 * 1024 * 1024)))
+                .map_err(|_| "GitHub returned an unreadable update response.")?;
+        if let Some((version, update)) = latest_update(minimum, &releases, asset) {
+            minimum = version;
+            latest = Some(update);
+        }
+        if !more {
+            return Ok(latest);
+        }
     }
-    if response.status() != StatusCode::OK {
-        return Err("GitHub could not check for updates. Try again later.".into());
-    }
-    let release: Release = response
-        .json()
-        .map_err(|_| "GitHub returned an unreadable update response.")?;
-    Ok(available_update(installed, &release, asset))
+    Err("GitHub returned too many releases to check.".into())
 }
 
 pub fn download(update: &Update, destination: &Path) -> Result<(), String> {
@@ -151,9 +182,25 @@ fn version_parts(version: &str) -> Option<[u32; 3]> {
     Some([parse(major)?, parse(minor)?, parse(patch)?])
 }
 
-fn available_update(installed: [u32; 3], release: &Release, asset: &str) -> Option<Update> {
+fn latest_update(
+    installed: [u32; 3],
+    releases: &[Release],
+    asset: &str,
+) -> Option<([u32; 3], Update)> {
+    releases
+        .iter()
+        .filter_map(|release| available_update(installed, release, asset))
+        .max_by_key(|(version, _)| *version)
+}
+
+fn available_update(
+    installed: [u32; 3],
+    release: &Release,
+    asset: &str,
+) -> Option<([u32; 3], Update)> {
     let version = release.tag_name.strip_prefix('v')?;
-    if release.draft || release.prerelease || version_parts(version)? <= installed {
+    let parts = version_parts(version)?;
+    if release.draft || release.prerelease || parts <= installed {
         return None;
     }
     let package = release.assets.iter().find(|entry| {
@@ -164,12 +211,15 @@ fn available_update(installed: [u32; 3], release: &Release, asset: &str) -> Opti
     let digest = package.digest.as_deref()?.strip_prefix("sha256:")?;
     let mut checksum = [0; 32];
     hex::decode_to_slice(digest, &mut checksum).ok()?;
-    Some(Update {
-        version: version.into(),
-        url: format!("{DOWNLOAD_BASE}/{}/{asset}", release.tag_name),
-        size: package.size,
-        checksum,
-    })
+    Some((
+        parts,
+        Update {
+            version: version.into(),
+            url: format!("{DOWNLOAD_BASE}/{}/{asset}", release.tag_name),
+            size: package.size,
+            checksum,
+        },
+    ))
 }
 
 #[cfg(test)]
@@ -196,12 +246,41 @@ mod tests {
     #[test]
     fn offers_only_a_newer_released_version_for_the_platform() {
         let release = release();
-        let update = available_update([0, 4, 9], &release, WINDOWS).unwrap();
+        let (_, update) = available_update([0, 4, 9], &release, WINDOWS).unwrap();
         assert_eq!(update.version, "0.4.10");
         assert_eq!(update.url, format!("{DOWNLOAD_BASE}/v0.4.10/{WINDOWS}"));
         assert!(available_update([0, 4, 10], &release, WINDOWS).is_none());
         assert!(available_update([0, 5, 0], &release, WINDOWS).is_none());
         assert!(available_update([0, 4, 9], &release, LINUX).is_none());
+    }
+
+    #[test]
+    fn skips_intermediate_releases_and_selects_the_highest_compatible_version() {
+        let versions = [
+            ("v0.4.8", WINDOWS, false),
+            ("v0.4.30", LINUX, false),
+            ("v0.4.12", WINDOWS, false),
+            ("v0.4.9", WINDOWS, false),
+            ("v0.4.40", WINDOWS, true),
+        ];
+        let releases = versions.map(|(tag, asset, prerelease)| {
+            let mut release = release();
+            release.tag_name = tag.into();
+            release.assets[0].name = asset.into();
+            release.prerelease = prerelease;
+            release
+        });
+        let (version, update) = latest_update([0, 4, 7], &releases, WINDOWS).unwrap();
+        assert_eq!(version, [0, 4, 12]);
+        assert_eq!(update.version, "0.4.12");
+        assert_eq!(
+            latest_update([0, 4, 7], &releases, LINUX)
+                .unwrap()
+                .1
+                .version,
+            "0.4.30"
+        );
+        assert!(latest_update(version, &releases, WINDOWS).is_none());
     }
 
     #[test]
