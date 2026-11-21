@@ -26,14 +26,19 @@ enum BlipMacEngine: Int32, LocalizedError {
     static let bundleID = "net.blip.macos"
     static let frameworkPath = "Contents/Frameworks/BlipKit.framework/Versions/A/BlipKit"
     static let supportPath = "Contents/Frameworks/libswiftCompatibilitySpan.dylib"
+    private static let frameworkBundlePath = "Contents/Frameworks/BlipKit.framework"
     private static let reviewedHash = "d839f07f7ff1c15c4ed144dbf2d09300d3a2c4b061f974a099c1f31a1a34d500"
     private static let archiveHash = "1109ced4e804026c73bb108c2a9b1ae1324d99a94b9d7f1725d7c1f191b37825"
     private static let supportHash = "05256a8721361bb24eb006313bc95b02f326895f3ab71644e9ec2af98840b882"
     private static let archiveURL = "https://static.blip.net/mac/Blip-20261029214736.zip"
-    private static var runtimeDirectory: URL { BlipLocalRPC.managedProfile.appendingPathComponent("runtime", isDirectory: true) }
-    private static var runtimeLibrary: URL { runtimeDirectory.appendingPathComponent("BlipKit") }
+    private static var runtimeDirectory: URL { BlipLocalRPC.managedProfile.appendingPathComponent("runtime-1", isDirectory: true) }
+    private static var runtimeLibrary: URL { runtimeDirectory.appendingPathComponent(frameworkPath) }
+    static func frameworkBundle(containing library: URL) -> URL {
+        (0..<3).reduce(library) { path, _ in path.deletingLastPathComponent() }
+    }
     static func supportLibrary(beside framework: URL) -> URL {
-        framework.deletingLastPathComponent().appendingPathComponent("Frameworks/libswiftCompatibilitySpan.dylib")
+        frameworkBundle(containing: framework).deletingLastPathComponent()
+            .appendingPathComponent("libswiftCompatibilitySpan.dylib")
     }
     static var groupDirectory: URL {
         FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Group Containers/" + group, isDirectory: true)
@@ -84,50 +89,49 @@ enum BlipMacEngine: Int32, LocalizedError {
 
     private static func prepareEngine(installed: URL?, allowDownload: Bool) throws -> URL {
         let limit: UInt64 = 64 * 1024 * 1024
-        let support = supportLibrary(beside: runtimeLibrary)
-        if checkedContents(support, hash: supportHash, limit: limit) != nil,
-           checkedContents(runtimeLibrary, hash: reviewedHash, limit: limit) != nil { return runtimeLibrary }
-        let fm = FileManager.default
-        try fm.createDirectory(at: support.deletingLastPathComponent(), withIntermediateDirectories: true,
-                               attributes: [.posixPermissions: 0o700])
-        if let installed,
-           let compatibility = checkedContents(installed.appendingPathComponent(supportPath), hash: supportHash, limit: limit),
-           let bytes = checkedContents(installed.appendingPathComponent(frameworkPath), hash: reviewedHash, limit: limit) {
-            try compatibility.write(to: support, options: .atomic)
-            try bytes.write(to: runtimeLibrary, options: .atomic)
-            return runtimeLibrary
+        func verified(_ root: URL) -> Bool {
+            checkedContents(root.appendingPathComponent(supportPath), hash: supportHash, limit: 1024 * 1024) != nil &&
+                checkedContents(root.appendingPathComponent(frameworkPath), hash: reviewedHash, limit: limit) != nil
         }
-        guard allowDownload else { throw installed == nil ? Self.missing : Self.version }
-        let work = fm.temporaryDirectory.appendingPathComponent("mydrive-blip-" + UUID().uuidString)
+        if verified(runtimeDirectory) { return runtimeLibrary }
+        let fm = FileManager.default
+        try fm.createDirectory(at: BlipLocalRPC.managedProfile, withIntermediateDirectories: true,
+                               attributes: [.posixPermissions: 0o700])
+        let work = BlipLocalRPC.managedProfile.appendingPathComponent(".engine-" + UUID().uuidString)
         try fm.createDirectory(at: work, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
         defer { try? fm.removeItem(at: work) }
-        let archive = work.appendingPathComponent("blip.zip")
-        try tool("/usr/bin/curl", ["--fail", "--silent", "--location", "--proto", "=https", "--proto-redir", "=https",
-                                  "--max-time", "120", "--max-filesize", String(limit), "--output", archive.path, archiveURL])
-        guard checkedContents(archive, hash: archiveHash, limit: limit) != nil else { throw Self.version }
-        func extract(_ path: String, hash: String) throws -> Data {
-            let extracted = work.appendingPathComponent(URL(fileURLWithPath: path).lastPathComponent)
-            guard fm.createFile(atPath: extracted.path, contents: nil) else { throw Self.download }
-            let handle = try FileHandle(forWritingTo: extracted)
-            defer { try? handle.close() }
-            try tool("/usr/bin/unzip", ["-p", archive.path, "Blip.app/" + path], output: handle)
-            guard let bytes = checkedContents(extracted, hash: hash, limit: limit) else { throw Self.version }
-            return bytes
+        let staged = work.appendingPathComponent("Blip.app", isDirectory: true)
+        if let installed, verified(installed) {
+            let signedBundle = staged.appendingPathComponent(frameworkBundlePath)
+            try fm.createDirectory(at: signedBundle.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try fm.copyItem(at: installed.appendingPathComponent(frameworkBundlePath), to: signedBundle)
+            try fm.copyItem(at: installed.appendingPathComponent(supportPath), to: staged.appendingPathComponent(supportPath))
+        } else {
+            guard allowDownload else { throw installed == nil ? Self.missing : Self.version }
+            let archive = work.appendingPathComponent("blip.zip")
+            try tool("/usr/bin/curl", ["--fail", "--silent", "--location", "--proto", "=https", "--proto-redir", "=https",
+                                      "--max-time", "120", "--max-filesize", String(limit), "--output", archive.path, archiveURL])
+            guard checkedContents(archive, hash: archiveHash, limit: limit) != nil else { throw Self.version }
+            try tool("/usr/bin/unzip", ["-q", archive.path, "Blip.app/" + frameworkBundlePath + "/*",
+                                      "Blip.app/" + supportPath, "-d", work.path])
         }
-        let compatibility = try extract(supportPath, hash: supportHash)
-        let bytes = try extract(frameworkPath, hash: reviewedHash)
-        try compatibility.write(to: support, options: .atomic)
-        try bytes.write(to: runtimeLibrary, options: .atomic)
+        guard verified(staged) else { throw Self.version }
+        // Preserve the bundle's resources and signature. dyld rejects the bare framework executable.
+        try tool("/usr/bin/codesign", ["--verify", "--strict", staged.appendingPathComponent(frameworkBundlePath).path])
+        do {
+            try fm.moveItem(at: staged, to: runtimeDirectory)
+        } catch {
+            guard verified(runtimeDirectory) else { throw error }
+        }
         return runtimeLibrary
     }
 
-    private static func tool(_ executable: String, _ arguments: [String],
-                             output: FileHandle = .nullDevice) throws {
+    private static func tool(_ executable: String, _ arguments: [String]) throws {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
         process.standardInput = FileHandle.nullDevice
-        process.standardOutput = output
+        process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
         try process.run()
         process.waitUntilExit()

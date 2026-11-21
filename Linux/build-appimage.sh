@@ -25,7 +25,7 @@ MYDRIVE_BLIP_LIBRARY="$build/libblip-jni.so" \
 cargo build --release --locked --manifest-path Core/Cargo.toml
 install -Dm755 "$CARGO_TARGET_DIR/release/mydrive-core" "$appdir/usr/bin/mydrive-core"
 (cd Core/SmbHost && CGO_ENABLED=0 GOTOOLCHAIN=local go run build.go "$appdir/usr/bin")
-install -d "$appdir/usr/share/doc/mydrive"
+install -d "$appdir/usr/share/doc/mydrive" "$appdir/usr/lib/mydrive"
 mv "$appdir/usr/bin/SMB-ThirdPartyNotices.txt" "$appdir/usr/share/doc/mydrive/"
 node Core/third-party-notices.mjs Core/Cargo.toml "$appdir/usr/share/doc/mydrive/ThirdPartyNotices.txt"
 install -m644 Linux/packaging/AppImage-Runtime.txt "$appdir/usr/share/doc/mydrive/AppImage-Runtime.txt"

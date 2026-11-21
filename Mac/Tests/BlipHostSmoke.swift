@@ -20,12 +20,12 @@ typealias JSON = [String: Any]
         }
         let fm = FileManager.default
         precondition(NSRunningApplication.runningApplications(withBundleIdentifier: BlipMacEngine.bundleID).isEmpty)
-        let cached = root.appendingPathComponent("BlipKit")
-        try fm.copyItem(at: framework, to: cached)
+        let cached = root.appendingPathComponent(BlipMacEngine.frameworkPath)
+        let cachedBundle = BlipMacEngine.frameworkBundle(containing: cached)
         let support = BlipMacEngine.supportLibrary(beside: cached)
-        try fm.createDirectory(at: support.deletingLastPathComponent(), withIntermediateDirectories: false)
-        let app = (0..<6).reduce(framework) { path, _ in path.deletingLastPathComponent() }
-        try fm.copyItem(at: app.appendingPathComponent(BlipMacEngine.supportPath), to: support)
+        try fm.createDirectory(at: support.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try fm.copyItem(at: BlipMacEngine.frameworkBundle(containing: framework), to: cachedBundle)
+        try fm.copyItem(at: BlipMacEngine.supportLibrary(beside: framework), to: support)
         try fm.createDirectory(at: cache, withIntermediateDirectories: true)
         try fm.createDirectory(at: storage, withIntermediateDirectories: true)
         func start() throws -> (Process, Pipe) {
