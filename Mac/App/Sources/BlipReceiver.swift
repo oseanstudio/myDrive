@@ -463,8 +463,4 @@ extension Notification.Name { static let myDriveIncomingBlip = Notification.Name
         do {let directory=BlipLocalRPC.receivedDirectory;try FileManager.default.createDirectory(at:directory,withIntermediateDirectories:true);NSWorkspace.shared.open(directory)}
         catch {problem="The received-files folder could not open."}
     }
-    func openBlip() {
-        if let app = desktopAppURL { NSWorkspace.shared.open(app); return }
-        problem="Open the installed Blip app on this Mac, then refresh."
-    }
 }
