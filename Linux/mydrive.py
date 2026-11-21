@@ -56,6 +56,7 @@ class MyDrive(Gtk.Application):
         self.sync_attention = False
         self.sync_issue_folder = None
         self.sync_rescanning = False
+        self.last_sync_refresh = float("-inf")
         self.stopping = False
         self.show_update_result = False
         self.checking_for_update = False
@@ -127,6 +128,8 @@ class MyDrive(Gtk.Application):
         def show_view(dropdown, *_):
             title = titles[dropdown.get_selected()]
             self.stack.set_visible_child_name(title)
+            if title == "Sync" and not self.fixture:
+                self.refresh_background_sync(force=True)
             if title == "SMB Storage" and not self.fixture:
                 self.storage_view.check_now("view")
             if title == "Settings" and not self.fixture:
@@ -148,6 +151,8 @@ class MyDrive(Gtk.Application):
         self.tray = Tray(self.window, ROOT / f"{APP_ID}.png")
         self.window.connect("notify::visible", lambda window, _: self.check_for_updates()
                             if window.get_visible() else None)
+        self.window.connect("notify::visible", lambda window, _: self.refresh_background_sync(force=True)
+                            if window.get_visible() and self.stack.get_visible_child_name() == "Sync" else None)
         self.refresh_sync()
         self.storage_view.load()
         self.storage_view.start_monitor()
@@ -169,9 +174,15 @@ class MyDrive(Gtk.Application):
         Gtk.Application.do_shutdown(self)
 
     def tick_sync(self):
-        if not self.browse:
-            self.refresh_sync(quiet=True)
+        self.refresh_background_sync()
         return not self.stopping
+
+    def refresh_background_sync(self, force=False):
+        if self.browse or self.pending["sync"]:
+            return
+        visible = self.main_window_visible() and self.stack.get_visible_child_name() == "Sync"
+        if force or monotonic() - self.last_sync_refresh >= (8 if visible else 120):
+            self.refresh_sync(quiet=True)
 
     def tick_blip(self):
         self.transfer_view.refresh(quiet=True)
@@ -251,9 +262,12 @@ class MyDrive(Gtk.Application):
     def can_auto_install(self):
         if not self.preferences.get("auto_install_updates", False) or monotonic() < self.auto_update_after:
             return False
+        return not self.main_window_visible()
+
+    def main_window_visible(self):
         surface = self.window.get_surface()
-        return not self.window.get_visible() or (
-            isinstance(surface, Gdk.Toplevel) and bool(surface.get_state() & Gdk.ToplevelState.MINIMIZED)
+        return self.window.get_visible() and not (
+            isinstance(surface, Gdk.Toplevel) and surface.get_state() & Gdk.ToplevelState.MINIMIZED
         )
 
     def update_idle(self):
@@ -508,6 +522,7 @@ class MyDrive(Gtk.Application):
         self.dialog("Share over SMB", "Share", [field, account, detail], submit)
 
     def refresh_sync(self, quiet=False):
+        self.last_sync_refresh = monotonic()
         def showing_folders():
             return not self.browse and not self.sync_attention and self.sync_issue_folder is None
         def updated(snapshot):

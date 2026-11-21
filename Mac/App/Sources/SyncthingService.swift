@@ -108,13 +108,19 @@ final class SyncthingService {
         return candidates.first { FileManager.default.fileExists(atPath: $0) }
     }
 
+    private var lastEngineContact = Date.distantPast
+
     func call(_ action: String, payload: JSON = [:], timeout: TimeInterval = 45) async throws -> Any? {
         let connection = try await ensureRunning()
-        do { return try await CoreBridge.shared.call(action: "syncthing." + action,
+        do {
+            let response = try await CoreBridge.shared.call(action: "syncthing." + action,
                                                 request: ["syncthing": connection.dict,
                                                           "payload": payload,
                                                           "data_dir": Paths.dataDir.path],
-                                                timeout: timeout) }
+                                                timeout: timeout)
+            lastEngineContact = Date()
+            return response
+        }
         catch {
             if !(error is CancellationError) { invalidate() }
             throw error // Never automatically replay a mutation with an uncertain outcome.
@@ -122,7 +128,9 @@ final class SyncthingService {
     }
 
     func checkBackgroundEngine() async {
-        guard !PrefStore.shared.preferences.syncthingManual, ensuring == nil else { return }
+        guard !PrefStore.shared.preferences.syncthingManual, ensuring == nil,
+              Date().timeIntervalSince(lastEngineContact) >= 60 else { return }
+        lastEngineContact = Date()
         _ = try? await ensureRunning(checkHealth: true)
     }
 

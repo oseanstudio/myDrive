@@ -30,6 +30,9 @@ await using(var attached=new BlipService(args[1],args[2],profile,args[0],socket)
   Check(attached.IsRunning&&attached.UsesDesktopSession&&File.Exists(Path.Combine(profile,"host-pid")),"existing desktop account has a managed background helper");
   var shared=await attached.SnapshotAsync();Check(shared.Status.Authenticated&&shared.Status.DesktopSession&&!shared.Status.ReceivePolicyVerified,"desktop queries use its existing session");
   var poll=await attached.PollAsync();Check(poll.Status.Authenticated&&poll.Status.DesktopSession&&poll.Transfers.Count==0,"background polling includes fresh auth and transfer state through the desktop socket");
+  var concurrent = await Task.WhenAll(attached.PollAsync(), attached.PollAsync());
+  Check(concurrent.All(result => result.Status.DesktopSession) && !File.Exists(Path.Combine(profile,"standalone-poll")),
+      "concurrent status reads reuse the existing host without launching a process");
   await File.WriteAllTextAsync(Path.Combine(profile,"fail-accept"),"");bool acceptFailed=false;
   try{await attached.AcceptAsync("ABCD1234-EF56-4789-ABCD-123456789ABC");}catch(IOException){acceptFailed=true;}
   Check(acceptFailed&&attached.IsRunning&&attached.UsesDesktopSession,"unconfirmed receive preserves the desktop attachment");

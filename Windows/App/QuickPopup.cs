@@ -62,7 +62,7 @@ public sealed partial class MainWindow
     {
         if(busy)return;currentView=view;
         navigation.SelectedItem=view=="settings"?navigation.SettingsItem:navigation.MenuItems.OfType<NavigationViewItem>().FirstOrDefault(i=>i.Tag?.ToString()==view);
-        Render();if(!diagnosticMode&&view=="sync"&&syncSnapshot==null)_=RefreshSyncthing();if(view=="transfers")_=RefreshBlip();
+        Render();if(!diagnosticMode&&view=="sync"&&Environment.TickCount64-lastSyncRefresh>=10_000)_=RefreshSyncthing();if(view=="transfers")_=RefreshBlip();
     }
     private void UpdateQuickChrome()
     {

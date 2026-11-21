@@ -15,7 +15,8 @@ public sealed partial class MainWindow
     private BlipSnapshot? blipSnapshot;
     private string blipFailure = "", blipSignature = "";
     private int blipRefreshing;
-    private DateTimeOffset nextDesktopBlipAttempt;
+    private volatile bool blipViewVisible;
+    private long nextDesktopBlipAttempt;
     private readonly BlipNoticeTracker blipNotices=new();
     private BlipSenderCatalog? blipSenderCatalog;
     private BlipSenderCatalog SenderCatalog=>System.Threading.LazyInitializer.EnsureInitialized(ref blipSenderCatalog,()=>new(Path.Combine(CoreBridge.DataDir,"Blip","sender-catalog.json")));
@@ -30,6 +31,7 @@ public sealed partial class MainWindow
     private readonly Dictionary<string, string> blipSentNames = new();
     private bool BlipRunning => blipFixtureRunning ?? blip.IsRunning;
     private bool BlipDesktop => diagnosticMode ? blipSnapshot?.Status.DesktopSession == true : blip.UsesDesktopSession;
+    private void UpdateBlipView() => blipViewVisible = currentView == "transfers" && AppWindow.IsVisible;
     private void StartBlipRefresh()
     {
         // Network polling and browser dispatch must not depend on a visible XAML window.
@@ -42,14 +44,16 @@ public sealed partial class MainWindow
     }
     private async Task RefreshBlip(bool fullSnapshot = true)
     {
+        if (!fullSnapshot && !blip.IsRunning &&
+            (!Preferences.Current.BlipAutoConnectDesktop || Environment.TickCount64 < Interlocked.Read(ref nextDesktopBlipAttempt))) return;
         if (diagnosticMode || quitting || Interlocked.CompareExchange(ref blipRefreshing, 1, 0) != 0) return;
         try
         {
             // Attach to the already running app through local IPC; never sign in or start it here.
             if (!blip.IsRunning && Preferences.Current.BlipAutoConnectDesktop && !busy && modalDepth == 0
-                && DateTimeOffset.UtcNow >= nextDesktopBlipAttempt && blip.DesktopAvailable)
+                && Environment.TickCount64 >= Interlocked.Read(ref nextDesktopBlipAttempt) && blip.DesktopAvailable)
             {
-                nextDesktopBlipAttempt = DateTimeOffset.UtcNow.AddSeconds(30);
+                Interlocked.Exchange(ref nextDesktopBlipAttempt, Environment.TickCount64 + 30_000);
                 using var attachTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
                 await blip.UseDesktopAsync(attachTimeout.Token).ConfigureAwait(false);
                 blipSnapshot = null; LinkOpener.ResetSession();
@@ -68,7 +72,7 @@ public sealed partial class MainWindow
                 blipSnapshot=freshSnapshot with {Devices=SenderCatalog.Merge(freshSnapshot.Status,freshSnapshot.Devices,freshSnapshot.Transfers,approved)};
                 var snapshot=blipSnapshot;
                 var notices=blipNotices.Update(snapshot.Status,snapshot.Transfers);
-                DispatcherQueue.TryEnqueue(()=>{
+                if (notices.Count > 0 || blipIncomingWindow != null) DispatcherQueue.TryEnqueue(()=>{
                     foreach(var transfer in notices)UpdateIncomingBlip(transfer,true);
                     if(blipIncomingWindow!=null&&snapshot.Transfers.FirstOrDefault(t=>t.Id==blipIncomingWindow.TransferId) is {} current)UpdateIncomingBlip(current,false);
                 });
@@ -96,18 +100,24 @@ public sealed partial class MainWindow
             {
                 // Drop only our IPC attachment. A later attachment gets a fresh history baseline.
                 await blip.StopAsync().ConfigureAwait(false); blipSnapshot = null; LinkOpener.ResetSession();
-                nextDesktopBlipAttempt = DateTimeOffset.UtcNow.AddSeconds(30);
+                Interlocked.Exchange(ref nextDesktopBlipAttempt, Environment.TickCount64 + 30_000);
             }
         }
         finally
         {
             Volatile.Write(ref blipRefreshing, 0);
-            string signature = System.Text.Json.JsonSerializer.Serialize(new { running = BlipRunning, blipFailure, blipSnapshot, blipRelayWaiting });
-            DispatcherQueue.TryEnqueue(() =>
+            if (blipViewVisible)
             {
-
-                if (!quitting && currentView == "transfers" && AppWindow.IsVisible && modalDepth == 0 && signature != blipSignature) { blipSignature = signature; Render(); }
-            });
+                var snapshot = blipSnapshot;
+                string signature = System.Text.Json.JsonSerializer.Serialize(new {
+                    running = BlipRunning, blipFailure, status = snapshot?.Status, devices = snapshot?.Devices,
+                    transfers = snapshot?.Transfers.Where(t => t.IsLive), blipRelayWaiting,
+                });
+                DispatcherQueue.TryEnqueue(() =>
+                {
+                    if (!quitting && blipViewVisible && modalDepth == 0 && signature != blipSignature) { blipSignature = signature; Render(); }
+                });
+            }
         }
     }
     private void UpdateIncomingBlip(BlipTransfer transfer,bool announce) {
@@ -138,7 +148,7 @@ public sealed partial class MainWindow
         autoOpen.Click += (_, _) => { if (diagnosticMode) return; Preferences.Current.BlipAutoOpenLinks = autoOpen.IsChecked; Preferences.Save(); LinkOpener.ResetSession(); };
         menu.Items.Add(autoOpen); options.Flyout = menu;
         var autoConnect = new ToggleMenuFlyoutItem { Text = "Keep Blip available in the background", IsChecked = Preferences.Current.BlipAutoConnectDesktop };
-        autoConnect.Click += (_, _) => { if (diagnosticMode) return; Preferences.Current.BlipAutoConnectDesktop = autoConnect.IsChecked; Preferences.Save(); nextDesktopBlipAttempt = default; if (autoConnect.IsChecked) _ = RefreshBlip(); };
+        autoConnect.Click += (_, _) => { if (diagnosticMode) return; Preferences.Current.BlipAutoConnectDesktop = autoConnect.IsChecked; Preferences.Save(); Interlocked.Exchange(ref nextDesktopBlipAttempt, 0); if (autoConnect.IsChecked) _ = RefreshBlip(); };
         menu.Items.Add(autoConnect);
         var senders = new MenuFlyoutItem { Text = "Sender permissions…", IsEnabled = signedIn };
         senders.Click += (_,_) => _ = ChooseLinkSenders(); menu.Items.Add(senders);

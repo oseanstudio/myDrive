@@ -12,6 +12,11 @@ public sealed class BlipService : IAsyncDisposable
     private readonly SemaphoreSlim lifecycle = new(1, 1);
     private Process? host;
     private Task? observer;
+    private readonly SemaphoreSlim pollGate = new(1, 1);
+    private readonly object pollState = new();
+    private Process? pipeHost;
+    private HostPoll? pendingPoll;
+    private sealed record HostPoll(Process Host, string Id, TaskCompletionSource<JsonElement> Response);
     private bool stopping;
     private string? attachedSocket;
     private readonly string desktopSocket;
@@ -161,7 +166,10 @@ public sealed class BlipService : IAsyncDisposable
             var process=NewProcess("desktop-serve");var ready=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             host?.Dispose();host=process;process.Start();observer=ObserveHost(process,ready);
             JsonElement status;
-            try {await ready.Task.WaitAsync(TimeSpan.FromSeconds(20),token);status=await CommandAsync("status",new[]{"--socket",desktopSocket},token:token);
+            try {await ready.Task.WaitAsync(TimeSpan.FromSeconds(20),token);
+                status = SupportsPolling(process)
+                    ? (await PollHostAsync(process, token)).GetProperty("status")
+                    : await CommandAsync("status", new[] { "--socket", desktopSocket }, token: token);
                 if(!status.TryGetProperty("desktop_session",out var desktop)||desktop.ValueKind!=JsonValueKind.True)throw new IOException("Desktop identity could not be verified.");}
             catch {await StopOwned(process);throw new IOException("Background Blip could not start. Open and sign in to Blip once, then reconnect myDrive.");}
             attachedSocket = desktopSocket; LastError = "";
@@ -174,12 +182,21 @@ public sealed class BlipService : IAsyncDisposable
         {
             while (await process.StandardOutput.ReadLineAsync() is { } line)
             {
-                if (line.Length > 65536) throw new IOException("Unexpected Blip event size.");
+                if (line.Length > 1_048_576) throw new IOException("Unexpected Blip event size.");
                 try
                 {
                     using var message = JsonDocument.Parse(line);
                     if (!message.RootElement.TryGetProperty("event", out var name)) continue;
-                    if (name.GetString() == "host_ready") ready.TrySetResult();
+                    if (name.GetString() == "host_ready")
+                    {
+                        if (message.RootElement.TryGetProperty("poll_pipe", out var pipe) && pipe.ValueKind == JsonValueKind.True)
+                            lock (pollState) pipeHost = process;
+                        ready.TrySetResult();
+                    }
+                    if (name.GetString() == "poll_result" && message.RootElement.TryGetProperty("request_id", out var id))
+                        lock (pollState)
+                            if (pendingPoll is { } poll && poll.Host == process && poll.Id == id.GetString())
+                                poll.Response.TrySetResult(message.RootElement.Clone());
                     if (name.GetString() == "receive_policy_unconfirmed") LastError = "Blip stopped because its receiving settings could not be verified. Refresh before testing a transfer.";
                 }
                 catch (JsonException) { }
@@ -192,10 +209,49 @@ public sealed class BlipService : IAsyncDisposable
             if (!stopping && process.ExitCode != 0 && LastError.Length == 0) LastError = "Blip's background engine stopped. Your existing files are kept; start it again to check transfer status.";
         }
         catch { KillOwned(process); if (!stopping) LastError = "The Blip engine stopped unexpectedly."; }
-        finally { ready.TrySetException(new IOException("Blip exited before it was ready.")); }
+        finally
+        {
+            lock (pollState)
+            {
+                if (pipeHost == process) pipeHost = null;
+                if (pendingPoll is { } poll && poll.Host == process)
+                    poll.Response.TrySetException(new IOException("The Blip background engine stopped."));
+            }
+            ready.TrySetException(new IOException("Blip exited before it was ready."));
+        }
     }
-    private static async Task StopOwned(Process process)
+
+    private bool SupportsPolling(Process process)
     {
+        lock (pollState) return pipeHost == process;
+    }
+
+    private async Task<JsonElement> PollHostAsync(Process process, CancellationToken token)
+    {
+        await pollGate.WaitAsync(token);
+        var request = new HostPoll(process, Guid.NewGuid().ToString("N"), new(TaskCreationOptions.RunContinuationsAsynchronously));
+        try
+        {
+            lock (pollState)
+            {
+                if (pipeHost != process) throw new IOException("The Blip background engine stopped.");
+                pendingPoll = request;
+            }
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
+            timeout.CancelAfter(TimeSpan.FromSeconds(10));
+            await process.StandardInput.WriteLineAsync(("POLL " + request.Id).AsMemory(), timeout.Token);
+            await process.StandardInput.FlushAsync(timeout.Token);
+            return await request.Response.Task.WaitAsync(timeout.Token);
+        }
+        finally
+        {
+            lock (pollState) if (pendingPoll == request) pendingPoll = null;
+            pollGate.Release();
+        }
+    }
+    private async Task StopOwned(Process process)
+    {
+        await pollGate.WaitAsync();
         try
         {
             if (process.HasExited) return;
@@ -203,6 +259,7 @@ public sealed class BlipService : IAsyncDisposable
             await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(15));
         }
         catch { KillOwned(process); try { await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(3)); } catch { } }
+        finally { pollGate.Release(); }
     }
     public async Task StopAsync()
     {
@@ -219,7 +276,10 @@ public sealed class BlipService : IAsyncDisposable
     public async Task<BlipSnapshot> PollAsync(CancellationToken token = default)
     {
         RequireRunning();
-        var data = await CommandAsync("poll", token: token);
+        var currentHost = host!;
+        var data = SupportsPolling(currentHost)
+            ? await PollHostAsync(currentHost, token)
+            : await CommandAsync("poll", token: token);
         return new(data.GetProperty("status").Deserialize<BlipStatus>() ?? new(), data.TryGetProperty("devices",out var devices)?devices.Deserialize<List<BlipDevice>>()??new():new(), data.GetProperty("transfers").Deserialize<List<BlipTransfer>>() ?? new());
     }
     public async Task<BlipSnapshot> SnapshotAsync(CancellationToken token = default)

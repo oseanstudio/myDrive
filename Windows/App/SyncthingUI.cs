@@ -1,5 +1,6 @@
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Windowing;
 using System.Diagnostics;
 using System.Text.Json;
 using Windows.Storage.Pickers;
@@ -15,6 +16,7 @@ public sealed partial class MainWindow
     private readonly DispatcherTimer syncTimer=new(){Interval=TimeSpan.FromSeconds(20)};
     private System.Threading.Timer? syncEngineTimer;
     private int syncEngineChecking;
+    private long lastSyncRefresh = -120_000, lastSyncSuccess = -60_000;
     private string syncSharePath=Preferences.Current.LastSyncFolder.Length>0?Preferences.Current.LastSyncFolder:SyncthingService.ProjectFolder();
     private string syncShareDevice=Preferences.Current.LastSyncDevice;
     private List<SyncRule> syncRules=new();
@@ -27,19 +29,26 @@ public sealed partial class MainWindow
     private static IEnumerable<JsonElement> Items(JsonElement e,string key)=>e.TryGetProperty(key,out var v)&&v.ValueKind==JsonValueKind.Array?v.EnumerateArray().ToArray():[];
     private static string Bytes(long count)=>count<1024?$"{count} B":count<1048576?$"{count/1024d:0.#} KB":count<1073741824?$"{count/1048576d:0.#} MB":$"{count/1073741824d:0.##} GB";
     private void StartSyncthingRefresh(){
-        syncTimer.Tick+=async(_,_)=>{if(!diagnosticMode&&!busy&&modalDepth==0)await RefreshSyncthing();};syncTimer.Start();
+        syncTimer.Tick+=async(_,_)=>{
+            var visible=currentView=="sync" && AppWindow.IsVisible &&
+                AppWindow.Presenter is not OverlappedPresenter { State: OverlappedPresenterState.Minimized };
+            var interval=visible ? 20_000 : 120_000;
+            if(!diagnosticMode&&!busy&&modalDepth==0&&Environment.TickCount64-lastSyncRefresh>=interval)
+                await RefreshSyncthing();
+        };syncTimer.Start();
         syncEngineTimer=new System.Threading.Timer(async _=>{
-            if(diagnosticMode||quitting||Interlocked.CompareExchange(ref syncEngineChecking,1,0)!=0)return;
+            if(diagnosticMode||quitting||Environment.TickCount64-Interlocked.Read(ref lastSyncSuccess)<60_000||
+                Interlocked.CompareExchange(ref syncEngineChecking,1,0)!=0)return;
             try{await SyncthingService.KeepRunningAsync().ConfigureAwait(false);}
             catch(Exception error){DispatcherQueue.TryEnqueue(()=>{if(!quitting){syncFailure=error.Message;UpdateProblemColors();}});}
             finally{Volatile.Write(ref syncEngineChecking,0);}
-        },null,TimeSpan.Zero,TimeSpan.FromSeconds(10));
+        },null,TimeSpan.Zero,TimeSpan.FromMinutes(1));
         Closed+=(_,_)=>{syncTimer.Stop();syncEngineTimer?.Dispose();};
     }
     private async Task RefreshSyncthing()
     {
-        if(syncRefreshing)return;syncRefreshing=true;
-        try{using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(180));syncSnapshot=await SyncthingService.Call("snapshot",token:timeout.Token);syncFailure="";}
+        if(syncRefreshing)return;syncRefreshing=true;lastSyncRefresh=Environment.TickCount64;
+        try{using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(180));syncSnapshot=await SyncthingService.Call("snapshot",token:timeout.Token);syncFailure="";Interlocked.Exchange(ref lastSyncSuccess,Environment.TickCount64);}
         catch(Exception e){syncFailure=e is OperationCanceledException?"Syncthing's status took too long to load. Try Refresh after its current scan.":e.Message;}
         finally{syncRefreshing=false;UpdateProblemColors();if(currentView=="sync"&&modalDepth==0&&AppWindow.IsVisible){if(compact&&RefreshQuickSyncControls())syncRenderedSignature=SyncSignature();else if(syncRenderedSignature!=SyncSignature())Render();}}
     }

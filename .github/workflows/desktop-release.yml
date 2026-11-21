@@ -54,6 +54,16 @@ jobs:
           persist-credentials: false
       - name: Check source safety
         run: node tests/source-safety.mjs .
+      - name: Test Blip polling without starting an extra helper
+        shell: pwsh
+        run: |
+          $fixture = Join-Path $env:RUNNER_TEMP 'blip-poll-fixture'
+          $bundle = Join-Path $fixture 'bundle'
+          New-Item -ItemType Directory -Path $bundle | Out-Null
+          Copy-Item tests/BlipServiceChecks/fake-cli.mjs (Join-Path $bundle 'cli.mjs')
+          $node = (Get-Command node).Source
+          dotnet run --project tests/BlipServiceChecks/BlipServiceChecks.csproj -- $node $bundle $fixture
+          exit $LASTEXITCODE
       - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
         with:
           go-version-file: Core/SmbHost/go.mod

@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync } from 'node:fs';
-import { mkdir, readFile, readdir, realpath, stat, writeFile } from 'node:fs/promises';
+import { createReadStream, existsSync } from 'node:fs';
+import { mkdir, mkdtemp, readFile, readdir, realpath, rename, rmdir, stat, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createInterface } from 'node:readline/promises';
@@ -13,6 +13,7 @@ const PREFIX = 'MYDRIVE_JSON ';
 const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
 const PEER = new RegExp(`^${UUID}:${UUID}$`, 'i');
 const TRANSFER = new RegExp(`^${UUID}$`, 'i');
+const POLL_COMMAND = /^POLL [0-9a-f]{32}$/;
 const output = value => process.stdout.write(JSON.stringify(value, null, process.env.MYDRIVE_BLIP_JSONL === '1' ? 0 : 2) + '\n');
 
 export function peerId(text) {
@@ -77,6 +78,12 @@ export async function runBounded(executable, args, { input = '', timeoutMs = 15_
   });
 }
 
+async function fileHash(file) {
+  const hash = createHash('sha256');
+  for await (const chunk of createReadStream(file)) hash.update(chunk);
+  return hash.digest('hex');
+}
+
 async function runtime(options) {
   let java = options.java ?? process.env.MYDRIVE_JAVA;
   if (!java) {
@@ -89,26 +96,60 @@ async function runtime(options) {
   if (!existsSync(path.join(app, 'app', 'libblip-jvm.jar'))) throw new Error('Blip runtime missing. See README setup; use --app DIRECTORY');
   const lock = JSON.parse(await readFile(path.join(ROOT, 'runtime-lock.json'), 'utf8'));
   for (const [file, dependency] of Object.entries(lock.support_files ?? {})) {
-    const hash = createHash('sha256').update(await readFile(path.join(RUNTIME, 'support', file)).catch(() => { throw new Error('Blip support runtime missing. Run tests/prepare-blip-support.ps1'); })).digest('hex');
+    const hash = await fileHash(path.join(RUNTIME, 'support', file)).catch(() => { throw new Error('Blip support runtime missing. Run tests/prepare-blip-support.ps1'); });
     if (hash !== dependency.sha256) throw new Error(`Unreviewed support dependency: ${file}`);
   }
   for (const [file, expected] of Object.entries(lock.files)) {
-    const hash = createHash('sha256').update(await readFile(path.join(app, file))).digest('hex');
+    const hash = await fileHash(path.join(app, file));
     if (hash !== expected) throw new Error(`Unreviewed Blip engine version: ${file}`);
   }
   return { java: path.resolve(java), app };
 }
-function jvmArgs(app, main, args) {
+function jvmArgs(app, main, args, classes = path.join(RUNTIME, 'classes')) {
   const nativeDir = path.join(app, 'bin');
   const nativePath = [nativeDir, ...(process.platform === 'win32' ? [path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32')] : [])].join(path.delimiter);
-  return ['-Djava.awt.headless=true', '--enable-native-access=ALL-UNNAMED', `-Djava.library.path=${nativePath}`,
-    '-cp', [path.join(RUNTIME, 'classes'), path.join(RUNTIME, 'support', 'jna-5.19.1.jar'), path.join(app, 'app', '*')].join(path.delimiter), main, ...args];
+  return ['-Xms16m', '-Djava.awt.headless=true', '--enable-native-access=ALL-UNNAMED', `-Djava.library.path=${nativePath}`,
+    '-cp', [classes, path.join(RUNTIME, 'support', 'jna-5.19.1.jar'), path.join(app, 'app', '*')].join(path.delimiter), main, ...args];
 }
 function childEnvironment() {
   // Do not inherit JVM injection options from the parent session.
   const env = { ...process.env };
   delete env.JAVA_TOOL_OPTIONS; delete env.JDK_JAVA_OPTIONS; delete env._JAVA_OPTIONS;
   return env;
+}
+
+async function bridgeClasses(java, app) {
+  const legacy = path.join(RUNTIME, 'classes');
+  const source = path.join(ROOT, 'java', 'BlipBridge.java');
+  if (!existsSync(source)) return legacy;
+  try {
+    const hash = createHash('sha256').update(await readFile(source))
+      .update(await readFile(path.join(ROOT, 'runtime-lock.json'))).digest('hex');
+    const cache = path.join(legacy, 'mydrive');
+    const target = path.join(cache, hash);
+    if (existsSync(path.join(target, 'BlipBridge.class'))) return target;
+    await mkdir(cache, { recursive: true });
+    const work = await mkdtemp(path.join(cache, 'compile-'));
+    try {
+      const javac = path.join(path.dirname(java), process.platform === 'win32' ? 'javac.exe' : 'javac');
+      const result = await runBounded(javac, ['-encoding', 'UTF-8', '-cp', path.join(app, 'app', '*'), '-d', work, source],
+        { env: childEnvironment(), timeoutMs: 25_000 });
+      if (result.code !== 0 || !existsSync(path.join(work, 'BlipBridge.class'))) {
+        throw new Error('Could not prepare the bundled Blip adapter');
+      }
+      try { await rename(work, target); }
+      catch (error) { if (!existsSync(path.join(target, 'BlipBridge.class'))) throw error; }
+      return target;
+    } finally {
+      for (const name of await readdir(work).catch(() => []))
+        await unlink(path.join(work, name)).catch(() => {});
+      await rmdir(work).catch(() => {});
+    }
+  } catch (error) {
+    // An existing user-prepared runtime still works through the legacy request path.
+    if (existsSync(path.join(legacy, 'BlipBridge.class'))) return legacy;
+    throw error;
+  }
 }
 async function profileInfo(options) {
   const profile = await realpath(path.resolve(options.profile ?? path.join(ROOT, '.profiles', 'mydrive-server')));
@@ -121,7 +162,8 @@ async function request(options, command, values = []) {
   const { profile } = await profileInfo(options), { java, app } = await runtime(options);
   // Windows AF_UNIX endpoints cannot be opened like ordinary files for realpath/stat.
   const address = options.socket ? [path.resolve(options.socket)] : [];
-  const result = await runBounded(java, jvmArgs(app, 'BlipBridge', ['request', profile, command, ...address]), {
+  const classes = await bridgeClasses(java, app);
+  const result = await runBounded(java, jvmArgs(app, 'BlipBridge', ['request', profile, command, ...address], classes), {
     input: encodeInput(values), env: childEnvironment(), timeoutMs: 25_000,
   });
   if (result.timedOut || result.overflow) throw new Error('Bridge stopped at its limit; command outcome is unconfirmed. Check status before retrying');
@@ -175,7 +217,7 @@ export async function main(argv = process.argv.slice(2)) {
     const result = await runBounded(java, ['-version'], { env: childEnvironment() });
     const version = result.stderr + result.stdout;
     const java25 = /version "25[.\"]/.test(version);
-    const bridgeBuilt = existsSync(path.join(RUNTIME, 'classes', 'BlipBridge.class'));
+    const bridgeBuilt = existsSync(path.join(await bridgeClasses(java, app), 'BlipBridge.class'));
     output({ ok: result.code === 0 && java25 && bridgeBuilt, java25, app, bridgeBuilt });
     if (!java25 || !bridgeBuilt) process.exitCode = 1; return;
   }
@@ -200,14 +242,19 @@ export async function main(argv = process.argv.slice(2)) {
   }
   if (command === 'serve' || command === 'desktop-serve') {
     const { profile } = await profileInfo(options), { java, app } = await runtime(options);
-    const child = spawn(java, jvmArgs(app, 'BlipBridge', [command === 'desktop-serve' ? 'desktop-host' : 'host', profile, '-']), { shell: false, windowsHide: true, env: childEnvironment(), stdio: ['pipe', 'pipe', 'pipe'] });
+    const classes = await bridgeClasses(java, app);
+    const child = spawn(java, jvmArgs(app, 'BlipBridge', [command === 'desktop-serve' ? 'desktop-host' : 'host', profile, '-'], classes), { shell: false, windowsHide: true, env: childEnvironment(), stdio: ['pipe', 'pipe', 'pipe'] });
     let lineBuffer = '', stopped = false, deadline;
     const stop = () => { if (stopped) return; stopped = true; child.stdin.end('STOP\n'); deadline = setTimeout(() => child.kill(), 10000); };
     process.once('SIGINT', stop); process.once('SIGTERM', stop);
-    const onInput = chunk => { if (String(chunk).trim() === 'STOP') stop(); };
-    process.stdin.on('data', onInput);
-    process.stdin.once('end', stop);
+    const control = createInterface({ input: process.stdin, crlfDelay: Infinity });
+    control.on('line', line => {
+      if (line === 'STOP') stop();
+      else if (!stopped && POLL_COMMAND.test(line)) child.stdin.write(line + '\n');
+    });
+    control.once('close', stop);
     child.stdin.on('error', () => {});
+    child.stdout.setEncoding('utf8');
     child.stdout.on('data', data => {
       lineBuffer += data;
       if (lineBuffer.length > 1_048_576) { stop(); return; }
@@ -221,7 +268,7 @@ export async function main(argv = process.argv.slice(2)) {
     child.stderr.resume();
     await new Promise((resolve, reject) => { child.on('error', reject); child.on('close', code => { clearTimeout(deadline); if (code !== 0) process.exitCode = 1; resolve(); }); });
     process.removeListener('SIGINT', stop); process.removeListener('SIGTERM', stop);
-    process.stdin.removeListener('data', onInput); process.stdin.removeListener('end', stop); process.stdin.pause(); return;
+    control.removeListener('close', stop); control.close(); process.stdin.pause(); return;
   }
   if (command === 'trust') {
     const peer = peerId(options.peer), { profile } = await profileInfo(options);

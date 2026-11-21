@@ -50,8 +50,10 @@ public sealed class BlipLinkOpener
             // A fresh attachment is a baseline, not a reason to reopen transfer history.
             if (session != scope || !enabled)
             {
-                foreach (var transfer in incoming) handled.Add(Hash(scope + ":skip:" + transfer.Id));
-                Save(); session = scope; return;
+                bool changed = false;
+                foreach (var transfer in incoming) changed |= handled.Add(Hash(scope + ":skip:" + transfer.Id));
+                if (changed) Save();
+                session = scope; return;
             }
             foreach (var transfer in incoming)
             {

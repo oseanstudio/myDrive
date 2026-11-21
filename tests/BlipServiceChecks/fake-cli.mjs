@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { createInterface } from 'node:readline';
 const command = process.argv[2];
 const profile = process.argv[process.argv.indexOf('--profile') + 1];
 const file = name => path.join(profile, name);
@@ -7,9 +8,16 @@ const emit = object => console.log(JSON.stringify(object));
 if(command==='doctor')emit({ok:true});
 else if(command==='init'){fs.mkdirSync(profile,{recursive:true});fs.writeFileSync(file('mydrive-profile.json'),'{}');emit({ok:true});}
 else if(command==='serve'||command==='desktop-serve'){
-  fs.writeFileSync(file('host-pid'),String(process.pid));emit({ok:true,event:'host_ready'});
-  process.stdin.on('data',data=>{if(String(data).trim()==='STOP'){fs.writeFileSync(file('clean-stop'),command);process.exit(0);}});
-  process.stdin.on('end',()=>process.exit(0));
+  const desktop = command === 'desktop-serve';
+  fs.writeFileSync(file('host-pid'),String(process.pid));emit({ok:true,event:'host_ready',poll_pipe:true});
+  const reader = createInterface({input:process.stdin});
+  reader.on('line',line=>{
+    if(line==='STOP'){fs.writeFileSync(file('clean-stop'),command);process.exit(0);}
+    const request=/^POLL ([0-9a-f]{32})$/.exec(line);
+    if(request)emit({ok:true,event:'poll_result',request_id:request[1],
+      status:{authenticated:desktop,desktop_session:desktop,receive_policy_verified:false},devices:[],transfers:[]});
+  });
+  reader.on('close',()=>process.exit(0));
 }
 else if(command==='status'){
   if(fs.existsSync(file('stall-status')))setInterval(()=>{},1000);
@@ -17,7 +25,10 @@ else if(command==='status'){
 }
 else if(command==='devices')emit({ok:true,devices:[]});
 else if(command==='transfers')emit({ok:true,transfers:[]});
-else if(command==='poll')emit({ok:true,status:{authenticated:process.argv.includes('--socket'),desktop_session:process.argv.includes('--socket'),receive_policy_verified:false},devices:[],transfers:[]});
+else if(command==='poll'){
+  fs.writeFileSync(file('standalone-poll'), '');
+  emit({ok:true,status:{authenticated:process.argv.includes('--socket'),desktop_session:process.argv.includes('--socket'),receive_policy_verified:false},devices:[],transfers:[]});
+}
 else if(command==='accept'){
   if(fs.existsSync(file('fail-accept'))){emit({ok:false,error:'acceptance_unconfirmed',native_status:'Invited'});process.exitCode=1;}
   else emit({ok:true,phase:'receiving_confirmed',native_status:'Pending'});

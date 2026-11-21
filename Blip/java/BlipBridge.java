@@ -5,7 +5,10 @@ import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.util.*;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.regex.Pattern;
 import net.blip.libblip.*;
 import net.blip.libblip.event.*;
 import net.blip.libblip.frontend.State;
@@ -59,6 +62,36 @@ public class BlipBridge {
         return client.getState(BUFFER);
     }
 
+    static final Pattern POLL = Pattern.compile("POLL ([0-9a-f]{32})");
+
+    static void hostControl(AtomicReference<State> latest) {
+        Thread reader = new Thread(() -> {
+            try (var input = new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8))) {
+                for (String line; (line = input.readLine()) != null && !line.equals("STOP"); ) {
+                    var match = POLL.matcher(line);
+                    // The native client can wait inside getState for a change.
+                    // A status request can reuse the most recent complete state.
+                    if (match.matches()) emitPoll(latest.get(), match.group(1));
+                }
+            } catch (Exception ignored) {}
+            System.exit(0);
+        }, "myDrive host commands");
+        reader.setDaemon(true);
+        reader.start();
+    }
+
+    static Map<String, Object> pollResult(State state) {
+        return new HashMap<>(Map.of("ok", true, "status", status(state), "devices", devices(state),
+                                   "transfers", transfers(state)));
+    }
+
+    static void emitPoll(State state, String requestId) {
+        var result = pollResult(state);
+        result.put("event", "poll_result");
+        result.put("request_id", requestId);
+        emit(result);
+    }
+
     static void desktopHost() throws Exception {
         var flavor=net.blip.desktop.FlavorDesktopProd.INSTANCE;
         Path storage=Path.of(flavor.getStoragePath());
@@ -70,15 +103,20 @@ public class BlipBridge {
             // Its interprocess mutex arbitrates ownership; no auth/state file is copied.
             LibBlip.Companion.startHosting(true,flavor.getCachesPath(),flavor.getStoragePath(),flavor.getServerAddr());
             Runtime.getRuntime().addShutdownHook(new Thread(()->{try{LibBlip.Companion.stopHosting();}catch(Throwable ignored){}}));
-            Thread stopper=new Thread(()->{try{new BufferedReader(new InputStreamReader(System.in,StandardCharsets.UTF_8)).readLine();}catch(Exception ignored){}System.exit(0);});stopper.setDaemon(true);stopper.start();
-            Client client=connect();State state=snapshot(client);
-            emit(Map.of("ok",true,"event","host_ready","desktop_session",true,"background",true));
+            Client client = connect();
+            State state = snapshot(client);
+            var latest = new AtomicReference<>(state);
+            hostControl(latest);
+            emit(Map.of("ok", true, "event", "host_ready", "desktop_session", true, "background", true,
+                        "poll_pipe", true));
             while(true) {
                 if(state.getUser_agent()==null||state.getUser_agent().getApp_id().isBlank()) {
                     var hardware=new net.blip.desktop.HardwareInfoDesktop(flavor.getStoragePath());
                     client.dispatch(new SetUserAgent(net.blip.libblip.UserAgent_createKt.create(UserAgent.Companion,hardware,flavor),EMPTY));
                 }
-                Thread.sleep(250);state=snapshot(client);
+                Thread.sleep(1000);
+                state = snapshot(client);
+                latest.set(state);
             }
         }
     }
@@ -93,33 +131,30 @@ public class BlipBridge {
                 try { LibBlip.Companion.stopHosting(); } catch (Throwable ignored) {}
             }));
             LibBlip.Companion.startHosting(true, profile.resolve("cache").toString(), profile.resolve("state").toString(), "https://prod.blip.net");
-            Thread stopper = new Thread(() -> {
-                try {
-                    var reader = new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8));
-                    String line = reader.readLine();
-                    if (line == null || line.equals("STOP")) System.exit(0);
-                } catch (Exception ignored) { System.exit(1); }
-            });
-            stopper.setDaemon(true);
-            stopper.start();
             Client client = connect();
-            snapshot(client); // Establish the RPC session before sending events, as Blip's Core does.
+            var latest = new AtomicReference<>(snapshot(client));
+            hostControl(latest);
             // Request disabled native auto-accept; verify after authentication before our receiver acts.
             client.dispatch(new TransferSetAutoAccept(false, EMPTY));
             client.dispatch(new TransferSetCustomDefaultSavePath(profile.resolve("downloads").toString(), EMPTY));
             client.dispatch(new SetUserAgent(new UserAgent("", "MyDrive headless", DeviceKind.Desktop,
                 System.getProperty("os.name"), System.getProperty("os.version"), "mydrive.blip.poc",
                 "MyDrive headless proof", "0.1.0", "1", EMPTY), EMPTY));
-            emit(Map.of("ok", true, "event", "host_ready", "headless", true, "receiving_verified", false));
+            emit(Map.of("ok", true, "event", "host_ready", "headless", true, "receiving_verified", false,
+                        "poll_pipe", true));
             Set<String> accepted = new HashSet<>();
             boolean configuredAfterAuth = false;
             boolean receivingVerified = false;
             AtomicBoolean policyConfirmed = new AtomicBoolean(false);
+            Set<String> trusted = Set.of();
+            long checkTrustAt = System.nanoTime();
             while (true) {
                 State state = snapshot(client);
+                latest.set(state);
                 boolean authenticated = state.getAuth() != null && state.getAuth().getToken().size() != 0;
                 if (!authenticated) { configuredAfterAuth = false; receivingVerified = false; }
                 if (authenticated && !configuredAfterAuth) {
+                    policyConfirmed.set(false);
                     client.dispatch(new TransferSetAutoAccept(false, EMPTY));
                     client.dispatch(new TransferSetCustomDefaultSavePath(profile.resolve("downloads").toString(), EMPTY));
                     configuredAfterAuth = true;
@@ -139,7 +174,10 @@ public class BlipBridge {
                     policyConfirmed.set(true);
                     emit(Map.of("ok", true, "event", "receive_policy_verified"));
                 }
-                Set<String> trusted = new HashSet<>(Files.readAllLines(profile.resolve("trusted-peers.txt")));
+                if (authenticated && System.nanoTime() - checkTrustAt >= 0) {
+                    trusted = new HashSet<>(Files.readAllLines(profile.resolve("trusted-peers.txt")));
+                    checkTrustAt = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+                }
                 for (var item : state.getTransfers().entrySet()) {
                     Transfer transfer = item.getValue();
                     String peer = peerString(transfer.getPeer_id());
@@ -154,7 +192,7 @@ public class BlipBridge {
                         emit(Map.of("ok", true, "event", "acceptance_dispatched", "transfer_id", item.getKey()));
                     }
                 }
-                Thread.sleep(100);
+                Thread.sleep(500);
             }
         }
     }
@@ -196,7 +234,7 @@ public class BlipBridge {
             case "status" -> emit(status(initial));
             case "devices" -> emit(Map.of("ok", true, "devices", devices(initial)));
             case "transfers" -> emit(Map.of("ok", true, "transfers", transfers(initial)));
-            case "poll" -> emit(Map.of("ok", true, "status", status(initial), "devices", devices(initial), "transfers", transfers(initial)));
+            case "poll" -> emit(pollResult(initial));
             case "login" -> {
                 if (values.size() != 2) throw new IllegalArgumentException("Expected email and device name");
                 if (initial.getAuth() != null && initial.getAuth().getToken().size() != 0)

@@ -43,6 +43,8 @@ extension Notification.Name { static let myDriveIncomingBlip = Notification.Name
     private var connectedPeers = Set<String>()
     private var relayReceived: [String: BlipTransfer] = [:]
     private var relaySession = ""
+    private var relayTransportState = ""
+    private var nextRelayDiscovery = Date.distantPast
     var recipients: [BlipPeer] {
         peers.filter { connectedPeers.contains($0.peer) && $0.peer != selfPeer }.sorted {
             let contactOrder = ($0.contactName ?? "").localizedCaseInsensitiveCompare($1.contactName ?? "")
@@ -107,16 +109,30 @@ extension Notification.Name { static let myDriveIncomingBlip = Notification.Name
         guard let relay = relays.first else { return false }
         _ = try await CoreBridge.shared.call(action: "relay.stage", request: ["data_dir": Paths.dataDir.path,
             "payload": ["self": owner, "target": target.peer, "relay": relay, "alternatives": Array(relays.dropFirst()), "paths": paths]], timeout: 3600)
+        nextRelayDiscovery = .distantPast
         return true
     }
 
     private func updateRelay(_ snapshot: JSON, owner: String, rawTransfers: [BlipTransfer]) async throws {
-        if relaySession != owner { relayReceived.removeAll(); relaySession = owner }
+        if relaySession != owner {
+            relayReceived.removeAll(); relaySession = owner; relayTransportState = ""; nextRelayDiscovery = .distantPast
+        }
+        let transports = rawTransfers.filter {
+            sameAccount($0.peer, account) && $0.item_names?.count == 1 &&
+                $0.item_names?.first?.hasPrefix("mydrive-relay-v1.") == true
+        }
+        let transportState = transports.sorted { $0.id < $1.id }
+            .map { "\($0.id):\($0.status):\($0.completed):\($0.has_error)" }.joined(separator: "|")
+        let now = Date()
+        if relayWaiting == 0, transportState == relayTransportState,
+           !transports.contains(where: \.isLive), now < nextRelayDiscovery { return }
         let payload: JSON = ["self": owner, "inbox": BlipLocalRPC.receivedDirectory.path,
                              "downloads": BlipLocalRPC.receivedDirectory.deletingLastPathComponent().path,
                              "devices": snapshot.array("devices"), "transfers": snapshot.array("transfers")]
         guard let result = try await CoreBridge.shared.call(action: "relay.tick",
                 request: ["data_dir": Paths.dataDir.path, "payload": payload], timeout: 10) as? JSON else { return }
+        relayTransportState = transportState
+        nextRelayDiscovery = now.addingTimeInterval(30)
         relayWaiting = Int(result.int64("waiting"))
         let command = result.dict("command")
         let id = command.str("id")
@@ -165,7 +181,8 @@ extension Notification.Name { static let myDriveIncomingBlip = Notification.Name
         task = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.refresh()
-                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                let delay = self?.adapterAvailable == true || self?.backgroundInput != nil ? 2 : 10
+                try? await Task.sleep(for: .seconds(delay))
             }
         }
     }

@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import plistlib
+import select
 import shutil
 import subprocess
 import tempfile
@@ -159,6 +160,8 @@ class Blip:
         self.profile = state_home / "mydrive-blip"
         self.inbox = DATA / "Blip" / "downloads"
         self.host = None
+        self.host_buffer = b""
+        self.host_can_poll = None
         self.next_start = 0
         self.arguments = None
         self.environment = None
@@ -198,7 +201,7 @@ class Blip:
         (self.profile / "mydrive-profile.json").touch(mode=0o600, exist_ok=True)
         self.environment = {k: v for k, v in os.environ.items()
                             if k not in ("JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS", "JDK_JAVA_OPTIONS", "LD_PRELOAD")}
-        self.arguments = [java, "-Djava.awt.headless=true", "--enable-native-access=ALL-UNNAMED",
+        self.arguments = [java, "-Xms16m", "-Djava.awt.headless=true", "--enable-native-access=ALL-UNNAMED",
                           f"-Dmydrive.inbox={self.inbox.resolve()}",
                           f"-Djava.library.path={native}", "-cp", f"{classes}:{folder / 'lib/app/*'}", "BlipBridge"]
 
@@ -224,28 +227,63 @@ class Blip:
             self.next_start = time.monotonic() + 30
             self.host = subprocess.Popen(
                 self.arguments + ["desktop-host", str(self.profile), "serve"],
-                stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=self.environment,
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=self.environment,
             )
+            self.host_buffer = b""
+            self.host_can_poll = None
         if not background:
             self.stop()
+        if self.host is not None and self.host.poll() is None:
+            try:
+                return self.poll_host()
+            except (OSError, RuntimeError):
+                if self.host.poll() is None:
+                    raise
+        return self.request("poll")
+
+    def poll_host(self):
+        identifier = None
         deadline = time.monotonic() + 12
         while True:
-            try:
+            if self.host_can_poll is False:
                 return self.request("poll")
-            except (RuntimeError, subprocess.TimeoutExpired) as error:
-                if (not background or self.host is None or self.host.poll() is not None
-                        or time.monotonic() >= deadline):
-                    raise RuntimeError("Blip did not connect. Check that you have signed in to the installed Blip app.") from error
-                time.sleep(0.5)
+            if self.host_can_poll and identifier is None:
+                identifier = uuid4().hex
+                self.host.stdin.write(f"POLL {identifier}\n".encode("ascii"))
+                self.host.stdin.flush()
+            line, split, remaining = self.host_buffer.partition(b"\n")
+            if split:
+                self.host_buffer = remaining
+                if not line.startswith(b"MYDRIVE_JSON "):
+                    continue
+                payload = json.loads(line[13:])
+                if payload.get("event") == "host_ready":
+                    self.host_can_poll = bool(payload.get("poll_pipe"))
+                if payload.get("event") == "poll_result" and payload.get("request_id") == identifier:
+                    payload.pop("event")
+                    payload.pop("request_id")
+                    return payload
+                continue
+            remaining_time = deadline - time.monotonic()
+            if remaining_time <= 0 or not select.select([self.host.stdout], [], [], remaining_time)[0]:
+                raise RuntimeError("Blip's background receiver did not respond.")
+            part = os.read(self.host.stdout.fileno(), 65536)
+            if not part or len(self.host_buffer) + len(part) > 1_048_576:
+                raise RuntimeError("Blip's background receiver could not return its status.")
+            self.host_buffer += part
 
     def stop(self):
-        if self.host is not None and self.host.poll() is None:
+        if self.host is not None:
             self.host.stdin.close()
-            try:
-                self.host.wait(timeout=8)
-            except subprocess.TimeoutExpired:
-                self.host.terminate()
+            self.host.stdout.close()
+            if self.host.poll() is None:
+                try:
+                    self.host.wait(timeout=8)
+                except subprocess.TimeoutExpired:
+                    self.host.terminate()
         self.host = None
+        self.host_buffer = b""
+        self.host_can_poll = None
 
     def send(self, peer, paths, request_id=None):
         if not exact_peer(peer):

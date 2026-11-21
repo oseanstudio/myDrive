@@ -90,7 +90,7 @@ public sealed partial class MainWindow : Window
         var content=new Grid();content.RowDefinitions.Add(new(){Height=GridLength.Auto});content.RowDefinitions.Add(new(){Height=GridLength.Auto});content.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});
         content.Children.Add(notice);Grid.SetRow(updateOffer,1);content.Children.Add(updateOffer);
         var scroll=new ScrollViewer{Content=page,HorizontalScrollBarVisibility=ScrollBarVisibility.Disabled};Grid.SetRow(scroll,2);content.Children.Add(scroll);navigation.Content=content;
-        navigation.SelectionChanged+=(sender,e)=>{if(busy)return;currentView=e.IsSettingsSelected?"settings":(e.SelectedItem as NavigationViewItem)?.Tag?.ToString()??"connections";Render();if(!diagnosticMode&&currentView=="sync"&&syncSnapshot==null)_=RefreshSyncthing();if(currentView=="transfers")_=RefreshBlip();};
+        navigation.SelectionChanged+=(sender,e)=>{if(busy)return;currentView=e.IsSettingsSelected?"settings":(e.SelectedItem as NavigationViewItem)?.Tag?.ToString()??"connections";Render();if(!diagnosticMode&&currentView=="sync"&&Environment.TickCount64-lastSyncRefresh>=10_000)_=RefreshSyncthing();if(currentView=="transfers")_=RefreshBlip();};
         Grid.SetRow(navigation,1);root.Children.Add(navigation);
         BuildQuickHeader();root.Children.Add(quickHeader);
         var footer=new Grid{Padding=new Thickness(24,10,24,10),ColumnSpacing=10};footer.ColumnDefinitions.Add(new(){Width=GridLength.Auto});footer.ColumnDefinitions.Add(new(){Width=new GridLength(1,GridUnitType.Star)});footer.ColumnDefinitions.Add(new(){Width=GridLength.Auto});footer.Children.Add(ring);Grid.SetColumn(status,1);footer.Children.Add(status);Grid.SetColumn(cancel,2);footer.Children.Add(cancel);cancel.Click+=(_,_)=>operation?.Cancel();
@@ -106,7 +106,7 @@ public sealed partial class MainWindow : Window
         EnableFileDrop();
         AppWindow.Closing+=(_,e)=>{if(!quitting&&tray!=null){e.Cancel=true;AppWindow.Hide();}};
         Closed+=(_,_)=>{popupInput.Dispose();StopSmbMonitoring();updateTimer.Stop();autoUpdateTimer.Stop();tray?.Dispose();operation?.Cancel();smbHosting.Dispose();};
-        AppWindow.Changed+=(_,e)=>{if(compact&&AppWindow.IsVisible)popupInput.Start();else popupInput.Stop();UpdateSmbView();};
+        AppWindow.Changed+=(_,e)=>{if(compact&&AppWindow.IsVisible)popupInput.Start();else popupInput.Stop();UpdateSmbView();UpdateBlipView();};
         Activated+=(_,e)=>{if(e.WindowActivationState==WindowActivationState.Deactivated)DispatcherQueue.TryEnqueue(()=>{if(!diagnosticMode&&!PopupInput.OurForeground()&&tray?.PointerInside()!=true)DismissQuickPopup();});};
         healthTimer.Tick+=async(_,_)=>await MonitorSmb();
         if(!diagnosticMode)NetworkChange.NetworkAddressChanged+=OnSmbNetworkChanged;
@@ -183,7 +183,7 @@ public sealed partial class MainWindow : Window
         activity.Insert(0,entry);if(activity.Count>200)activity.RemoveRange(200,activity.Count-200);
         try{Directory.CreateDirectory(CoreBridge.DataDir);var p=Path.Combine(CoreBridge.DataDir,"activity.json");await File.WriteAllTextAsync(p+".tmp",JsonSerializer.Serialize(activity));File.Move(p+".tmp",p,true);}catch{}
     }
-    private void Render(){ResetSyncControls();UpdateQuickChrome();page.Children.Clear();if(currentView=="transfers")RenderBlip();else if(currentView=="sync-info")RenderSyncInfo();else if(currentView=="sync-attention")RenderSyncAttention();else if(currentView=="sync")RenderSyncthing();else if(currentView=="sync-files")RenderSyncFiles();else if(currentView=="activity")RenderActivity();else if(currentView=="settings")RenderSettings();else if(currentView=="files")RenderFiles();else RenderConnections();SizeQuickMenu();UpdateSmbView();}
+    private void Render(){ResetSyncControls();UpdateQuickChrome();page.Children.Clear();if(currentView=="transfers")RenderBlip();else if(currentView=="sync-info")RenderSyncInfo();else if(currentView=="sync-attention")RenderSyncAttention();else if(currentView=="sync")RenderSyncthing();else if(currentView=="sync-files")RenderSyncFiles();else if(currentView=="activity")RenderActivity();else if(currentView=="settings")RenderSettings();else if(currentView=="files")RenderFiles();else RenderConnections();SizeQuickMenu();UpdateSmbView();UpdateBlipView();}
     private void Heading(string title,string subtitle){page.Children.Add(Text(title,compact?16:30,true));if(compact)return;var sub=Text(subtitle,14);sub.Foreground=Brush("TextFillColorSecondaryBrush");page.Children.Add(sub);}
     private void RenderConnections()
     {

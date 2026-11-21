@@ -5,6 +5,7 @@ import os
 import tempfile
 from collections import Counter, defaultdict
 from pathlib import Path
+from time import monotonic
 from urllib.parse import unquote, urlsplit
 from uuid import UUID
 
@@ -46,6 +47,10 @@ class TransferView:
         self.identity = ""
         self.history = set()
         self.notice_states = {}
+        self.relay_states = ()
+        self.relay_waiting = 0
+        self.next_relay_discovery = 0
+        self.next_poll = 0
         self.delivery = None
         self.error = ""
         self.connecting_to_send = False
@@ -85,6 +90,8 @@ class TransferView:
         return read_settings("blip-permissions.json", {}).get(identity.partition(":")[0], {})
 
     def refresh(self, quiet=True):
+        if quiet and monotonic() < self.next_poll:
+            return
         preferences = self.app.preferences.copy()
         def poll():
             snapshot = self.blip.monitor(preferences.get("blip_background", True))
@@ -98,15 +105,31 @@ class TransferView:
                 self.identity = identity
                 self.history = {t["transfer_id"] for t in incoming if completed(t)}
                 self.notice_states = {}
+                self.relay_states = ()
+                self.relay_waiting = 0
+                self.next_relay_discovery = 0
             permissions = self.catalog(identity)
             receipts = set(read_settings("blip-receipts.json", []))
             urls, notices = [], []
-            command = core("relay.tick", payload={
-                "self": identity, "inbox": str(self.blip.inbox), "downloads": self.downloads,
-                "devices": snapshot.get("devices", []), "transfers": snapshot.get("transfers", []),
-            })
-            snapshot["relays"] = command.get("waiting", 0)
-            relay = command.get("command") or {}
+            account = identity.partition(":")[0]
+            transfers = snapshot.get("transfers", [])
+            transports = [t for t in transfers if packet(t) and (t.get("peer") or "").lower().startswith(account + ":")]
+            states = tuple(sorted((
+                t["transfer_id"], t.get("status", ""), bool(t.get("completed")), bool(t.get("has_error"))
+            ) for t in transports))
+            relay = {}
+            if (self.relay_waiting or monotonic() >= self.next_relay_discovery or states != self.relay_states
+                    or any(t.get("status") in self.LIVE and not t.get("dismissed") and not t.get("completed")
+                           for t in transports)):
+                command = core("relay.tick", payload={
+                    "self": identity, "inbox": str(self.blip.inbox), "downloads": self.downloads,
+                    "devices": snapshot.get("devices", []), "transfers": transfers,
+                })
+                self.relay_states = states
+                self.next_relay_discovery = monotonic() + 30
+                self.relay_waiting = command.get("waiting", 0)
+                relay = command.get("command") or {}
+            snapshot["relays"] = self.relay_waiting
             if relay.get("action") == "send":
                 self.blip.send(relay["peer"], relay["paths"], relay["id"])
             elif relay.get("action") == "accept":
@@ -153,6 +176,7 @@ class TransferView:
 
         def arrived(result):
             snapshot, urls, notices = result
+            self.next_poll = 0 if self.owner(snapshot) else monotonic() + 10
             if snapshot != self.snapshot or self.error:
                 self.snapshot, self.error = snapshot, ""
                 self.render()
@@ -168,6 +192,7 @@ class TransferView:
                 self.app.send_notification(transfer["transfer_id"], notification)
 
         def failed(message):
+            self.next_poll = monotonic() + 10
             if self.error != message:
                 self.error = message
                 self.render()
@@ -380,8 +405,10 @@ class TransferView:
                 relays = [d["peer"] for d in devices if d.get("can_relay") and d.get("online") is True
                           and d["peer"].startswith(own + ":") and d["peer"] not in {identity, peer}]
                 if relays:
-                    return core("relay.stage", payload={"self": identity, "target": peer, "relay": relays[0],
-                                                        "alternatives": relays[1:], "paths": paths})
+                    result = core("relay.stage", payload={"self": identity, "target": peer, "relay": relays[0],
+                                                         "alternatives": relays[1:], "paths": paths})
+                    self.next_relay_discovery = 0
+                    return result
             return self.blip.send(peer, paths)
         self.app.work("blip", "Send with Blip", dispatch, lambda _: self.refresh())
 

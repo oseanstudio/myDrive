@@ -393,8 +393,9 @@ final class AppState: ObservableObject {
 
     func refreshIfStale() async {
         let age = Date().timeIntervalSince(lastSnapshotAt)
-        let budget = popoverVisible ? 20.0 : 60.0
-        if snapshot == nil || snapshotError != nil || age > budget {
+        let visibleSync = (popoverVisible || updateWindowIsVisible()) && view == .sync
+        let budget = visibleSync ? 20.0 : 120.0
+        if (snapshot == nil && snapshotError == nil) || age > budget {
             // Status and events refresh concurrently; awaiting them in order
             // stacked every request's latency onto opening the popup.
             async let snapshotTask: Void = refreshSnapshot(afterChange: false)

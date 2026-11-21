@@ -7,6 +7,8 @@ public sealed partial class MainWindow
 {
     private int blipRelayWaiting;
     private string relaySession = "";
+    private string relayTransportState = "";
+    private long nextRelayDiscovery;
     private readonly Dictionary<string, BlipTransfer> relayReceived = new(StringComparer.Ordinal);
     private static bool IsRelayPacket(BlipTransfer transfer) =>
         transfer.ItemNames.Count == 1 && transfer.ItemNames[0].StartsWith("mydrive-relay-v1.", StringComparison.Ordinal);
@@ -30,6 +32,7 @@ public sealed partial class MainWindow
         if (relays.Count == 0) return false;
         await CoreBridge.Call(new { action = "relay.stage", data_dir = CoreBridge.DataDir,
             payload = new { @self = own, target = target.Peer, relay = relays[0], alternatives = relays.Skip(1).ToList(), paths } }, token);
+        Interlocked.Exchange(ref nextRelayDiscovery, 0);
         return true;
     }
 
@@ -44,10 +47,18 @@ public sealed partial class MainWindow
             return;
         }
         var own = status.UserId + ":" + status.DeviceId;
-        if (relaySession != own) { relayReceived.Clear(); relaySession = own; }
+        if (relaySession != own) { relayReceived.Clear(); relaySession = own; relayTransportState = ""; Interlocked.Exchange(ref nextRelayDiscovery, 0); }
+        var transports = snapshot.Transfers.Where(t => IsRelayPacket(t) && SameBlipAccount(t.Peer, status.UserId)).ToArray();
+        var states = string.Join("|", transports.OrderBy(t => t.Id, StringComparer.Ordinal)
+            .Select(t => $"{t.Id}:{t.Status}:{t.Completed}:{t.HasError}"));
+        var now = Environment.TickCount64;
+        if (blipRelayWaiting == 0 && states == relayTransportState && !transports.Any(t => t.IsLive) &&
+            now < Interlocked.Read(ref nextRelayDiscovery)) return;
         var data = await CoreBridge.Call(new { action = "relay.tick", data_dir = CoreBridge.DataDir,
             payload = new { @self = own, inbox = blip.DownloadsDirectory, downloads = status.DownloadsDirectory,
                 devices = snapshot.Devices, transfers = snapshot.Transfers } }, token);
+        relayTransportState = states;
+        Interlocked.Exchange(ref nextRelayDiscovery, now + 30_000);
         blipRelayWaiting = data.GetProperty("waiting").GetInt32();
         var command = data.GetProperty("command");
         if (command.ValueKind != JsonValueKind.Object) return;
