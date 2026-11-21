@@ -33,6 +33,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         networkMonitor.start(queue: .main)
         installPopoverDismissMonitors()
         refreshWindowAppearance()
+        appState.updateWindowIsVisible = { [weak self] in
+            guard let self else { return true }
+            if self.popover.isShown { return true }
+            return self.fullWindow.map { $0.isVisible && !$0.isMiniaturized } ?? false
+        }
         appState.startup()
 
         timer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
@@ -56,6 +61,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         for monitor in eventMonitors { NSEvent.removeMonitor(monitor) }
         eventMonitors.removeAll()
         SingleInstance.release()
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        appState.stoppingUpdateChecks = true
+        guard appState.hasPreparedUpdate else { return .terminateNow }
+        Task {
+            await appState.discardPreparedUpdate()
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
     }
 
     // The Light/Dark preference applies to the app's own windows only. It must
@@ -204,6 +219,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         popover.contentViewController?.view.window?.makeKey()
         refreshWindowAppearance()
         appState.popoverVisible = true
+        appState.checkForAppUpdate(onOpen: true)
         if appState.view == .connections { SmbMonitor.shared.checkNow("view") }
         Task { await appState.refreshIfStale() }
     }
@@ -253,6 +269,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
         refreshWindowAppearance()
         fullWindow?.makeKeyAndOrderFront(nil)
+        appState.checkForAppUpdate(onOpen: true)
         if appState.view == .connections { SmbMonitor.shared.checkNow("view") }
         NSApp.activate(ignoringOtherApps: true)
     }

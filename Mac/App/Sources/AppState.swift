@@ -118,6 +118,8 @@ final class AppState: ObservableObject {
     @Published var banner: Banner?
     @Published var availableAppUpdate: String?
     @Published var installingAppUpdate = false
+    @Published private var preparedUpdatePath: String?
+    @Published private var applyingAppUpdate = false
     @Published var dialog: DialogKind?
     @Published var syncBrowse: SyncBrowseState?
     @Published var storageBrowse: StorageBrowseState?
@@ -145,8 +147,14 @@ final class AppState: ObservableObject {
     private var lastSnapshotAt = Date.distantPast
     private var lastEventsAt = Date.distantPast
     private var lastAppUpdateCheck = Date.distantPast
+    private var autoUpdateAfter = Date.distantPast
+    private var updateChecksStarted = false
     private var checkingForAppUpdate = false
     private var showAppUpdateResult = false
+    private var manualUpdateRequested = false
+    var stoppingUpdateChecks = false
+    var updateWindowIsVisible = { true }
+    var hasPreparedUpdate: Bool { preparedUpdatePath != nil }
     private var snapshotTask: Task<Void, Never>?
     private var eventsTask: Task<Void, Never>?
     private var snapshotRefreshPending = false
@@ -154,11 +162,13 @@ final class AppState: ObservableObject {
     // MARK: - Lifecycle
 
     func startup() {
-        checkForAppUpdate()
         Task {
-            if let error = (try? await CoreBridge.shared.call(action: "update.error", request: ["data_dir": Paths.dataDir.path])) as? String {
+            if let error = (try? await CoreBridge.shared.call(action: "update.error", request: ["data_dir": Paths.dataDir.path], timeout: 5)) as? String {
+                autoUpdateAfter = Date().addingTimeInterval(60 * 60)
                 showBanner(.error, "Could not update myDrive", error)
             }
+            updateChecksStarted = true
+            checkForAppUpdate()
         }
         blip.start()
         activity = log.activity
@@ -272,55 +282,113 @@ final class AppState: ObservableObject {
 
     func tick() {
         checkForAppUpdate()
+        if !manualUpdateRequested || idleForUpdate {
+            installAppUpdate(automatic: !manualUpdateRequested)
+        }
         Task { await refreshIfStale() }
         Task { await syncthing.checkBackgroundEngine() }
     }
 
-    func checkForAppUpdate(showResult: Bool = false) {
-        guard !installingAppUpdate else { return }
-        guard showResult || Date().timeIntervalSince(lastAppUpdateCheck) >= 6 * 60 * 60 else { return }
-        showAppUpdateResult = showAppUpdateResult || showResult
-        guard !checkingForAppUpdate,
+    func checkForAppUpdate(showResult: Bool = false, onOpen: Bool = false) {
+        guard updateChecksStarted, !stoppingUpdateChecks, !installingAppUpdate else { return }
+        if checkingForAppUpdate {
+            showAppUpdateResult = showAppUpdateResult || showResult
+            return
+        }
+        let age = Date().timeIntervalSince(lastAppUpdateCheck)
+        guard showResult || onOpen || age < 0 || age >= 6 * 60 * 60,
               let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String else { return }
+        showAppUpdateResult = showResult
         checkingForAppUpdate = true
         lastAppUpdateCheck = Date()
         Task {
-            defer {
-                checkingForAppUpdate = false
-                showAppUpdateResult = false
-            }
             do {
                 let reply = try await CoreBridge.shared.call(action: "update.check", request: ["payload": ["version": version]], timeout: 12)
-                guard !installingAppUpdate else { return }
-                if let update = reply as? JSON, let target = update["version"] as? String {
-                    availableAppUpdate = target
-                } else {
-                    availableAppUpdate = nil
-                    if showAppUpdateResult { showBanner(.info, "myDrive is up to date", "You’re using version \(version).") }
+                let target = (reply as? JSON)?["version"] as? String
+                if target != availableAppUpdate {
+                    manualUpdateRequested = false
+                    await discardPreparedUpdate()
+                }
+                availableAppUpdate = target
+                if target == nil && showAppUpdateResult {
+                    showBanner(.info, "myDrive is up to date", "You’re using version \(version).")
                 }
             } catch {
                 if showAppUpdateResult { showBanner(.info, "Could not check for updates", "Try again when GitHub is available.") }
             }
+            checkingForAppUpdate = false
+            showAppUpdateResult = false
+            installAppUpdate(automatic: true)
         }
     }
 
-    func installAppUpdate() {
-        guard !installingAppUpdate, busy == nil, let target = availableAppUpdate,
+    func updateOfferTitle(_ version: String) -> String {
+        if applyingAppUpdate { return "Installing update…" }
+        if installingAppUpdate { return "Downloading myDrive \(version)…" }
+        return preparedUpdatePath == nil ? "Update to myDrive \(version)" : "Install myDrive \(version)"
+    }
+
+    private var canAutomaticallyInstallUpdate: Bool {
+        settingsPref.autoInstallUpdates == true && Date() >= autoUpdateAfter &&
+            !updateWindowIsVisible() && hostedSmbShares.isEmpty
+    }
+
+    private var idleForUpdate: Bool {
+        busy == nil && dialog == nil && NSApp.modalWindow == nil &&
+            !blip.transfers.contains { $0.isLive && ["Created", "Pending", "Active", "ResumeRequested"].contains($0.status) }
+    }
+
+    func installAppUpdate(automatic: Bool = false) {
+        guard !checkingForAppUpdate, !installingAppUpdate, !stoppingUpdateChecks, let target = availableAppUpdate,
               let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String else { return }
+        guard !automatic || canAutomaticallyInstallUpdate else { return }
+        guard idleForUpdate else {
+            if !automatic { showBanner(.info, "An operation is running", "Finish the current operation before updating myDrive.") }
+            return
+        }
         installingAppUpdate = true
+        manualUpdateRequested = manualUpdateRequested || !automatic
         Task {
+            defer { installingAppUpdate = false; applyingAppUpdate = false }
             do {
-                _ = try await CoreBridge.shared.call(action: "update.install", request: [
-                    "data_dir": Paths.dataDir.path,
-                    "payload": ["version": version, "target_version": target,
-                                "app_path": Bundle.main.bundleURL.path, "pid": ProcessInfo.processInfo.processIdentifier] as JSON,
-                ], timeout: 11 * 60)
+                if preparedUpdatePath == nil {
+                    let response = try await CoreBridge.shared.call(action: "update.stage", request: [
+                        "data_dir": Paths.dataDir.path,
+                        "payload": ["version": version, "target_version": target,
+                                    "app_path": Bundle.main.bundleURL.path, "pid": ProcessInfo.processInfo.processIdentifier] as JSON,
+                    ], timeout: 11 * 60)
+                    guard let path = (response as? JSON)?["plan_path"] as? String else {
+                        throw CoreError(message: "Could not locate the prepared update.")
+                    }
+                    preparedUpdatePath = path
+                }
+                if stoppingUpdateChecks { await discardPreparedUpdate(); return }
+                guard idleForUpdate, !automatic || canAutomaticallyInstallUpdate,
+                      let path = preparedUpdatePath else { return }
+                applyingAppUpdate = true
+                try await usePreparedUpdate("update.apply", path: path)
+                preparedUpdatePath = nil
                 quit()
             } catch {
-                installingAppUpdate = false
-                showBanner(.error, "Could not update myDrive", Self.errorText(error))
+                manualUpdateRequested = false
+                autoUpdateAfter = Date().addingTimeInterval(60 * 60)
+                if !stoppingUpdateChecks { showBanner(.error, "Could not update myDrive", Self.errorText(error)) }
             }
         }
+    }
+
+    func discardPreparedUpdate() async {
+        guard let path = preparedUpdatePath else { return }
+        preparedUpdatePath = nil
+        try? await usePreparedUpdate("update.discard", path: path)
+    }
+
+    private func usePreparedUpdate(_ action: String, path: String) async throws {
+        _ = try await CoreBridge.shared.call(action: action, request: [
+            "data_dir": Paths.dataDir.path,
+            "payload": ["plan_path": path, "app_path": Bundle.main.bundleURL.path,
+                        "pid": ProcessInfo.processInfo.processIdentifier] as JSON,
+        ], timeout: 5)
     }
 
     func refreshIfStale() async {

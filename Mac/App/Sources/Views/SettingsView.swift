@@ -32,6 +32,14 @@ struct SettingsView: View {
                     .disabled(startupLoading)
             }
 
+            Toggle("Install updates automatically", isOn: Binding(
+                get: { app.settingsPref.autoInstallUpdates == true },
+                set: { value in
+                    PrefStore.shared.update { $0.autoInstallUpdates = value }
+                    app.settingsPref = PrefStore.shared.preferences
+                    if value { app.checkForAppUpdate(onOpen: true) }
+                }))
+                .help("Updates install when myDrive is in the background and idle.")
             Button("Check for updates") { app.checkForAppUpdate(showResult: true) }
             Menu("Advanced") {
                 Button("Syncthing settings…") { app.dialog = .syncSettings }

@@ -9,6 +9,7 @@ import sys
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
+from time import monotonic
 
 import gi
 gi.require_version("Gtk", "4.0")
@@ -57,13 +58,22 @@ class MyDrive(Gtk.Application):
         self.sync_rescanning = False
         self.stopping = False
         self.show_update_result = False
+        self.checking_for_update = False
         self.available_update = None
         self.read_update_error = True
+        self.prepared_update = None
+        self.manual_update_requested = False
+        self.auto_update_timer = 0
+        self.auto_update_after = 0
+        self.file_picker_depth = 0
         self.startup = {"enabled": True, "configured": False}
 
     def do_activate(self):
         if self.window:
+            was_visible = self.window.get_visible()
             self.window.present()
+            if was_visible:
+                self.check_for_updates()
             return
         self.window = Gtk.ApplicationWindow(application=self, title="myDrive")
         self.window.set_default_size(344, 420)
@@ -136,6 +146,8 @@ class MyDrive(Gtk.Application):
             self.run_fixture()
             return
         self.tray = Tray(self.window, ROOT / f"{APP_ID}.png")
+        self.window.connect("notify::visible", lambda window, _: self.check_for_updates()
+                            if window.get_visible() else None)
         self.refresh_sync()
         self.storage_view.load()
         self.storage_view.start_monitor()
@@ -147,6 +159,8 @@ class MyDrive(Gtk.Application):
 
     def do_shutdown(self):
         self.stopping = True
+        self.sync_auto_install_timer()
+        self.discard_prepared_update()
         if self.window:
             self.storage_view.stop_monitor()
         self.lanes["blip"].submit(self.blip.stop)
@@ -170,14 +184,18 @@ class MyDrive(Gtk.Application):
     def check_for_updates(self, show_result=False):
         if self.fixture or self.stopping:
             return
-        self.show_update_result |= show_result
         if self.pending["updates"]:
+            if self.checking_for_update:
+                self.show_update_result |= show_result
             return
+        self.checking_for_update = True
+        self.show_update_result = show_result
 
         def check():
             error = core("update.error") if self.read_update_error else None
             try:
-                return error, core("update.check", payload={"version": VERSION}), None
+                update = core("update.check", payload={"version": VERSION})
+                return error, update, None
             except (OSError, RuntimeError, subprocess.SubprocessError) as failure:
                 return error, None, str(failure)
 
@@ -185,47 +203,147 @@ class MyDrive(Gtk.Application):
             self.read_update_error = False
             error, update, check_error = result
             if error:
+                self.auto_update_after = monotonic() + 60 * 60
                 self.announce(error)
             if check_error:
                 failed(check_error)
                 return
-            self.available_update = update["version"] if update else None
+            self.checking_for_update = False
+            target = update["version"] if update else None
+            if target != self.available_update:
+                self.manual_update_requested = False
+                if self.prepared_update:
+                    path, self.prepared_update = self.prepared_update, None
+                    self.work("updates", "", lambda: self.use_prepared_update("update.discard", path),
+                              lambda _: self.install_update(automatic=True), quiet=True)
+            self.available_update = target
             self.update_offer.set_visible(bool(update))
-            if update:
-                self.update_offer.set_label(f"Update to myDrive {self.available_update}")
-            elif self.show_update_result:
+            self.update_offer_label()
+            self.sync_auto_install_timer()
+            if not update and self.show_update_result:
                 self.announce(f"myDrive {VERSION} is up to date.")
             self.show_update_result = False
+            self.install_update(automatic=True)
 
         def failed(_message):
             if self.show_update_result:
                 self.announce("Could not check for updates. Try again when GitHub is available.")
             self.show_update_result = False
+            self.checking_for_update = False
 
         self.work("updates", "", check, complete, quiet=True, on_error=failed)
 
-    def install_update(self):
-        if not self.available_update or self.pending["updates"]:
+    def sync_auto_install_timer(self):
+        enabled = self.available_update and not self.stopping and (
+            self.manual_update_requested or self.preferences.get("auto_install_updates", False)
+        )
+        if enabled and not self.auto_update_timer:
+            self.auto_update_timer = GLib.timeout_add_seconds(30, self.tick_auto_install)
+        elif not enabled and self.auto_update_timer:
+            GLib.source_remove(self.auto_update_timer)
+            self.auto_update_timer = 0
+
+    def tick_auto_install(self):
+        if not self.manual_update_requested or self.update_idle():
+            self.install_update(automatic=not self.manual_update_requested)
+        return GLib.SOURCE_CONTINUE
+
+    def can_auto_install(self):
+        if not self.preferences.get("auto_install_updates", False) or monotonic() < self.auto_update_after:
+            return False
+        surface = self.window.get_surface()
+        return not self.window.get_visible() or (
+            isinstance(surface, Gdk.Toplevel) and bool(surface.get_state() & Gdk.ToplevelState.MINIMIZED)
+        )
+
+    def update_idle(self):
+        if self.file_picker_depth or any(self.pending[key] for key in ("storage", "blip", "sync", "settings")):
+            return False
+        if any(window.get_transient_for() is self.window and window.get_visible()
+               for window in Gtk.Window.list_toplevels()):
+            return False
+        return not any(
+            transfer.get("status") in {"Created", "Pending", "Active", "ResumeRequested"}
+            and not transfer.get("dismissed") and not transfer.get("has_error")
+            for transfer in self.transfer_view.snapshot.get("transfers", [])
+        )
+
+    def update_offer_label(self):
+        self.update_offer.set_sensitive(True)
+        if self.available_update:
+            action = "Install myDrive" if self.prepared_update else "Update to myDrive"
+            self.update_offer.set_label(f"{action} {self.available_update}")
+
+    def install_update(self, automatic=False):
+        if self.stopping or not self.available_update or self.pending["updates"]:
             return
-        if self.pending["storage"]:
-            self.announce("Finish the current file operation before updating myDrive.")
+        if automatic and not self.can_auto_install():
+            return
+        if not self.update_idle():
+            if not automatic:
+                self.announce("Finish the current operation before updating myDrive.")
             return
         appimage = os.environ.get("APPIMAGE")
         if not appimage:
-            self.announce("Open myDrive from its AppImage before updating.")
+            self.auto_update_after = monotonic() + 60 * 60
+            if not automatic:
+                self.announce("Open myDrive from its AppImage before updating.")
             return
-        target = self.available_update
         self.update_offer.set_sensitive(False)
-        self.update_offer.set_label(f"Downloading myDrive {target}…")
+        self.manual_update_requested |= not automatic
 
         def failed(message):
+            self.manual_update_requested = False
+            self.auto_update_after = monotonic() + 60 * 60
             self.announce(message)
-            self.update_offer.set_sensitive(True)
-            self.update_offer.set_label(f"Update to myDrive {target}")
+            self.update_offer_label()
+            self.sync_auto_install_timer()
 
-        self.work("updates", "", lambda: core("update.install", payload={
-            "version": VERSION, "target_version": target, "app_path": appimage, "pid": os.getpid(),
-        }), lambda _: self.quit(), quiet=True, on_error=failed)
+        if self.prepared_update:
+            self.update_offer.set_label("Installing update…")
+            path = self.prepared_update
+
+            def applied(_):
+                self.prepared_update = None
+                self.quit()
+
+            self.work("updates", "", lambda: self.use_prepared_update("update.apply", path), applied,
+                      quiet=True, on_error=failed)
+            return
+
+        target = self.available_update
+        self.update_offer.set_label(f"Downloading myDrive {target}…")
+
+        def download():
+            result = core("update.stage", payload={
+                "version": VERSION, "target_version": target, "app_path": appimage, "pid": os.getpid(),
+            })
+            path = result["plan_path"]
+            if self.stopping:
+                self.use_prepared_update("update.discard", path)
+            return path
+
+        def downloaded(path):
+            self.prepared_update = path
+            self.update_offer_label()
+            self.sync_auto_install_timer()
+            if self.update_idle():
+                self.install_update(automatic=automatic)
+
+        self.work("updates", "", download, downloaded, quiet=True, on_error=failed)
+
+    @staticmethod
+    def use_prepared_update(action, path):
+        return core(action, payload={"plan_path": path, "app_path": os.environ.get("APPIMAGE"), "pid": os.getpid()})
+
+    def discard_prepared_update(self):
+        if not self.prepared_update:
+            return
+        path, self.prepared_update = self.prepared_update, None
+        try:
+            self.use_prepared_update("update.discard", path)
+        except (OSError, RuntimeError, subprocess.SubprocessError):
+            pass
 
     def resize(self):
         if self.window.is_maximized():
@@ -322,13 +440,17 @@ class MyDrive(Gtk.Application):
         if suggested_name:
             chooser.set_current_name(suggested_name)
         def response(chooser, result):
-            if result == Gtk.ResponseType.ACCEPT:
-                files = chooser.get_files()
-                paths = [files.get_item(i).get_path() for i in range(files.get_n_items())]
-                if paths and all(paths):
-                    accepted(paths)
-            chooser.destroy()
+            try:
+                if result == Gtk.ResponseType.ACCEPT:
+                    files = chooser.get_files()
+                    paths = [files.get_item(i).get_path() for i in range(files.get_n_items())]
+                    if paths and all(paths):
+                        accepted(paths)
+            finally:
+                self.file_picker_depth -= 1
+                chooser.destroy()
         chooser.connect("response", response)
+        self.file_picker_depth += 1
         chooser.show()
 
     def open_uri(self, uri):
@@ -687,6 +809,15 @@ class MyDrive(Gtk.Application):
             switch = Gtk.Switch(active=self.preferences.get(key, True), valign=Gtk.Align.CENTER)
             switch.connect("notify::active", lambda s, _, key=key: self.change_preference(key, s.get_active()))
             page.append(row(title, "", switch))
+        automatic = Gtk.Switch(active=self.preferences.get("auto_install_updates", False), valign=Gtk.Align.CENTER)
+        automatic.set_tooltip_text("Updates install when myDrive is in the background and idle.")
+        def toggle_automatic(switch, _property):
+            self.change_preference("auto_install_updates", switch.get_active())
+            self.sync_auto_install_timer()
+            if self.preferences.get("auto_install_updates"):
+                self.check_for_updates()
+        automatic.connect("notify::active", toggle_automatic)
+        page.append(row("Install updates automatically", "", automatic))
         page.append(button("Check for updates", lambda: self.check_for_updates(show_result=True)))
         page.append(row("Advanced", "", menu([
             ("Syncthing settings…", lambda: self.files("Choose Syncthing config.xml", Gtk.FileChooserAction.OPEN,

@@ -22,7 +22,7 @@ struct PopupRootView: View {
         VStack(spacing: 0) {
             header
             if let update = app.availableAppUpdate {
-                Button(app.installingAppUpdate ? "Downloading myDrive \(update)…" : "Update to myDrive \(update)") {
+                Button(app.updateOfferTitle(update)) {
                     app.installAppUpdate()
                 }
                     .disabled(app.installingAppUpdate || app.busy != nil)

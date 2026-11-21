@@ -95,7 +95,15 @@ fn execute(r: Request) -> Result<Value, String> {
             return Ok(json!(updates::check(installed)?));
         }
         "update.install" => {
-            return desktop_update::prepare(r.payload, Path::new(&r.data_dir)).map(|()| Value::Null);
+            return desktop_update::prepare(r.payload, Path::new(&r.data_dir), false).map(|_| Value::Null);
+        }
+        "update.stage" => {
+            let plan = desktop_update::prepare(r.payload, Path::new(&r.data_dir), true)?;
+            return Ok(json!({"plan_path":plan}));
+        }
+        "update.apply" | "update.discard" => {
+            desktop_update::use_prepared(r.payload, Path::new(&r.data_dir), r.action == "update.apply")?;
+            return Ok(Value::Null);
         }
         "update.error" => return Ok(json!(desktop_update::take_error(Path::new(&r.data_dir)))),
         "bookmarks.load" => return Ok(json!(storage::load(Path::new(&r.data_dir))?)),

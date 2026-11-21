@@ -12,6 +12,7 @@ struct Preferences: Codable, Equatable {
     var lastEventId: UInt64 = 0
     var startAtLogin = false
     var appearance = "system" // system | light | dark
+    var autoInstallUpdates: Bool? = nil
     // Optional storage keeps older preference files decodable. Absence means enabled;
     // an explicit opt-out survives saves and upgrades. Consumed by the future Blip receiver.
     private var blipAutoOpenLinksOverride: Bool? = nil
@@ -36,6 +37,7 @@ struct Preferences: Codable, Equatable {
         case lastEventId = "last_event_id"
         case startAtLogin = "start_at_login"
         case appearance
+        case autoInstallUpdates = "auto_install_updates"
         case blipAutoOpenLinksOverride = "blip_auto_open_links"
         case blipBackgroundReceiving = "blip_background_receiving"
         case knownSmbShares = "known_smb_shares"

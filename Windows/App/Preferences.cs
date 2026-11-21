@@ -3,6 +3,7 @@ namespace MyDrive;
 public sealed class Preferences
 {
     public string Theme {get;set;}="System";
+    public bool AutoInstallUpdates {get;set;}
     public bool BlipAutoOpenLinks {get;set;}=true;
     public bool BlipAutoConnectDesktop {get;set;}=true;
     public string BlipAutoOpenAccount {get;set;}="";

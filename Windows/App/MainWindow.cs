@@ -105,7 +105,7 @@ public sealed partial class MainWindow : Window
         try{tray=new TrayIcon(hwnd,ToggleQuickMenu,Quit,()=>SetMode(false),()=>_=OnSystemResume());}catch{compact=false;}
         EnableFileDrop();
         AppWindow.Closing+=(_,e)=>{if(!quitting&&tray!=null){e.Cancel=true;AppWindow.Hide();}};
-        Closed+=(_,_)=>{popupInput.Dispose();StopSmbMonitoring();updateTimer.Stop();tray?.Dispose();operation?.Cancel();smbHosting.Dispose();};
+        Closed+=(_,_)=>{popupInput.Dispose();StopSmbMonitoring();updateTimer.Stop();autoUpdateTimer.Stop();tray?.Dispose();operation?.Cancel();smbHosting.Dispose();};
         AppWindow.Changed+=(_,e)=>{if(compact&&AppWindow.IsVisible)popupInput.Start();else popupInput.Stop();UpdateSmbView();};
         Activated+=(_,e)=>{if(e.WindowActivationState==WindowActivationState.Deactivated)DispatcherQueue.TryEnqueue(()=>{if(!diagnosticMode&&!PopupInput.OurForeground()&&tray?.PointerInside()!=true)DismissQuickPopup();});};
         healthTimer.Tick+=async(_,_)=>await MonitorSmb();
@@ -132,7 +132,7 @@ public sealed partial class MainWindow : Window
         double scale=TrayIcon.Scale(hwnd);var area=DisplayArea.GetFromWindowId(AppWindow.Id,DisplayAreaFallback.Nearest).WorkArea;
         if(small)SizeQuickMenu(placePopup);
         else{quickOrigin=null;var width=Math.Min((int)(1160*scale),area.Width-24);var height=Math.Min((int)(790*scale),area.Height-24);AppWindow.Resize(new(width,height));AppWindow.Move(new(area.X+(area.Width-width)/2,area.Y+(area.Height-height)/2));}
-        Render();AppWindow.Show(activate);if(activate){Activate();PopupInput.Foreground(hwnd);}if(small)popupInput.Start();else popupInput.Stop();if(currentView=="sync"&&!diagnosticMode)_=RefreshSyncthing();
+        Render();AppWindow.Show(activate);if(activate){Activate();PopupInput.Foreground(hwnd);_=CheckForUpdate();}if(small)popupInput.Start();else popupInput.Stop();if(currentView=="sync"&&!diagnosticMode)_=RefreshSyncthing();
     }
     private void DismissQuickPopup()
     {
@@ -162,7 +162,7 @@ public sealed partial class MainWindow : Window
         if(AppWindow.Size.Width!=width||AppWindow.Size.Height!=height)AppWindow.Resize(new(width,height));
         if(AppWindow.Position.X!=position.X||AppWindow.Position.Y!=position.Y)AppWindow.Move(position);
     }
-    private async void Quit(){if(quitting)return;quitting=true;blipLinks?.ResetSession();await blip.StopAsync();Close();Application.Current.Exit();}
+    private async void Quit(){if(quitting)return;quitting=true;await DiscardPreparedUpdate();blipLinks?.ResetSession();await blip.StopAsync();Close();Application.Current.Exit();}
     private async Task Initialize()
     {
         try{bookmarks=await CoreBridge.Load();storageReady=true;var journal=Path.Combine(CoreBridge.DataDir,"activity.json");if(File.Exists(journal))try{activity=JsonSerializer.Deserialize<List<ActivityEntry>>(await File.ReadAllTextAsync(journal))??new();}catch{}status.Text="Ready · Credentials protected by Windows";RequestSmbCheck("periodic");Render();if(!diagnosticMode)_=RefreshSyncthing();}
@@ -275,6 +275,7 @@ public sealed partial class MainWindow : Window
         };
         appearance.Children.Add(theme);page.Children.Add(appearance);
         page.Children.Add(StartupControl());
+        page.Children.Add(AutoUpdateSetting());
         page.Children.Add(Button("Check for updates",()=>_=CheckForUpdate(showResult:true)));
         var advanced=new DropDownButton{Content="Advanced"};var menu=new MenuFlyout();
         MenuAction(menu,"Syncthing settings…",()=>_=EditSyncthingConnection());

@@ -8,6 +8,7 @@ use std::{
 
 const STAGE_PREFIX: &str = ".mydrive-update-";
 const PLAN_NAME: &str = "plan.json";
+const STARTED_MARKER: &str = "install-started";
 const ERROR_NAME: &str = "desktop-update-error.txt";
 const HELPER_NAME: &str = if cfg!(windows) {
     "updater.exe"
@@ -20,6 +21,13 @@ const WAIT_SECONDS: u32 = 60;
 struct Request {
     version: String,
     target_version: String,
+    app_path: PathBuf,
+    pid: u32,
+}
+
+#[derive(Deserialize)]
+struct PreparedRequest {
+    plan_path: PathBuf,
     app_path: PathBuf,
     pid: u32,
 }
@@ -45,7 +53,7 @@ impl From<String> for InstallError {
     }
 }
 
-pub fn prepare(payload: Value, data_dir: &Path) -> Result<(), String> {
+pub fn prepare(payload: Value, data_dir: &Path, defer_install: bool) -> Result<PathBuf, String> {
     let request: Request =
         serde_json::from_value(payload).map_err(|_| "Invalid update request.")?;
     if !(1..=i32::MAX as u32).contains(&request.pid)
@@ -59,18 +67,9 @@ pub fn prepare(payload: Value, data_dir: &Path) -> Result<(), String> {
         .filter(|update| update.version == request.target_version)
         .ok_or("The available release changed. Check for updates again.")?;
     fs::create_dir_all(data_dir).map_err(|_| "Could not prepare the update working folder.")?;
-    let parent = if cfg!(windows) {
-        env::temp_dir()
-    } else {
-        request
-            .app_path
-            .parent()
-            .ok_or("Could not locate the app’s folder.")?
-            .to_owned()
-    };
     let staging = tempfile::Builder::new()
         .prefix(STAGE_PREFIX)
-        .tempdir_in(parent)
+        .tempdir_in(staging_parent(&request.app_path)?)
         .map_err(|_| {
             "myDrive cannot update in this location. Move it to a writable folder and try again."
         })?;
@@ -95,9 +94,78 @@ pub fn prepare(payload: Value, data_dir: &Path) -> Result<(), String> {
         serde_json::to_vec(&plan).map_err(|_| "Could not prepare to restart myDrive.")?,
     )
     .map_err(|_| "Could not prepare to restart myDrive.")?;
-    platform::start_helper(&helper, &plan_path, staging.path())
-        .map_err(|_| "Could not start the update helper.")?;
+    if defer_install && !platform::process_is_running(request.pid) {
+        return Err("myDrive closed while the update was downloading.".into());
+    }
+    if !defer_install {
+        platform::start_helper(&helper, &plan_path, staging.path())
+            .map_err(|_| "Could not start the update helper.")?;
+    }
     let _ = staging.keep();
+    Ok(plan_path)
+}
+
+fn staging_parent(app: &Path) -> Result<PathBuf, String> {
+    if cfg!(windows) {
+        Ok(env::temp_dir())
+    } else {
+        app.parent()
+            .map(Path::to_owned)
+            .ok_or_else(|| "Could not locate the app’s folder.".into())
+    }
+}
+
+fn prepared_path(request: &PreparedRequest, data_dir: &Path) -> Result<PathBuf, String> {
+    let invalid = || "Could not locate the prepared update for this app.".to_string();
+    let path = &request.plan_path;
+    let staging = stage_directory(path)
+        .filter(|_| path.is_absolute())
+        .ok_or_else(invalid)?;
+    let metadata = fs::symlink_metadata(staging).map_err(|_| invalid())?;
+    let parent = staging
+        .parent()
+        .ok_or_else(invalid)?
+        .canonicalize()
+        .map_err(|_| invalid())?;
+    let expected_parent = staging_parent(&request.app_path)?
+        .canonicalize()
+        .map_err(|_| invalid())?;
+    if !metadata.file_type().is_dir() || parent != expected_parent {
+        return Err(invalid());
+    }
+    let plan: Plan =
+        serde_json::from_slice(&fs::read(path).map_err(|_| invalid())?).map_err(|_| invalid())?;
+    if !request.app_path.is_absolute()
+        || !data_dir.is_absolute()
+        || plan.app != request.app_path
+        || plan.data_dir != data_dir
+        || plan.pid != request.pid
+    {
+        return Err(invalid());
+    }
+    Ok(staging.to_owned())
+}
+
+pub fn use_prepared(payload: Value, data_dir: &Path, install: bool) -> Result<(), String> {
+    let request: PreparedRequest =
+        serde_json::from_value(payload).map_err(|_| "Invalid update request.")?;
+    let staging = prepared_path(&request, data_dir)?;
+    let marker = staging.join(STARTED_MARKER);
+    if install {
+        platform::check_location(&request.app_path)?;
+        fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&marker)
+            .map_err(|_| "Could not claim the prepared update for installation.")?;
+        if platform::start_helper(&staging.join(HELPER_NAME), &request.plan_path, &staging).is_err()
+        {
+            let _ = fs::remove_file(&marker);
+            return Err("Could not start the update helper.".into());
+        }
+    } else if !marker.exists() {
+        platform::cleanup(&staging);
+    }
     Ok(())
 }
 
@@ -111,16 +179,53 @@ pub fn take_error(data_dir: &Path) -> Option<String> {
     Some(error)
 }
 
-pub fn finish(plan_path: &Path) {
-    let Some(staging) = plan_path.parent().filter(|path| {
+fn stage_directory(plan_path: &Path) -> Option<&Path> {
+    if plan_path.file_name().and_then(|name| name.to_str()) != Some(PLAN_NAME) {
+        return None;
+    }
+    plan_path.parent().filter(|path| {
         path.file_name()
             .is_some_and(|name| name.to_string_lossy().starts_with(STAGE_PREFIX))
-    }) else {
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn prepared_update_is_bound_to_the_running_installation() {
+        let app_dir = tempfile::tempdir().unwrap();
+        let app = app_dir.path().join("myDrive");
+        let data = app_dir.path().join("data");
+        let staging = tempfile::Builder::new()
+            .prefix(STAGE_PREFIX)
+            .tempdir_in(staging_parent(&app).unwrap())
+            .unwrap();
+        let path = staging.path().join(PLAN_NAME);
+        let pid = std::process::id();
+        let plan = Plan {
+            app: app.clone(),
+            data_dir: data.clone(),
+            pid,
+        };
+        fs::write(&path, serde_json::to_vec(&plan).unwrap()).unwrap();
+
+        let request = |pid| json!({"plan_path":path,"app_path":app,"pid":pid});
+        assert!(use_prepared(request(pid + 1), &data, false).is_err());
+        assert!(use_prepared(request(pid), &app_dir.path().join("other-data"), false).is_err());
+        assert!(path.exists());
+        use_prepared(request(pid), &data, false).unwrap();
+        assert!(!path.exists());
+        assert!(app_dir.path().exists());
+    }
+}
+
+pub fn finish(plan_path: &Path) {
+    let Some(staging) = stage_directory(plan_path) else {
         return;
     };
-    if plan_path.file_name().and_then(|name| name.to_str()) != Some(PLAN_NAME) {
-        return;
-    }
     let Ok(content) = fs::read(plan_path) else {
         return;
     };
@@ -155,7 +260,9 @@ mod platform {
         ptr::null,
     };
     use windows_sys::Win32::{
-        Foundation::{CloseHandle, GetLastError, ERROR_INVALID_PARAMETER, WAIT_OBJECT_0},
+        Foundation::{
+            CloseHandle, GetLastError, ERROR_INVALID_PARAMETER, WAIT_OBJECT_0, WAIT_TIMEOUT,
+        },
         System::Threading::{
             CreateProcessW, OpenProcess, WaitForSingleObject, CREATE_NO_WINDOW,
             PROCESS_INFORMATION, PROCESS_SYNCHRONIZE, STARTUPINFOW,
@@ -232,6 +339,18 @@ mod platform {
         }
     }
 
+    pub fn process_is_running(pid: u32) -> bool {
+        unsafe {
+            let process = OpenProcess(PROCESS_SYNCHRONIZE, 0, pid);
+            if process.is_null() {
+                return false;
+            }
+            let result = WaitForSingleObject(process, 0);
+            CloseHandle(process);
+            result == WAIT_TIMEOUT
+        }
+    }
+
     pub fn install_and_restart(staging: &Path, app: &Path) -> Result<(), InstallError> {
         let mut directory = std::ffi::OsString::from("/DIR=");
         directory.push(
@@ -279,6 +398,7 @@ mod platform {
             let _ = fs::remove_file(staging.join(name));
         }
         let _ = fs::remove_file(staging.join(PLAN_NAME));
+        let _ = fs::remove_file(staging.join(STARTED_MARKER));
         let _ = fs::remove_file(staging.join(HELPER_NAME));
         let _ = fs::remove_dir(staging);
     }
@@ -313,14 +433,17 @@ mod platform {
     pub fn wait_for_exit(pid: u32) -> bool {
         let deadline = Instant::now() + Duration::from_secs(WAIT_SECONDS.into());
         while Instant::now() < deadline {
-            if unsafe { libc::kill(pid as i32, 0) } == -1
-                && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
-            {
+            if !process_is_running(pid) {
                 return true;
             }
             thread::sleep(Duration::from_millis(250));
         }
         false
+    }
+
+    pub fn process_is_running(pid: u32) -> bool {
+        (unsafe { libc::kill(pid as i32, 0) == 0 })
+            || std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
     }
 
     pub fn install_and_restart(staging: &Path, app: &Path) -> Result<(), InstallError> {
