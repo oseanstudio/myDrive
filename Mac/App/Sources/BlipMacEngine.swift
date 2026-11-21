@@ -25,11 +25,16 @@ enum BlipMacEngine: Int32, LocalizedError {
     static let group = "AY8UB8KTUX.blip"
     static let bundleID = "net.blip.macos"
     static let frameworkPath = "Contents/Frameworks/BlipKit.framework/Versions/A/BlipKit"
+    static let supportPath = "Contents/Frameworks/libswiftCompatibilitySpan.dylib"
     private static let reviewedHash = "d839f07f7ff1c15c4ed144dbf2d09300d3a2c4b061f974a099c1f31a1a34d500"
     private static let archiveHash = "1109ced4e804026c73bb108c2a9b1ae1324d99a94b9d7f1725d7c1f191b37825"
+    private static let supportHash = "05256a8721361bb24eb006313bc95b02f326895f3ab71644e9ec2af98840b882"
     private static let archiveURL = "https://static.blip.net/mac/Blip-20261029214736.zip"
     private static var runtimeDirectory: URL { BlipLocalRPC.managedProfile.appendingPathComponent("runtime", isDirectory: true) }
     private static var runtimeLibrary: URL { runtimeDirectory.appendingPathComponent("BlipKit") }
+    static func supportLibrary(beside framework: URL) -> URL {
+        framework.deletingLastPathComponent().appendingPathComponent("Frameworks/libswiftCompatibilitySpan.dylib")
+    }
     static var groupDirectory: URL {
         FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Group Containers/" + group, isDirectory: true)
     }
@@ -46,8 +51,7 @@ enum BlipMacEngine: Int32, LocalizedError {
     }
 
     @MainActor static func runBackground(allowDownload: Bool) throws {
-        let installed = installedApplication?.appendingPathComponent(frameworkPath)
-        let framework = try prepareEngine(installed: installed, allowDownload: allowDownload)
+        let framework = try prepareEngine(installed: installedApplication, allowDownload: allowDownload)
         if (try? checkProfile(groupDirectory.appendingPathComponent("state.dat"))) != nil {
             let cache = groupDirectory.appendingPathComponent("Library/Caches", isDirectory: true)
             try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
@@ -80,11 +84,16 @@ enum BlipMacEngine: Int32, LocalizedError {
 
     private static func prepareEngine(installed: URL?, allowDownload: Bool) throws -> URL {
         let limit: UInt64 = 64 * 1024 * 1024
-        if checkedContents(runtimeLibrary, hash: reviewedHash, limit: limit) != nil { return runtimeLibrary }
+        let support = supportLibrary(beside: runtimeLibrary)
+        if checkedContents(support, hash: supportHash, limit: limit) != nil,
+           checkedContents(runtimeLibrary, hash: reviewedHash, limit: limit) != nil { return runtimeLibrary }
         let fm = FileManager.default
-        try fm.createDirectory(at: runtimeDirectory, withIntermediateDirectories: true,
+        try fm.createDirectory(at: support.deletingLastPathComponent(), withIntermediateDirectories: true,
                                attributes: [.posixPermissions: 0o700])
-        if let installed, let bytes = checkedContents(installed, hash: reviewedHash, limit: limit) {
+        if let installed,
+           let compatibility = checkedContents(installed.appendingPathComponent(supportPath), hash: supportHash, limit: limit),
+           let bytes = checkedContents(installed.appendingPathComponent(frameworkPath), hash: reviewedHash, limit: limit) {
+            try compatibility.write(to: support, options: .atomic)
             try bytes.write(to: runtimeLibrary, options: .atomic)
             return runtimeLibrary
         }
@@ -96,12 +105,18 @@ enum BlipMacEngine: Int32, LocalizedError {
         try tool("/usr/bin/curl", ["--fail", "--silent", "--location", "--proto", "=https", "--proto-redir", "=https",
                                   "--max-time", "120", "--max-filesize", String(limit), "--output", archive.path, archiveURL])
         guard checkedContents(archive, hash: archiveHash, limit: limit) != nil else { throw Self.version }
-        let extracted = work.appendingPathComponent("BlipKit")
-        guard fm.createFile(atPath: extracted.path, contents: nil) else { throw Self.download }
-        let handle = try FileHandle(forWritingTo: extracted)
-        defer { try? handle.close() }
-        try tool("/usr/bin/unzip", ["-p", archive.path, "Blip.app/" + frameworkPath], output: handle)
-        guard let bytes = checkedContents(extracted, hash: reviewedHash, limit: limit) else { throw Self.version }
+        func extract(_ path: String, hash: String) throws -> Data {
+            let extracted = work.appendingPathComponent(URL(fileURLWithPath: path).lastPathComponent)
+            guard fm.createFile(atPath: extracted.path, contents: nil) else { throw Self.download }
+            let handle = try FileHandle(forWritingTo: extracted)
+            defer { try? handle.close() }
+            try tool("/usr/bin/unzip", ["-p", archive.path, "Blip.app/" + path], output: handle)
+            guard let bytes = checkedContents(extracted, hash: hash, limit: limit) else { throw Self.version }
+            return bytes
+        }
+        let compatibility = try extract(supportPath, hash: supportHash)
+        let bytes = try extract(frameworkPath, hash: reviewedHash)
+        try compatibility.write(to: support, options: .atomic)
         try bytes.write(to: runtimeLibrary, options: .atomic)
         return runtimeLibrary
     }
@@ -134,10 +149,17 @@ enum BlipMacEngine: Int32, LocalizedError {
     // The reviewed framework starts asynchronously and elects one host per namespace.
     // Keep this library in a child process so stop/EOF can flush it even if the UI quits.
     static func run(framework: URL, cache: URL, storage: URL, server: String, namespace: String,
-                    prepare: (() throws -> Void)? = nil) throws {
+                    prepare: (() throws -> Void)? = nil, diagnostic: ((String) -> Void)? = nil) throws {
         guard checkedContents(framework, hash: reviewedHash, limit: 64 * 1024 * 1024) != nil else { throw Self.version }
-        guard let library = dlopen(framework.path, RTLD_NOW | RTLD_LOCAL),
-              let startSymbol = dlsym(library, "libblip_host"), let stopSymbol = dlsym(library, "libblip_host_stop") else { throw Self.launch }
+        let support = supportLibrary(beside: framework)
+        guard checkedContents(support, hash: supportHash, limit: 1024 * 1024) != nil else { throw Self.version }
+        // The vendor library has an @rpath dependency on this Swift compatibility library.
+        guard dlopen(support.path, RTLD_NOW | RTLD_GLOBAL) != nil,
+              let library = dlopen(framework.path, RTLD_NOW | RTLD_LOCAL),
+              let startSymbol = dlsym(library, "libblip_host"), let stopSymbol = dlsym(library, "libblip_host_stop") else {
+            if let detail = dlerror() { diagnostic?(String(cString: detail)) }
+            throw Self.launch
+        }
         typealias CString = UnsafePointer<CChar>
         typealias Start = @convention(c) (Int32, CString, CString, CString, CString) -> Void
         typealias Stop = @convention(c) () -> Void

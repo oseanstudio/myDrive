@@ -14,13 +14,18 @@ typealias JSON = [String: Any]
         let storage = root.appendingPathComponent("storage", isDirectory: true)
         if args.count == 4 {
             try BlipMacEngine.run(framework: framework, cache: cache, storage: storage,
-                                  server: "https://127.0.0.1:9", namespace: namespace)
+                                  server: "https://127.0.0.1:9", namespace: namespace,
+                                  diagnostic: { FileHandle.standardError.write(Data(($0 + "\n").utf8)) })
             return
         }
         let fm = FileManager.default
         precondition(NSRunningApplication.runningApplications(withBundleIdentifier: BlipMacEngine.bundleID).isEmpty)
         let cached = root.appendingPathComponent("BlipKit")
         try fm.copyItem(at: framework, to: cached)
+        let support = BlipMacEngine.supportLibrary(beside: cached)
+        try fm.createDirectory(at: support.deletingLastPathComponent(), withIntermediateDirectories: false)
+        let app = (0..<6).reduce(framework) { path, _ in path.deletingLastPathComponent() }
+        try fm.copyItem(at: app.appendingPathComponent(BlipMacEngine.supportPath), to: support)
         try fm.createDirectory(at: cache, withIntermediateDirectories: true)
         try fm.createDirectory(at: storage, withIntermediateDirectories: true)
         func start() throws -> (Process, Pipe) {
