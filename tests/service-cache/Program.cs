@@ -31,20 +31,35 @@ if(args.Contains("--test"))
     using var cancelled=new CancellationTokenSource();cancelled.Cancel();
     try{await SyncthingService.Call("pause",token:cancelled.Token);throw new Exception("Expected cancellation");}catch(OperationCanceledException){}
     Check(File.ReadAllLines(Path.Combine(fixture,"calls.txt")).Length==before,"early cancellation does not start a request");
-    await SyncthingService.KeepRunningAsync();
-    Check(Count("engine.ensure")==6,"background health check verifies the engine even with a fresh cached connection");
-    Preferences.Current.SyncthingManual=true;await SyncthingService.KeepRunningAsync();
-    Check(Count("engine.ensure")==6,"background supervisor respects an explicitly managed manual connection");
+    Preferences.Current.SyncthingManual=true;
+    Preferences.Current.SyncthingEndpoint="http://127.0.0.1:1";
+    await SyncthingService.Call("snapshot");
+    Check(Count("engine.ensure")==5,"manual mode never sends a start request");
+    Check(Count("engine.closed")==1,"switching to manual mode closes the automatic engine session");
+    await SyncthingService.StopAsync();
     Console.WriteLine("Fixture: "+fixture);
     return;
 }
 if(fixture==null)throw new Exception("Run this test helper with --test.");
-using(var request=JsonDocument.Parse(await Console.In.ReadToEndAsync()))
+if(args.Contains("--syncthing-owner"))
 {
-    var action=request.RootElement.GetProperty("action").GetString()!;
+    while(await Console.In.ReadLineAsync() is {} line) Reply(line,"engine.ensure");
+    Log("engine.closed");
+}
+else Reply(await Console.In.ReadToEndAsync());
+
+void Log(string action)
+{
     // File writes from independent children are protected by a named mutex.
     using var mutex=new Mutex(false,"Local\\myDrive-cache-test-"+Path.GetFileName(fixture));
-    mutex.WaitOne();try{File.AppendAllText(Path.Combine(fixture,"calls.txt"),action+"\n");}finally{mutex.ReleaseMutex();}
+    mutex.WaitOne();try{File.AppendAllText(Path.Combine(fixture!,"calls.txt"),action+"\n");}finally{mutex.ReleaseMutex();}
+}
+
+void Reply(string input,string? serviceAction=null)
+{
+    using var request=JsonDocument.Parse(input);
+    var action=serviceAction??request.RootElement.GetProperty("action").GetString()!;
+    Log(action);
     if(request.RootElement.TryGetProperty("payload",out var payload)&&payload.TryGetProperty("fail",out var fail)&&fail.GetBoolean())
         Console.WriteLine("{\"ok\":false,\"error\":\"simulated uncertain mutation\"}");
     else if(action=="engine.ensure")

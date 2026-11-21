@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.Json;
 using System.Xml;
 using System.Xml.Linq;
@@ -6,6 +7,9 @@ public static class SyncthingService
 {
     public sealed record Connection(string endpoint,string api_key,string certificate_pem);
     private static readonly SemaphoreSlim EngineLock=new(1,1);
+    private static readonly object OwnerGate=new();
+    private static Process? owner;
+    private static bool stopping;
     private static Connection? cachedConnection;
     private static string cachedConfig="";
     private static DateTime cacheUntil;
@@ -16,18 +20,62 @@ public static class SyncthingService
         string Stamp(string file){if(string.IsNullOrEmpty(file))return "missing";var info=new FileInfo(file);return info.Exists?$"{info.Length}:{info.LastWriteTimeUtc.Ticks}":"missing";}
         return path+"|"+Stamp(path)+"|"+Stamp(Path.Combine(Path.GetDirectoryName(path)??"","https-cert.pem"));
     }
-    public static async Task KeepRunningAsync(CancellationToken token=default){if(!Preferences.Current.SyncthingManual)await EnsureRunning(token,true);}
-    private static async Task<Connection> EnsureRunning(CancellationToken token,bool verify=false)
+    public static async Task StopAsync(bool quit=true)
+    {
+        Process? process;
+        lock(OwnerGate)
+        {
+            if(quit)stopping=true;
+            process=owner;
+            owner=null;
+            if(process!=null)try{process.StandardInput.Close();}catch(IOException){}
+        }
+        Invalidate();
+        if(process==null)return;
+        try{await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(6));}
+        catch(TimeoutException){} // The closed pipe still ends the session after startup.
+        finally{process.Dispose();}
+    }
+
+    private static async Task<JsonElement> RequestOwner()
+    {
+        Process process;
+        lock(OwnerGate)
+        {
+            if(stopping)throw new OperationCanceledException();
+            if(owner==null||owner.HasExited)
+            {
+                owner?.Dispose();
+                var start=new ProcessStartInfo(Path.Combine(AppContext.BaseDirectory,"mydrive-core.exe"))
+                {
+                    UseShellExecute=false,CreateNoWindow=true,RedirectStandardInput=true,
+                    RedirectStandardOutput=true,StandardOutputEncoding=System.Text.Encoding.UTF8,
+                    StandardInputEncoding=new System.Text.UTF8Encoding(false)
+                };
+                start.ArgumentList.Add("--syncthing-owner");
+                owner=Process.Start(start)??throw new IOException("Could not start the myDrive Syncthing service.");
+            }
+            process=owner;
+            process.StandardInput.WriteLine(JsonSerializer.Serialize(new{data_dir=CoreBridge.DataDir,payload=new{config_path=Preferences.Current.SyncthingConfigPath}}));
+        }
+        var line=await process.StandardOutput.ReadLineAsync();
+        if(line==null)throw new IOException("The myDrive Syncthing service stopped. Refresh Sync to reconnect.");
+        using var doc=JsonDocument.Parse(line);
+        if(!doc.RootElement.GetProperty("ok").GetBoolean())throw new IOException(doc.RootElement.GetProperty("error").GetString());
+        return doc.RootElement.GetProperty("data").Clone();
+    }
+
+    private static async Task<Connection> EnsureRunning(CancellationToken token)
     {
         // Manual endpoints are explicit connections; never start an unrelated default engine.
-        if(Preferences.Current.SyncthingManual)return Discover();
+        if(Preferences.Current.SyncthingManual){await StopAsync(false);return Discover();}
         await EngineLock.WaitAsync(token);
         try
         {
             var stamp=ConfigStamp();
-            if(!verify&&cachedConnection is {} cached&&cachedConfig==stamp&&DateTime.UtcNow<cacheUntil)return cached;
-            // Do not kill the detached engine when a UI operation is cancelled.
-            var result=await CoreBridge.Call(new{action="engine.ensure",data_dir=CoreBridge.DataDir,payload=new{config_path=Preferences.Current.SyncthingConfigPath}});
+            if(cachedConnection is {} cached&&cachedConfig==stamp&&DateTime.UtcNow<cacheUntil)return cached;
+            token.ThrowIfCancellationRequested();
+            var result=await RequestOwner();
             token.ThrowIfCancellationRequested();
             var connection=result.GetProperty("connection").Deserialize<Connection>()??throw new IOException("Cannot read the background engine connection.");
             if(stamp==ConfigStamp()){cachedConnection=connection;cachedConfig=stamp;cacheUntil=DateTime.UtcNow.AddMinutes(5);}

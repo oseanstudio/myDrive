@@ -1,4 +1,4 @@
-use crate::syncthing;
+use crate::{syncthing, syncthing_engine};
 use serde_json::{json, Map, Value};
 use std::{
     env,
@@ -166,13 +166,14 @@ pub fn cli(command: OsString, arguments: impl Iterator<Item = OsString>) -> Resu
 }
 
 pub fn run(tool: &Tool, arguments: &Value) -> Result<Value, String> {
-    run_with_host(tool, arguments, None)
+    run_with_hosts(tool, arguments, None, &mut syncthing_engine::Owner::default())
 }
 
-pub fn run_with_host(
+pub fn run_with_hosts(
     tool: &Tool,
     arguments: &Value,
     host: Option<&mut BlipHost>,
+    sync: &mut syncthing_engine::Owner,
 ) -> Result<Value, String> {
     let fields = arguments
         .as_object()
@@ -216,7 +217,7 @@ pub fn run_with_host(
             }
             blip_action(tool.command, arguments)
         }
-        "sync" => sync_action(tool.command, arguments),
+        "sync" => sync_action(sync, tool.command, arguments),
         "smb" => smb_action(tool.command, arguments),
         _ => Err("Unknown tool.".into()),
     }
@@ -257,7 +258,7 @@ fn binary_dir() -> Result<PathBuf, String> {
         .ok_or_else(|| "Could not locate the myDrive helpers.".into())
 }
 
-pub(crate) fn sync_action(command: &str, arguments: &Value) -> Result<Value, String> {
+fn sync_action(owner: &mut syncthing_engine::Owner, command: &str, arguments: &Value) -> Result<Value, String> {
     let data = user_data()?;
     let saved = preferences(&data);
     let path = env::var("MYDRIVE_SYNCTHING_CONFIG").ok().or_else(|| {
@@ -274,7 +275,7 @@ pub(crate) fn sync_action(command: &str, arguments: &Value) -> Result<Value, Str
                 .map(str::to_owned)
         })
     });
-    let connection = crate::syncthing_engine::ensure(&json!({"config_path": path}), &data)?;
+    let connection = owner.ensure(&json!({"config_path": path}), &data)?;
     let connection: syncthing::Connection =
         serde_json::from_value(connection["connection"].clone())
             .map_err(|_| "Invalid local Syncthing connection.")?;

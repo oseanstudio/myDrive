@@ -55,6 +55,7 @@ if [[ -n "${MYDRIVE_VERSION:-}" ]]; then
 fi
 printf '%s\n' '{"action":"version"}' | "$output" --core | python3 -c 'import json,sys; assert json.load(sys.stdin)["ok"]'
 node tests/automation-smoke.mjs "$output" --cli
+node tests/syncthing-owner.mjs "$output" --core
 fixture=$(mktemp -d /tmp/md-blip.XXXXXX)
 if ! MYDRIVE_BLIP_LIBRARY="$build/libblip-jni.so" XDG_RUNTIME_DIR="$fixture" \
         XDG_DATA_HOME="$fixture/data" timeout 25s "$output" --cli blip serve </dev/null; then

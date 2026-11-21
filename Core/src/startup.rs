@@ -105,19 +105,12 @@ fn run() -> Result<(), String> {
             .and_then(|file| file.modified().ok().map(|time| (time, file.len())))
     };
     let started = stamp();
-    let mut next_sync = Instant::now();
     let mut next_blip = Instant::now();
     while enabled()? {
         if started.is_some() && stamp().is_some_and(|current| Some(current) != started) {
             return Err("myDrive was updated. Restarting its startup service.".into());
         }
         let now = Instant::now();
-        if now >= next_sync {
-            if super::automation::sync_action("status", &json!({})).is_err() {
-                eprintln!("Syncthing is unavailable. myDrive will retry.");
-            }
-            next_sync = Instant::now() + Duration::from_secs(60);
-        }
         if now >= next_blip {
             if !super::automation::blip_background_enabled() {
                 blip.stop();

@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import tarfile
 import tempfile
+import threading
 import time
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
@@ -71,12 +72,43 @@ class Sync:
     def __init__(self):
         self.connection = None
         self.config_path = ""
+        self.owner = None
+        self.owner_lock = threading.Lock()
+        self.stopping = False
+
+    def stop(self):
+        with self.owner_lock:
+            self.stopping = True
+            if self.owner is not None:
+                self.owner.stdin.close()
+
+    def ensure(self):
+        with self.owner_lock:
+            if self.stopping:
+                raise RuntimeError("myDrive is closing.")
+            if self.owner is None or self.owner.poll() is not None:
+                if self.owner is not None:
+                    self.owner.stdin.close()
+                    self.owner.stdout.close()
+                binary = os.environ.get("MYDRIVE_CORE", str(ROOT / "mydrive-core"))
+                self.owner = subprocess.Popen([binary, "--syncthing-owner"],
+                                              stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                              encoding="utf-8")
+            owner = self.owner
+            owner.stdin.write(json.dumps({"data_dir": str(DATA), "payload": {"config_path": self.config_path}}) + "\n")
+            owner.stdin.flush()
+        line = owner.stdout.readline()
+        if not line:
+            raise RuntimeError("The myDrive Syncthing service stopped. Refresh Sync to reconnect.")
+        result = json.loads(line)
+        if not result.get("ok"):
+            raise RuntimeError(result["error"])
+        self.connection = result["data"]["connection"]
 
     def request(self, action, **payload):
         try:
             if self.connection is None:
-                details = core("engine.ensure", payload={"config_path": self.config_path})
-                self.connection = details["connection"]
+                self.ensure()
             return core(f"syncthing.{action}", syncthing=self.connection, payload=payload)
         except (OSError, RuntimeError, subprocess.SubprocessError):
             self.connection = None

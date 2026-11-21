@@ -57,9 +57,6 @@ fn execute(r: Request) -> Result<Value, String> {
     if let Some(action) = r.action.strip_prefix("relay.") {
         return relay::run(action, &r.payload, Path::new(&r.data_dir));
     }
-    if r.action == "engine.ensure" {
-        return syncthing_engine::ensure(&r.payload, Path::new(&r.data_dir));
-    }
     if r.action == "smb.connect" {
         #[cfg(windows)]
         {
@@ -192,6 +189,12 @@ fn main() {
         #[cfg(any(windows, target_os = "linux"))]
         if command == "--blip-engine" || (cfg!(windows) && command == "--windows-blip") {
             std::process::exit(blip::run(arguments));
+        }
+        if command == "--syncthing-owner" {
+            if let Err(error) = syncthing_engine::serve() {
+                eprintln!("{error}");
+            }
+            return;
         }
         if command == "--smb-health-probe" {
             std::process::exit(smb_health::probe_worker(arguments));

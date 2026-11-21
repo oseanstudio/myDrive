@@ -25,6 +25,12 @@ impl Api {
     pub fn available(c: &Connection) -> bool {
         Self::with_timeout(c, Duration::from_millis(750)).is_ok_and(|api| api.ping().is_ok())
     }
+    #[cfg(windows)]
+    pub(crate) fn shutdown_owned(c: &Connection) {
+        if let Ok(api) = Self::with_timeout(c, Duration::from_millis(750)) {
+            let _ = api.call("POST", &["rest", "system", "shutdown"], &[], None);
+        }
+    }
     fn with_timeout(c: &Connection, timeout: Duration) -> Result<Self, String> {
         let base =
             Url::parse(&c.endpoint).map_err(|_| "Enter a valid local Syncthing API address.")?;

@@ -18,6 +18,8 @@ final class SyncthingService {
     private(set) var connection: SyncthingConnection?
     private(set) var discoveryError: String?
     private var discovered = false
+    private let engine = SyncthingOwner()
+    private var stopping = false
     private var ensuring: Task<SyncthingConnection, Error>?
     private var ensuringID = UUID()
     private var ensuringStamp = ""
@@ -108,8 +110,6 @@ final class SyncthingService {
         return candidates.first { FileManager.default.fileExists(atPath: $0) }
     }
 
-    private var lastEngineContact = Date.distantPast
-
     func call(_ action: String, payload: JSON = [:], timeout: TimeInterval = 45) async throws -> Any? {
         let connection = try await ensureRunning()
         do {
@@ -118,7 +118,6 @@ final class SyncthingService {
                                                           "payload": payload,
                                                           "data_dir": Paths.dataDir.path],
                                                 timeout: timeout)
-            lastEngineContact = Date()
             return response
         }
         catch {
@@ -127,21 +126,21 @@ final class SyncthingService {
         }
     }
 
-    func checkBackgroundEngine() async {
-        guard !PrefStore.shared.preferences.syncthingManual, ensuring == nil,
-              Date().timeIntervalSince(lastEngineContact) >= 60 else { return }
-        lastEngineContact = Date()
-        _ = try? await ensureRunning(checkHealth: true)
+    func stop() {
+        stopping = true
+        engine.stop()
     }
 
-    private func ensureRunning(checkHealth: Bool = false) async throws -> SyncthingConnection {
+    private func ensureRunning() async throws -> SyncthingConnection {
+        guard !stopping else { throw CancellationError() }
         if PrefStore.shared.preferences.syncthingManual {
+            engine.stop()
             discover()
             guard let connection else { throw CoreError(message: discoveryError ?? "Check the manual Syncthing connection.") }
             return connection
         }
         let stamp = configStamp()
-        if !checkHealth, let connection, stamp == cachedStamp, Date() < cacheUntil { return connection }
+        if let connection, stamp == cachedStamp, Date() < cacheUntil { return connection }
         if let ensuring {
             let previousID = ensuringID, previousStamp = ensuringStamp
             let c = try await ensuring.value
@@ -154,11 +153,7 @@ final class SyncthingService {
         }
         let configPath = PrefStore.shared.preferences.syncthingConfigPath
         let task = Task<SyncthingConnection, Error> {
-            guard let result = try await CoreBridge.shared.call(action: "engine.ensure",
-                request: ["data_dir": Paths.dataDir.path, "payload": ["config_path": configPath]],
-                timeout: 180) as? JSON else {
-                throw CoreError(message: "Cannot read the background engine connection.")
-            }
+            let result = try await engine.ensure(configPath: configPath)
             let c = result.dict("connection")
             return SyncthingConnection(endpoint: c.str("endpoint"), apiKey: c.str("api_key"),
                                        certificatePem: c.str("certificate_pem"))
@@ -184,6 +179,59 @@ final class SyncthingService {
             throw CoreError(message: "Syncthing returned an empty status.")
         }
         return Snapshot(from: raw)
+    }
+}
+
+@MainActor
+private final class SyncthingOwner {
+    private var process: Process?
+    private var input: FileHandle?
+    private var output: FileHandle?
+
+    func stop() {
+        try? input?.close()
+        input = nil
+        output = nil
+        process = nil
+    }
+
+    func ensure(configPath: String) async throws -> JSON {
+        if process?.isRunning != true {
+            stop()
+            let child = Process()
+            let stdin = Pipe(), stdout = Pipe()
+            child.executableURL = CoreBridge.shared.executable
+            child.arguments = ["--syncthing-owner"]
+            child.standardInput = stdin
+            child.standardOutput = stdout
+            child.standardError = FileHandle.nullDevice
+            try child.run()
+            process = child
+            input = stdin.fileHandleForWriting
+            output = stdout.fileHandleForReading
+        }
+        guard let input, let output else { throw CancellationError() }
+        var request = try JSONSerialization.data(withJSONObject: [
+            "data_dir": Paths.dataDir.path, "payload": ["config_path": configPath]
+        ])
+        request.append(10)
+        try input.write(contentsOf: request)
+        let data: Data = try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                var response = Data()
+                while case let part = output.availableData, !part.isEmpty {
+                    response.append(part)
+                    if response.last == 10 {
+                        continuation.resume(returning: response)
+                        return
+                    }
+                }
+                continuation.resume(throwing: CoreError(message: "The myDrive Syncthing service stopped. Refresh Sync to reconnect."))
+            }
+        }
+        let response = try JSONSerialization.jsonObject(with: data) as? JSON ?? [:]
+        guard response.bool("ok") else { throw CoreError(message: response.str("error")) }
+        return response.dict("data")
     }
 }
 

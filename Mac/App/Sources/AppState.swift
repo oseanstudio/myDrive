@@ -286,7 +286,6 @@ final class AppState: ObservableObject {
             installAppUpdate(automatic: !manualUpdateRequested)
         }
         Task { await refreshIfStale() }
-        Task { await syncthing.checkBackgroundEngine() }
     }
 
     func checkForAppUpdate(showResult: Bool = false, onOpen: Bool = false) {
@@ -506,6 +505,7 @@ final class AppState: ObservableObject {
     func shutdown() {
         smbHosting.stop()
         blip.stop()
+        syncthing.stop()
         snapshotTask?.cancel(); eventsTask?.cancel(); busy?.task.cancel()
         log.flush()
     }

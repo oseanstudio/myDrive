@@ -30,6 +30,7 @@ struct Session {
     negotiated: bool,
     initialized: bool,
     blip: automation::BlipHost,
+    sync: crate::syncthing_engine::Owner,
 }
 
 fn error(id: &Value, code: i64, message: &str) -> Value {
@@ -83,7 +84,7 @@ impl Session {
                 };
                 let empty = json!({});
                 let arguments = params.get("arguments").unwrap_or(&empty);
-                let result = automation::run_with_host(tool, arguments, Some(&mut self.blip));
+                let result = automation::run_with_hosts(tool, arguments, Some(&mut self.blip), &mut self.sync);
                 match result {
                     Ok(value) => {
                         json!({"content":[{"type":"text","text":value.to_string()}],"structuredContent":{"data":value}})

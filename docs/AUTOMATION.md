@@ -59,4 +59,6 @@ The server exposes the same operations under names such as `blip_devices`, `blip
 - On macOS, place myDrive in Applications and approve the administrator prompt for the LaunchDaemon. The service runs as your usual user.
 - On Linux, keep the AppImage at a permanent path. Setup enables your systemd user service and asks logind to keep it active between logins.
 
-The boot service keeps Syncthing and the signed-in Blip backend available. Encrypted home folders, an inaccessible Blip profile or a locked credential store can delay a service until its data is available. The desktop window and browser actions run in the signed-in session. Hosted SMB shares follow their current host-session lifetime.
+The boot service keeps the signed-in Blip backend available. Encrypted home folders, an inaccessible Blip profile or a locked credential store can delay a service until its data is available. The desktop window and browser actions run in the signed-in session. Hosted SMB shares follow their current host-session lifetime.
+
+The desktop app keeps Syncthing running while myDrive is open, including when its window is hidden. The first use downloads the engine if needed. One-off CLI sync commands release their engine when they finish, and an MCP session can keep its engine running until the session closes. An independently running Syncthing instance has its own lifetime.

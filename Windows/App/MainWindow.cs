@@ -162,7 +162,7 @@ public sealed partial class MainWindow : Window
         if(AppWindow.Size.Width!=width||AppWindow.Size.Height!=height)AppWindow.Resize(new(width,height));
         if(AppWindow.Position.X!=position.X||AppWindow.Position.Y!=position.Y)AppWindow.Move(position);
     }
-    private async void Quit(){if(quitting)return;quitting=true;await DiscardPreparedUpdate();blipLinks?.ResetSession();await blip.StopAsync();Close();Application.Current.Exit();}
+    private async void Quit(){if(quitting)return;quitting=true;await DiscardPreparedUpdate();blipLinks?.ResetSession();await Task.WhenAll(blip.StopAsync(),SyncthingService.StopAsync());Close();Application.Current.Exit();}
     private async Task Initialize()
     {
         try{bookmarks=await CoreBridge.Load();storageReady=true;var journal=Path.Combine(CoreBridge.DataDir,"activity.json");if(File.Exists(journal))try{activity=JsonSerializer.Deserialize<List<ActivityEntry>>(await File.ReadAllTextAsync(journal))??new();}catch{}status.Text="Ready · Credentials protected by Windows";RequestSmbCheck("periodic");Render();if(!diagnosticMode)_=RefreshSyncthing();}

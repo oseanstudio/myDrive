@@ -5,10 +5,14 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
     env, fs,
-    io::{Read, Write},
+    io::{self, BufRead, Read, Write},
     net::TcpStream,
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::{Child, Command, Stdio},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc, Arc,
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -100,46 +104,6 @@ fn executable_name() -> &'static str {
         "syncthing"
     }
 }
-fn binaries(data: &Path) -> Vec<PathBuf> {
-    let mut paths = Vec::new();
-    if cfg!(windows) {
-        if let Some(path) = env::var_os("APPDATA") {
-            paths.push(PathBuf::from(path).join("SyncTrayzor/syncthing.exe"));
-        }
-        if let Some(path) = env::var_os("LOCALAPPDATA") {
-            paths.push(PathBuf::from(&path).join("Microsoft/WinGet/Links/syncthing.exe"));
-            paths.push(PathBuf::from(path).join("Programs/SyncTrayzor/syncthing.exe"));
-        }
-        for var in ["ProgramFiles", "ProgramFiles(x86)"] {
-            if let Some(path) = env::var_os(var) {
-                paths.push(PathBuf::from(&path).join("SyncTrayzor/syncthing.exe"));
-                paths.push(PathBuf::from(path).join("Syncthing/syncthing.exe"));
-            }
-        }
-        paths.push(home().join("scoop/apps/syncthing/current/syncthing.exe"));
-    } else {
-        for root in [PathBuf::from("/Applications"), home().join("Applications")] {
-            for app in ["Syncthing.app", "syncthing.app"] {
-                for inner in [
-                    "Contents/Resources/syncthing/syncthing",
-                    "Contents/Resources/syncthing",
-                    "Contents/MacOS/syncthing",
-                ] {
-                    paths.push(root.join(app).join(inner));
-                }
-            }
-        }
-        for root in ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"] {
-            paths.push(Path::new(root).join("syncthing"));
-        }
-    }
-    if let Some(path) = env::var_os("PATH") {
-        paths.extend(env::split_paths(&path).map(|p| p.join(executable_name())));
-    }
-    paths.push(data.join("engine").join(executable_name()));
-    paths
-}
-
 fn quiet_command(binary: &Path) -> Command {
     let mut cmd = Command::new(binary);
     cmd.env_remove("MYDRIVE_SMB_USERNAME")
@@ -157,10 +121,27 @@ fn quiet_command(binary: &Path) -> Command {
 
 fn package() -> Result<(&'static str, &'static str), String> {
     match (env::consts::OS, env::consts::ARCH) {
-        ("windows", "x86_64") => Ok(("windows-amd64", "3ce7da770f546a8d02b65b2e7ee31f2a3b8b7c3f990ede045590cca4172ecfe1")),
-        ("macos", "aarch64") => Ok(("macos-arm64", "2df075b463231a307c91da657157beaed06383a941ba7ea04d33d536e3c4af38")),
-        ("macos", "x86_64") => Ok(("macos-amd64", "b8be90176d0f24daebae7b5aaddac52ebfae395df6d99f5e0e54656db00868cb")),
-        _ => Err("Automatic Syncthing installation supports Windows x64 and Mac Intel/Apple Silicon. Install Syncthing for this platform first.".into()),
+        ("windows", "x86_64") => Ok((
+            "windows-amd64",
+            "3ce7da770f546a8d02b65b2e7ee31f2a3b8b7c3f990ede045590cca4172ecfe1",
+        )),
+        ("macos", "aarch64") => Ok((
+            "macos-arm64",
+            "2df075b463231a307c91da657157beaed06383a941ba7ea04d33d536e3c4af38",
+        )),
+        ("macos", "x86_64") => Ok((
+            "macos-amd64",
+            "b8be90176d0f24daebae7b5aaddac52ebfae395df6d99f5e0e54656db00868cb",
+        )),
+        ("linux", "x86_64") => Ok((
+            "linux-amd64",
+            "2edc416e7ed136b7c858ed5f3f02a3b8316589605e54c380228ceea7acbf0142",
+        )),
+        ("linux", "aarch64") => Ok((
+            "linux-arm64",
+            "48e456690cd2b97e7d26b02b5ac35f62a3b36172267b144cfeaf02c993ab955c",
+        )),
+        _ => Err("This myDrive build has no Syncthing engine for this architecture.".into()),
     }
 }
 fn verify(bytes: &[u8], expected: &str) -> Result<(), String> {
@@ -174,8 +155,14 @@ fn verify(bytes: &[u8], expected: &str) -> Result<(), String> {
 fn install(data: &Path) -> Result<PathBuf, String> {
     let (platform, digest) = package()?;
     let stem = format!("syncthing-{platform}-{VERSION}");
-    let url =
-        format!("https://github.com/syncthing/syncthing/releases/download/{VERSION}/{stem}.zip");
+    let extension = if cfg!(target_os = "linux") {
+        "tar.gz"
+    } else {
+        "zip"
+    };
+    let url = format!(
+        "https://github.com/syncthing/syncthing/releases/download/{VERSION}/{stem}.{extension}"
+    );
     let client = reqwest::blocking::Client::builder()
         .https_only(true)
         .timeout(Duration::from_secs(120))
@@ -255,253 +242,395 @@ fn response(c: Connection, path: &Path, state: &str, binary: Option<&Path>) -> V
     json!({"connection": c, "config_path": path, "state": state, "binary_path": binary})
 }
 
+/// Lives as long as the desktop app or the active headless session.
+#[derive(Default)]
+pub struct Owner {
+    owned: Option<OwnedEngine>,
+    selected: Option<PathBuf>,
+    closed: Option<Arc<AtomicBool>>,
+}
+
+struct OwnedEngine {
+    child: Child,
+    config: PathBuf,
+    binary: PathBuf,
+    connected: bool,
+    #[cfg(windows)]
+    _job: windows_job::Job,
+}
+
 #[cfg(windows)]
-fn detached(
-    binary: &Path,
-    args: &[String],
-    working_dir: &Path,
-) -> Result<Option<std::process::Child>, String> {
-    use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::{Foundation::CloseHandle, System::Threading::*};
-    // Redirected sidecar pipes must never be inherited by the long-lived daemon.
-    // bInheritHandles=false is deliberate: Go's monitor would otherwise keep
-    // a request pipe open after the core exits, deadlocking the native bridge.
-    fn quote(s: &str) -> String {
-        let mut out = String::from("\"");
-        let mut slashes = 0;
-        for c in s.chars() {
-            if c == '\\' {
-                slashes += 1;
+mod windows_job {
+    use std::{io, mem::size_of, os::windows::io::AsRawHandle, process::Child, ptr};
+    use windows_sys::Win32::{
+        Foundation::{CloseHandle, HANDLE},
+        System::JobObjects::{
+            AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+            SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        },
+    };
+
+    pub struct Job(HANDLE);
+
+    impl Job {
+        pub fn new() -> io::Result<Self> {
+            let handle = unsafe { CreateJobObjectW(ptr::null(), ptr::null()) };
+            if handle.is_null() {
+                return Err(io::Error::last_os_error());
+            }
+            let job = Self(handle);
+            let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            let result = unsafe {
+                SetInformationJobObject(
+                    handle,
+                    JobObjectExtendedLimitInformation,
+                    (&limits as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
+                    size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+                )
+            };
+            if result == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(job)
+        }
+
+        pub fn attach(&self, child: &Child) -> io::Result<()> {
+            if unsafe { AssignProcessToJobObject(self.0, child.as_raw_handle()) } == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        }
+    }
+
+    impl Drop for Job {
+        fn drop(&mut self) {
+            unsafe {
+                CloseHandle(self.0);
+            }
+        }
+    }
+}
+
+impl Drop for OwnedEngine {
+    fn drop(&mut self) {
+        if !matches!(self.child.try_wait(), Ok(None)) {
+            return;
+        }
+        #[cfg(unix)]
+        unsafe {
+            // An unreaped child PID stays reserved until try_wait or wait reaps it.
+            libc::kill(self.child.id() as libc::pid_t, libc::SIGTERM);
+        }
+        #[cfg(windows)]
+        if self.connected {
+            if let Ok(connection) = connection(&self.config) {
+                Api::shutdown_owned(&connection);
+            }
+        }
+        let deadline = Instant::now() + Duration::from_secs(4);
+        while Instant::now() < deadline {
+            if !matches!(self.child.try_wait(), Ok(None)) {
+                return;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+        // The Syncthing monitor and worker share a private group on Unix.
+        #[cfg(unix)]
+        unsafe {
+            libc::kill(-(self.child.id() as libc::pid_t), libc::SIGKILL);
+        }
+        #[cfg(windows)]
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+pub fn serve() -> io::Result<()> {
+    let (sender, receiver) = mpsc::sync_channel(1);
+    let closed = Arc::new(AtomicBool::new(false));
+    let finished = Arc::clone(&closed);
+    thread::spawn(move || {
+        let mut input = io::stdin().lock();
+        loop {
+            let mut line = Vec::new();
+            match (&mut input)
+                .take(1024 * 1024 + 1)
+                .read_until(b'\n', &mut line)
+            {
+                Ok(count) if (1..=1024 * 1024).contains(&count) => {}
+                _ => break,
+            }
+            if sender.send(serde_json::from_slice::<Value>(&line)).is_err() {
+                break;
+            }
+        }
+        finished.store(true, Ordering::Release);
+    });
+    let mut owner = Owner {
+        closed: Some(closed),
+        ..Owner::default()
+    };
+    let mut last_request: Option<Value> = None;
+    let mut output = io::stdout().lock();
+    loop {
+        let result = match receiver.recv_timeout(Duration::from_secs(30)) {
+            Ok(Ok(request)) => {
+                let result = owner.handle(&request);
+                last_request = Some(request);
+                result
+            }
+            Ok(Err(_)) => Err("Invalid Syncthing request.".to_owned()),
+            Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(()),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                // Owned engines need only a process check. An attached external
+                // instance needs a loopback probe to detect when it closes.
+                if let Some(request) = &last_request {
+                    let alive = owner
+                        .owned
+                        .as_mut()
+                        .is_some_and(|engine| matches!(engine.child.try_wait(), Ok(None)));
+                    if !alive {
+                        let _ = owner.handle(request);
+                    }
+                }
                 continue;
             }
-            out.extend(std::iter::repeat_n(
-                '\\',
-                if c == '"' { slashes * 2 + 1 } else { slashes },
-            ));
-            slashes = 0;
-            out.push(c);
-        }
-        out.extend(std::iter::repeat_n('\\', slashes * 2));
-        out.push('"');
-        out
-    }
-    let app: Vec<u16> = binary.as_os_str().encode_wide().chain(Some(0)).collect();
-    let cwd: Vec<u16> = working_dir
-        .as_os_str()
-        .encode_wide()
-        .chain(Some(0))
-        .collect();
-    let line = std::iter::once(binary.to_string_lossy().into_owned())
-        .chain(args.iter().cloned())
-        .map(|a| quote(&a))
-        .collect::<Vec<_>>()
-        .join(" ");
-    let mut line: Vec<u16> = line.encode_utf16().chain(Some(0)).collect();
-    unsafe {
-        let mut startup: STARTUPINFOW = std::mem::zeroed();
-        startup.cb = std::mem::size_of::<STARTUPINFOW>() as u32;
-        let mut info: PROCESS_INFORMATION = std::mem::zeroed();
-        if CreateProcessW(
-            app.as_ptr(),
-            line.as_mut_ptr(),
-            std::ptr::null(),
-            std::ptr::null(),
-            0,
-            CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP,
-            std::ptr::null(),
-            cwd.as_ptr(),
-            &startup,
-            &mut info,
-        ) == 0
-        {
-            return Err(
-                "Could not start the installed Syncthing engine. Check its executable permissions."
-                    .into(),
-            );
-        }
-        CloseHandle(info.hThread);
-        CloseHandle(info.hProcess);
-    }
-    Ok(None)
-}
-
-#[cfg(not(windows))]
-fn detached(
-    binary: &Path,
-    args: &[String],
-    working_dir: &Path,
-) -> Result<Option<std::process::Child>, String> {
-    use std::os::unix::process::CommandExt;
-    quiet_command(binary)
-        .args(args)
-        .current_dir(working_dir)
-        .process_group(0)
-        .spawn()
-        .map(Some)
-        .map_err(|_| {
-            "Could not start the installed Syncthing engine. Check its executable permissions."
-                .into()
-        })
-}
-
-pub fn ensure(payload: &Value, data: &Path) -> Result<Value, String> {
-    if !data.is_absolute() {
-        return Err("An absolute myDrive data directory is required.".into());
-    }
-    fs::create_dir_all(data).map_err(|e| e.to_string())?;
-    let lock = fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(data.join("syncthing-engine.lock"))
-        .map_err(|e| e.to_string())?;
-    let deadline = Instant::now() + Duration::from_secs(150);
-    while lock.try_lock().is_err() {
-        if Instant::now() > deadline {
-            return Err("Syncthing setup is already in progress. Try again shortly.".into());
-        }
-        thread::sleep(Duration::from_millis(200));
-    }
-    let explicit = payload["config_path"].as_str().filter(|s| !s.is_empty());
-    let candidates = configs();
-    let path = if let Some(explicit) = explicit {
-        let path = PathBuf::from(explicit);
-        if !path.is_absolute() {
-            return Err("Choose an absolute Syncthing config.xml path.".into());
-        }
-        if !path.is_file() {
-            return Err(
-                "The selected Syncthing config.xml is missing. Choose it again in Sync settings."
-                    .into(),
-            );
-        }
-        path
-    } else {
-        // Prefer an authenticated running instance among known configurations.
-        for path in &candidates {
-            if let Some(c) = ready(path) {
-                return Ok(response(c, path, "running", None));
-            }
-        }
-        candidates
-            .iter()
-            .find(|p| p.is_file())
-            .cloned()
-            .or_else(|| candidates.first().cloned())
-            .ok_or("Cannot find the Syncthing configuration directory.")?
-    };
-    if let Some(c) = ready(&path) {
-        return Ok(response(c, &path, "running", None));
-    }
-    if path.is_file() {
-        let c = connection(&path)?;
-        if listening(&c) {
-            // A listener may be starting up or have invalid auth/TLS. Never compete with it.
-            for _ in 0..20 {
-                if let Some(c) = ready(&path) {
-                    return Ok(response(c, &path, "running", None));
-                }
-                thread::sleep(Duration::from_millis(250));
-            }
-            return Err("Syncthing's API address is already in use, but myDrive cannot authenticate. Check the config, API key and HTTPS certificate in Sync settings.".into());
-        }
-    }
-    let supplied = payload["binary_path"]
-        .as_str()
-        .filter(|s| !s.is_empty())
-        .map(PathBuf::from);
-    let existing = supplied.or_else(|| binaries(data).into_iter().find(|p| p.is_file()));
-    let installed = existing.is_none();
-    let binary = match existing {
-        Some(p) => p,
-        None => install(data)?,
-    };
-    let dir = path
-        .parent()
-        .ok_or("Invalid Syncthing configuration path.")?;
-    if !path.exists() {
-        fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-        let status = quiet_command(&binary)
-            .args(["generate", "--home"])
-            .arg(dir)
-            .env("STNODEFAULTFOLDER", "1")
-            .status()
-            .map_err(|_| "Cannot generate the Syncthing configuration.")?;
-        if !status.success() {
-            return Err("Syncthing could not generate its configuration.".into());
-        }
-    }
-    connection(&path)?;
-    // Respect separate default database paths when the installed engine reports them.
-    let mut paths_cmd = quiet_command(&binary);
-    let reported = paths_cmd.arg("paths").stdout(Stdio::piped()).output().ok();
-    let mut db_dir = dir.to_path_buf();
-    if let Some(output) = reported {
-        let text = String::from_utf8_lossy(&output.stdout);
-        let lines: Vec<_> = text.lines().collect();
-        let value = |label: &str| {
-            lines
-                .iter()
-                .position(|l| l.trim() == label)
-                .and_then(|i| lines.get(i + 1))
-                .map(|s| PathBuf::from(s.trim()))
         };
-        if value("Configuration file:").as_deref() == Some(path.as_path()) {
-            if let Some(db) = value("Database location:") {
-                if let Some(parent) = db.parent() {
-                    db_dir = parent.to_path_buf();
-                }
+        let response = match result {
+            Ok(data) => json!({"ok": true, "data": data}),
+            Err(error) => json!({"ok": false, "error": error}),
+        };
+        writeln!(output, "{response}")?;
+        output.flush()?;
+    }
+}
+
+impl Owner {
+    fn handle(&mut self, request: &Value) -> Result<Value, String> {
+        self.ensure(
+            &request["payload"],
+            Path::new(request["data_dir"].as_str().unwrap_or_default()),
+        )
+    }
+
+    fn check_open(&self) -> Result<(), String> {
+        if self
+            .closed
+            .as_ref()
+            .is_some_and(|closed| closed.load(Ordering::Acquire))
+        {
+            return Err("myDrive is closing.".into());
+        }
+        Ok(())
+    }
+
+    pub fn ensure(&mut self, payload: &Value, data: &Path) -> Result<Value, String> {
+        self.check_open()?;
+        if !data.is_absolute() {
+            return Err("An absolute myDrive data directory is required.".into());
+        }
+        fs::create_dir_all(data).map_err(|e| e.to_string())?;
+        let lock = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(data.join("syncthing-engine.lock"))
+            .map_err(|e| e.to_string())?;
+        let deadline = Instant::now() + Duration::from_secs(150);
+        while lock.try_lock().is_err() {
+            self.check_open()?;
+            if Instant::now() > deadline {
+                return Err("Syncthing setup is already in progress. Try again shortly.".into());
+            }
+            thread::sleep(Duration::from_millis(200));
+        }
+        let explicit = payload["config_path"].as_str().filter(|s| !s.is_empty());
+        let candidates = configs();
+        let path = if let Some(explicit) = explicit {
+            let path = PathBuf::from(explicit);
+            if !path.is_absolute() || path.file_name().is_none_or(|n| n != "config.xml") {
+                return Err("Choose an absolute Syncthing config.xml path.".into());
+            }
+            if !path.is_file() {
+                return Err("The selected Syncthing config.xml is missing. Choose it again in Sync settings.".into());
+            }
+            path
+        } else if let Some(path) = self.selected.as_ref().filter(|p| p.is_file()) {
+            // Keep using the same profile when the official app closes.
+            path.clone()
+        } else {
+            candidates
+                .iter()
+                .find(|p| ready(p).is_some())
+                .or_else(|| candidates.iter().find(|p| p.is_file()))
+                .cloned()
+                .or_else(|| candidates.into_iter().find(|p| p.is_absolute()))
+                .ok_or("Cannot find the Syncthing configuration directory.")?
+        };
+        self.selected = Some(path.clone());
+        if let Some(engine) = &mut self.owned {
+            if engine.config != path || !matches!(engine.child.try_wait(), Ok(None)) {
+                self.owned = None;
             }
         }
-    }
-    let args = vec![
-        "serve".into(),
-        "--config".into(),
-        dir.to_string_lossy().into_owned(),
-        "--data".into(),
-        db_dir.to_string_lossy().into_owned(),
-        "--no-browser".into(),
-        format!("--log-file={}", data.join("syncthing-engine.log").display()),
-    ];
-    // Windows console suppression must also reach Syncthing's monitor/worker.
-    // CREATE_NO_WINDOW cannot be combined with DETACHED_PROCESS (Windows ignores it).
-    #[cfg(windows)]
-    let args = {
-        let mut args = args;
-        args.push("--no-console".into());
-        args
-    };
-    // Use a stable app-data directory, not a removable build/installer directory.
-    let mut child = detached(&binary, &args, data)?;
-    for _ in 0..120 {
         if let Some(c) = ready(&path) {
             return Ok(response(
                 c,
                 &path,
-                if installed { "installed" } else { "started" },
-                Some(&binary),
+                "running",
+                self.owned.as_ref().map(|e| e.binary.as_path()),
             ));
         }
-        if child
-            .as_mut()
-            .map(|child| child.try_wait())
-            .transpose()
-            .map_err(|e| e.to_string())?
-            .flatten()
-            .is_some()
-        {
-            // A competing wrapper may have won the native Syncthing config lock.
-            if let Some(c) = ready(&path) {
-                return Ok(response(c, &path, "running", None));
-            }
-            return Err("Syncthing stopped during startup. Check syncthing-engine.log in myDrive's data folder; no existing folders or devices were reset.".into());
+        if self.owned.is_some() {
+            return Err("Syncthing is running but its local API is temporarily unavailable. Try again shortly.".into());
         }
-        thread::sleep(Duration::from_millis(250));
+        if path.is_file() {
+            let c = connection(&path)?;
+            if listening(&c) {
+                // A listener may be starting up or have invalid auth/TLS. Never compete with it.
+                for _ in 0..20 {
+                    if let Some(c) = ready(&path) {
+                        return Ok(response(c, &path, "running", None));
+                    }
+                    thread::sleep(Duration::from_millis(250));
+                }
+                return Err("Syncthing's API address is already in use, but myDrive cannot authenticate. Check the config, API key and HTTPS certificate in Sync settings.".into());
+            }
+        }
+        let supplied = payload["binary_path"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .map(PathBuf::from);
+        let cached = data.join("engine").join(executable_name());
+        let existing = supplied.or_else(|| cached.is_file().then_some(cached));
+        let installed = existing.is_none();
+        let binary = match existing {
+            Some(p) => p,
+            None => install(data)?,
+        };
+        self.check_open()?;
+        let dir = path
+            .parent()
+            .ok_or("Invalid Syncthing configuration path.")?;
+        if !path.exists() {
+            fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+            let status = quiet_command(&binary)
+                .args(["generate", "--home"])
+                .arg(dir)
+                .env_remove("STHOMEDIR")
+                .env_remove("STCONFDIR")
+                .env_remove("STDATADIR")
+                .env("STNODEFAULTFOLDER", "1")
+                .status()
+                .map_err(|_| "Cannot generate the Syncthing configuration.")?;
+            if !status.success() {
+                return Err("Syncthing could not generate its configuration.".into());
+            }
+        }
+        connection(&path)?;
+        // Respect separate default database paths when the installed engine reports them.
+        let mut paths_cmd = quiet_command(&binary);
+        let reported = paths_cmd.arg("paths").stdout(Stdio::piped()).output().ok();
+        let mut db_dir = dir.to_path_buf();
+        if let Some(output) = reported {
+            let text = String::from_utf8_lossy(&output.stdout);
+            let lines: Vec<_> = text.lines().collect();
+            let value = |label: &str| {
+                lines
+                    .iter()
+                    .position(|l| l.trim() == label)
+                    .and_then(|i| lines.get(i + 1))
+                    .map(|s| PathBuf::from(s.trim()))
+            };
+            if value("Configuration file:").as_deref() == Some(path.as_path()) {
+                if let Some(db) = value("Database location:") {
+                    if let Some(parent) = db.parent() {
+                        db_dir = parent.to_path_buf();
+                    }
+                }
+            }
+        }
+        self.check_open()?;
+        let mut command = quiet_command(&binary);
+        let log = fs::File::create(data.join("syncthing-engine.log")).map_err(|e| e.to_string())?;
+        let errors = log.try_clone().map_err(|e| e.to_string())?;
+        command
+            .arg("serve")
+            .arg("--config")
+            .arg(dir)
+            .arg("--data")
+            .arg(&db_dir)
+            .args(["--no-browser", "--no-restart", "--no-upgrade"])
+            .args(["--log-file=-", "--log-level=warn"])
+            .stdout(log)
+            .stderr(errors)
+            .env_remove("STHOMEDIR")
+            .env_remove("STCONFDIR")
+            .env_remove("STDATADIR")
+            .env_remove("STGUIADDRESS")
+            .env_remove("STGUIAPIKEY")
+            .env_remove("STMONITORED")
+            .current_dir(data);
+        #[cfg(windows)]
+        command.arg("--no-console");
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            command.process_group(0);
+        }
+        #[cfg(windows)]
+        let job = windows_job::Job::new()
+            .map_err(|e| format!("Could not create the Syncthing process group: {e}"))?;
+        let child = command.spawn().map_err(|_| {
+            "Could not start the myDrive Syncthing engine. Check its executable permissions."
+        })?;
+        let mut engine = OwnedEngine {
+            child,
+            config: path.clone(),
+            binary,
+            connected: false,
+            #[cfg(windows)]
+            _job: job,
+        };
+        #[cfg(windows)]
+        engine
+            ._job
+            .attach(&engine.child)
+            .map_err(|e| format!("Could not supervise the Syncthing process: {e}"))?;
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while Instant::now() < deadline {
+            if engine
+                .child
+                .try_wait()
+                .map_err(|e| e.to_string())?
+                .is_some()
+            {
+                // An external instance may have won Syncthing's native configuration lock.
+                if let Some(c) = ready(&path) {
+                    return Ok(response(c, &path, "running", None));
+                }
+                return Err("Syncthing stopped during startup. Check syncthing-engine.log in myDrive’s data folder.".into());
+            }
+            if let Some(c) = ready(&path) {
+                if matches!(engine.child.try_wait(), Ok(None)) {
+                    engine.connected = true;
+                    let result = response(
+                        c,
+                        &path,
+                        if installed { "installed" } else { "started" },
+                        Some(&engine.binary),
+                    );
+                    self.owned = Some(engine);
+                    return Ok(result);
+                }
+            }
+            self.check_open()?;
+            thread::sleep(Duration::from_millis(250));
+        }
+        Err("Syncthing did not become ready. Refresh Sync to retry.".into())
     }
-    Err(
-        "Syncthing is still starting. Refresh shortly; the background engine was left running."
-            .into(),
-    )
 }
 
 #[cfg(test)]

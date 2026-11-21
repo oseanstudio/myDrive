@@ -12,6 +12,8 @@ on:
       - 'Blip/**'
       - 'docs/BLIP.md'
       - 'tests/source-safety.mjs'
+      - 'tests/service-cache/**'
+      - 'tests/syncthing-owner.mjs'
       - '.github/workflows/desktop-release.yml'
       - '.github/workflows/macos-dmg.yml'
       - '.github/workflows/linux-appimage.yml'
@@ -54,6 +56,8 @@ jobs:
           persist-credentials: false
       - name: Check source safety
         run: node tests/source-safety.mjs .
+      - name: Test the Windows Syncthing connection cache
+        run: dotnet run --project tests/service-cache/ServiceCache.csproj -- --test
       - name: Test Blip polling without starting an extra helper
         shell: pwsh
         run: |
@@ -126,6 +130,8 @@ jobs:
             if (Test-Path -LiteralPath (Join-Path $directory $legacy)) { throw "Unexpected Windows Blip payload $legacy." }
           }
           node tests/automation-smoke.mjs (Join-Path $directory 'mydrive-cli.exe')
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          node tests/syncthing-owner.mjs $core
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           $shareHost = Join-Path $directory 'mydrive-smb-host.exe'
           $hostResult = '{"action":"list"}' | & $shareHost | ConvertFrom-Json

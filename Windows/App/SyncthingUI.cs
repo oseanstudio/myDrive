@@ -14,9 +14,7 @@ public sealed partial class MainWindow
     private string syncRenderedSignature="";
     private string SyncSignature()=>JsonSerializer.Serialize(new{syncFailure,version=syncSnapshot.HasValue?S(syncSnapshot.Value,"version"):"",folders=syncSnapshot.HasValue?Items(syncSnapshot.Value,"folders").ToArray():Array.Empty<JsonElement>(),devices=syncSnapshot.HasValue?Items(syncSnapshot.Value,"devices").Select(d=>new{id=S(d,"deviceID"),name=S(d,"name"),local=B(d,"is_local"),paused=B(d,"paused"),connected=d.TryGetProperty("connection",out var c)&&B(c,"connected")}).ToArray():null});
     private readonly DispatcherTimer syncTimer=new(){Interval=TimeSpan.FromSeconds(20)};
-    private System.Threading.Timer? syncEngineTimer;
-    private int syncEngineChecking;
-    private long lastSyncRefresh = -120_000, lastSyncSuccess = -60_000;
+    private long lastSyncRefresh = -120_000;
     private string syncSharePath=Preferences.Current.LastSyncFolder.Length>0?Preferences.Current.LastSyncFolder:SyncthingService.ProjectFolder();
     private string syncShareDevice=Preferences.Current.LastSyncDevice;
     private List<SyncRule> syncRules=new();
@@ -36,19 +34,12 @@ public sealed partial class MainWindow
             if(!diagnosticMode&&!busy&&modalDepth==0&&Environment.TickCount64-lastSyncRefresh>=interval)
                 await RefreshSyncthing();
         };syncTimer.Start();
-        syncEngineTimer=new System.Threading.Timer(async _=>{
-            if(diagnosticMode||quitting||Environment.TickCount64-Interlocked.Read(ref lastSyncSuccess)<60_000||
-                Interlocked.CompareExchange(ref syncEngineChecking,1,0)!=0)return;
-            try{await SyncthingService.KeepRunningAsync().ConfigureAwait(false);}
-            catch(Exception error){DispatcherQueue.TryEnqueue(()=>{if(!quitting){syncFailure=error.Message;UpdateProblemColors();}});}
-            finally{Volatile.Write(ref syncEngineChecking,0);}
-        },null,TimeSpan.Zero,TimeSpan.FromMinutes(1));
-        Closed+=(_,_)=>{syncTimer.Stop();syncEngineTimer?.Dispose();};
+        Closed+=(_,_)=>syncTimer.Stop();
     }
     private async Task RefreshSyncthing()
     {
         if(syncRefreshing)return;syncRefreshing=true;lastSyncRefresh=Environment.TickCount64;
-        try{using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(180));syncSnapshot=await SyncthingService.Call("snapshot",token:timeout.Token);syncFailure="";Interlocked.Exchange(ref lastSyncSuccess,Environment.TickCount64);}
+        try{using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(180));syncSnapshot=await SyncthingService.Call("snapshot",token:timeout.Token);syncFailure="";}
         catch(Exception e){syncFailure=e is OperationCanceledException?"Syncthing's status took too long to load. Try Refresh after its current scan.":e.Message;}
         finally{syncRefreshing=false;UpdateProblemColors();if(currentView=="sync"&&modalDepth==0&&AppWindow.IsVisible){if(compact&&RefreshQuickSyncControls())syncRenderedSignature=SyncSignature();else if(syncRenderedSignature!=SyncSignature())Render();}}
     }

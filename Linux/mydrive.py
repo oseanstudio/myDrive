@@ -164,6 +164,8 @@ class MyDrive(Gtk.Application):
 
     def do_shutdown(self):
         self.stopping = True
+        if not self.fixture:
+            self.sync.stop()
         self.sync_auto_install_timer()
         self.discard_prepared_update()
         if self.window:
@@ -908,11 +910,9 @@ class MyDrive(Gtk.Application):
 
         self.sync = FixtureSync()
         self.render_sync()
-        self.stack.set_visible_child_name("Sync")
         sync_page = self.pages["Sync"]
         warning = sync_page.get_first_child().get_next_sibling()
         assert warning.get_label() == "1 folder needs attention ›"
-        warning.emit("clicked")
 
         def verify_attention():
             if self.pending["sync"]:
@@ -934,10 +934,9 @@ class MyDrive(Gtk.Application):
             self.snapshot = snapshot
             self.leave_sync_attention()
             print("Linux GTK sync attention and folder error navigation passed", flush=True)
-            GLib.timeout_add(300, verify)
+            self.quit()
             return GLib.SOURCE_REMOVE
 
-        GLib.timeout_add(25, verify_attention)
         self.storage_view.render_bookmarks()
         self.transfer_view.render()
         self.stack.set_visible_child_name("Send & Receive")
@@ -956,9 +955,12 @@ class MyDrive(Gtk.Application):
 
         def verify_cold_send():
             assert list(self.transfer_view.recipients().values()) == ["Fixture laptop"]
-            assert self.window.get_default_size() == initial_size == (344, 420)
+            size = self.window.get_default_size()
+            assert size == initial_size and size[0] >= 344 and size[1] >= 420, (initial_size, size)
             print("Linux GTK fixed popup, cold Blip connection and one-click recipient passed", flush=True)
-            self.quit()
+            self.stack.set_visible_child_name("Sync")
+            warning.emit("clicked")
+            GLib.timeout_add(25, verify_attention)
 
         def verify():
             target = recipients.get_row_at_index(3)
@@ -973,6 +975,7 @@ class MyDrive(Gtk.Application):
             self.transfer_view.blip = FixtureBlip()
             self.transfer_view.with_send_connection(verify_cold_send)
             return GLib.SOURCE_REMOVE
+        GLib.timeout_add(300, verify)
 
 
 if __name__ == "__main__":

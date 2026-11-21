@@ -82,6 +82,7 @@ jobs:
           test ! -e "$MYDRIVE_BUILD_DIR/myDrive.app/Contents/Resources/project-root.txt"
           test -s "$MYDRIVE_BUILD_DIR/myDrive.app/Contents/Resources/ThirdPartyNotices.txt"
           node tests/automation-smoke.mjs "$MYDRIVE_BUILD_DIR/myDrive.app/Contents/MacOS/mydrive-cli"
+          node tests/syncthing-owner.mjs "$MYDRIVE_BUILD_DIR/myDrive.app/Contents/Resources/mydrive-core"
           file "$MYDRIVE_BUILD_DIR/myDrive.app/Contents/MacOS/myDrive"
           printf '%s\n' '{"action":"list"}' | "$MYDRIVE_BUILD_DIR/myDrive.app/Contents/MacOS/mydrive-smb-host" | grep -Fx '{}'
           otool -L "$MYDRIVE_BUILD_DIR/myDrive.app/Contents/Resources/mydrive-core"
