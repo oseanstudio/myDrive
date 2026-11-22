@@ -106,7 +106,8 @@ struct BlipRecentRecipient: Codable, Identifiable {
         guard !owner.isEmpty, let socket = BlipLocalRPC.socketURL() else { throw BlipRPCError.rejected }
         directoryRecipients = []
         let result = try await Task.detached(priority: .utility) {
-            try BlipLocalRPC.search(query, owner: owner, socket: socket)
+            let devices = try BlipLocalRPC.search(query, owner: owner, socket: socket)
+            return try JSONDecoder().decode([BlipPeer].self, from: JSONSerialization.data(withJSONObject: devices))
         }.value
         guard selfPeer == owner else { throw BlipRPCError.rejected }
         directoryRecipients = result

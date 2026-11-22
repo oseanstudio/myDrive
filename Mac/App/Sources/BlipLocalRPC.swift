@@ -5,13 +5,15 @@ import Foundation
 import Darwin
 
 enum BlipRPCError: LocalizedError {
-    case unavailable, invalid, rejected, limit
+    case unavailable, invalid, rejected, limit, searchInput, searchUnavailable
     var errorDescription: String? {
         switch self {
         case .unavailable: return "The Blip connection is unavailable. Refresh Send & Receive to try again."
         case .invalid: return "Blip returned an unsupported local response. Automatic actions are disabled."
         case .rejected: return "Blip did not confirm this request. Refresh before retrying."
         case .limit: return "Blip's local response exceeded its size or time limit."
+        case .searchInput: return "Enter a name or email address."
+        case .searchUnavailable: return "Blip search is unavailable. Try again in a moment."
         }
     }
 }
@@ -312,11 +314,11 @@ enum BlipLocalRPC {
         _ = try call(socket: socket, method: "/rpc.Service/Dispatch", body: BlipProto.field(1, event))
     }
 
-    static func search(_ query: String, owner: String, socket: URL) throws -> [BlipPeer] {
+    static func search(_ query: String, owner: String, socket: URL) throws -> [JSON] {
         let key = "6971d326-6e6d-4915-aed7-581eafa9b26d"
         guard (1...254).contains(query.unicodeScalars.count),
               query.rangeOfCharacter(from: .controlCharacters) == nil else {
-            throw BlipReceiverError.message("Enter a name or email address.")
+            throw BlipRPCError.searchInput
         }
         let id = BlipProto.string(1, key)
         try dispatch("AbandonSearch", id, socket: socket)
@@ -332,24 +334,25 @@ enum BlipLocalRPC {
                 if result.string(1) == query && result.number(2) == 2 { break }
                 if result.string(1) == query && result.number(2) == 3 {
                     let snapshot = try Self.snapshot(response)
-                    let status = snapshot.dict("status")
-                    guard status.bool("authenticated"), status.str("user_id") + ":" + status.str("device_id") == owner
+                    let status = snapshot["status"] as? JSON ?? [:]
+                    guard status["authenticated"] as? Bool == true,
+                          let user = status["user_id"] as? String, let device = status["device_id"] as? String,
+                          user + ":" + device == owner
                     else { throw BlipRPCError.rejected }
                     let matches = try result.messages(3) + result.messages(4)
                     let users = Set(matches.filter { $0.string(2).isEmpty }.map { $0.string(1).lowercased() })
-                    let peers = Set(matches.map { ($0.string(1) + ":" + $0.string(2)).lowercased() }.filter(BlipPolicy.exactPeer))
-                    let devices = snapshot.array("devices").filter { device in
-                        let peer = device.str("peer").lowercased()
+                    let peers = Set(matches.map { ($0.string(1) + ":" + $0.string(2)).lowercased() })
+                    return (snapshot["devices"] as? [JSON] ?? []).filter { device in
+                        let peer = (device["peer"] as? String ?? "").lowercased()
                         let user = peer.split(separator: ":").first.map(String.init) ?? ""
-                        return !device.bool("history") && peer != owner.lowercased() &&
+                        return device["history"] as? Bool == false && peer != owner.lowercased() &&
                             (users.contains(user) || peers.contains(peer))
                     }
-                    return try JSONDecoder().decode([BlipPeer].self, from: JSONSerialization.data(withJSONObject: devices))
                 }
             }
             Thread.sleep(forTimeInterval: 0.3)
         }
-        throw BlipReceiverError.message("Blip search is unavailable. Try again in a moment.")
+        throw BlipRPCError.searchUnavailable
     }
 
     static func prepareManagedProfile() throws {
