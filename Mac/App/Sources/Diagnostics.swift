@@ -15,6 +15,7 @@ enum Diagnostics {
                 guard PopupViewKind.pickerCases.first?.label == "Send" else {
                     throw BlipReceiverError.message("The view picker must start with Send.")
                 }
+                try checkBlipSignInPaste()
                 let failedSync = Snapshot(from: ["folders": [
                     ["id": "moved-folder", "label": "Moved folder", "path": "/tmp/mydrive-old-folder",
                      "status": ["pullErrors": 1]]
@@ -120,13 +121,47 @@ enum Diagnostics {
                 childState.shareBrowsedSubfolder()
                 guard childState.shareFolderPath=="/tmp/demo/0/project" else {throw BlipReceiverError.message("Subfolder sharing selected the wrong root")}
                 render(PopupRootView().environmentObject(childState),height:PopupMetrics.maxHeight,to:directory.appendingPathComponent("subfolder-share.png"));captures.append("subfolder-share.png")
-                let report:JSON=["layout":layout,"captures":captures,"received_files":received,"send_payload_checks":"pass","active_transfers_only":true,"status_mark_padded":true,"status_mark_fixed_template":true,"native_receive_chrome":true,"visible_recipient_list":true,"fixtures_only":true]
+                let report:JSON=["layout":layout,"captures":captures,"received_files":received,"send_payload_checks":"pass","sign_in_paste":"pass","active_transfers_only":true,"status_mark_padded":true,"status_mark_fixed_template":true,"native_receive_chrome":true,"visible_recipient_list":true,"fixtures_only":true]
                 try JSONSerialization.data(withJSONObject:report,options:[.prettyPrinted,.sortedKeys]).write(to:directory.appendingPathComponent("layout-report.json"))
                 guard layout["result"] as? String == "pass" else {exit(1)}
             } catch { print("Layout diagnostics failed: \(error.localizedDescription)");exit(1) }
         }
         exit(0)
     }
+
+    @MainActor private static func checkBlipSignInPaste() throws {
+        let email = "fixture@example.test"
+        let board = NSPasteboard.withUniqueName()
+        defer { board.releaseGlobally() }
+        board.setString(email, forType: .string)
+        let alert = NSAlert()
+        alert.messageText = "Sign in to Blip"
+        alert.addButton(withTitle: "Send code")
+        let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
+        alert.accessoryView = input
+        let sendKey = Timer(timeInterval: 0.1, repeats: false) { _ in
+            if let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command,
+                                           timestamp: ProcessInfo.processInfo.systemUptime,
+                                           windowNumber: alert.window.windowNumber, context: nil,
+                                           characters: "v", charactersIgnoringModifiers: "v",
+                                           isARepeat: false, keyCode: 9) {
+                NSApp.postEvent(event, atStart: true)
+            }
+        }
+        let timeout = Timer(timeInterval: 3, repeats: false) { _ in NSApp.abortModal() }
+        RunLoop.main.add(sendKey, forMode: .modalPanel)
+        RunLoop.main.add(timeout, forMode: .modalPanel)
+        defer { sendKey.invalidate(); timeout.invalidate() }
+        var pasted = false
+        let result = BlipReceiver.runSignInPrompt(alert, field: input) { editor in
+            pasted = editor.readSelection(from: board, type: .string) && editor.string == email
+            NSApp.stopModal(withCode: .alertFirstButtonReturn)
+        }
+        guard result == .alertFirstButtonReturn, pasted else {
+            throw BlipReceiverError.message("Command-V did not paste the fixture email into the sign-in field.")
+        }
+    }
+
     static func run(outputDirectory: String) {
         NSApplication.shared.setActivationPolicy(.accessory)
         let directory = URL(fileURLWithPath: outputDirectory, isDirectory: true)

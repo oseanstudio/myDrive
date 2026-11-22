@@ -326,12 +326,14 @@ public sealed partial class MainWindow
             var email = new TextBox { Header = "Blip account email", PlaceholderText = "you@example.com" };
             var content = new StackPanel { Spacing = 10 }; content.Children.Add(email); content.Children.Add(Text("Request a Blip sign-in code for this computer. Your existing Blip devices remain separate.", 12));
             var dialog = new ContentDialog { XamlRoot = root.XamlRoot, Title = "Connect Blip", Content = content, PrimaryButtonText = "Send sign-in code", CloseButtonText = "Cancel", DefaultButton = ContentDialogButton.Close };
+            dialog.Opened += (_, _) => email.Focus(FocusState.Programmatic);
             if (await ShowDialog(dialog) != ContentDialogResult.Primary) return;
             bool sent = false; await Run("Request Blip sign-in code", async token => { await blip.LoginAsync(email.Text.Trim(), token); sent = true; });
             if (!sent) return;
         }
         var code = new PasswordBox { Header = "Sign-in code", PlaceholderText = "Code from your email" };
         var verify = new ContentDialog { XamlRoot = root.XamlRoot, Title = "Verify Blip", Content = code, PrimaryButtonText = "Connect", CloseButtonText = "Later", DefaultButton = ContentDialogButton.Close };
+        verify.Opened += (_, _) => code.Focus(FocusState.Programmatic);
         if (await ShowDialog(verify) != ContentDialogResult.Primary) { await RefreshBlip(); return; }
         string value = code.Password.Trim(); code.Password = "";
         await Run("Verify Blip account", async token => { await blip.VerifyAsync(value, token); await RefreshBlip(); }); Render();

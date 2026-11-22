@@ -468,10 +468,9 @@ struct BlipRecentRecipient: Codable, Identifiable {
         input.frame = NSRect(x: 0, y: 0, width: 240, height: 24)
         input.placeholderString = verifying ? "Sign-in code" : "Email address"
         prompt.accessoryView = input
-        prompt.window.initialFirstResponder = input
         prompt.addButton(withTitle: verifying ? "Sign in" : "Send code")
         prompt.addButton(withTitle: "Cancel")
-        guard prompt.runModal() == .alertFirstButtonReturn else { return }
+        guard Self.runSignInPrompt(prompt, field: input) == .alertFirstButtonReturn else { return }
         let value = input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         signingIn = true
         Task {
@@ -484,6 +483,24 @@ struct BlipRecentRecipient: Codable, Identifiable {
                 await refresh()
             } catch { problem = "Blip could not confirm sign-in. Check the email or code and try again." }
         }
+    }
+
+    static func runSignInPrompt(_ prompt: NSAlert, field: NSTextField,
+                                paste: @escaping (NSTextView) -> Void = { $0.paste(nil) }) -> NSApplication.ModalResponse {
+        prompt.layout()
+        prompt.window.initialFirstResponder = field
+        // The menu-bar app has no Edit menu to route Command-V to the alert's editor.
+        let monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            let modifiers = event.modifierFlags.intersection([.command, .option, .control, .shift])
+            guard event.window === prompt.window, modifiers == .command,
+                  event.charactersIgnoringModifiers?.lowercased() == "v",
+                  let editor = field.currentEditor() as? NSTextView,
+                  prompt.window.firstResponder === editor else { return event }
+            paste(editor)
+            return nil
+        }
+        defer { if let monitor { NSEvent.removeMonitor(monitor) } }
+        return prompt.runModal()
     }
     func setTrusted(_ peer: BlipPeer, _ enabled: Bool,files:Bool=false) {
         guard canSavePolicy, UUID(uuidString:account) != nil, BlipPolicy.exactPeer(peer.peer) else { return }
