@@ -956,7 +956,7 @@ class MyDrive(Gtk.Application):
         self.stack.set_visible_child_name("Send")
         chosen = []
         recipients = self.transfer_view.choose_recipient({f"{n}": f"Fixture device {n}" for n in range(10)},
-                                                         chosen.append, files_ready=True)
+                                                         chosen.append)
         initial_size = self.window.get_default_size()
 
         class FixtureBlip:
@@ -979,15 +979,31 @@ class MyDrive(Gtk.Application):
             assert size == initial_size and size[0] >= 344 and size[1] >= 420, (initial_size, size)
             print("Linux GTK fixed popup, cold Blip connection and one-click recipient passed", flush=True)
             peer = next(iter(view.recipients()))
-            view.recent_recipients = [{"peer": peer, "label": "Fixture laptop"}]
+            second = peer.partition(":")[0] + ":00000000-0000-4000-8000-000000000006"
+            view.snapshot["devices"].append({"peer": second, "name": "Fixture studio", "name_known": True})
+            view.recent_recipients = [{"peer": second, "label": "Fixture studio"},
+                                      {"peer": peer, "label": "Fixture laptop"}]
             view.render_recipient_rows()
             recipient = view.recipient_rows.get_last_child()
+            heading = recipient.get_prev_sibling().get_prev_sibling()
+            assert heading.get_first_child().get_label() == "Your devices"
+            assert recipient.get_margin_start() > 0
             calls = []
             view.choose_files = lambda **options: calls.append(options)
             view.update_recents = lambda *args, **kwargs: calls.append((args, kwargs))
+            view.paste = lambda selected, owner: calls.append(("paste", selected, owner))
+            view.rename_recent = lambda *args: calls.append(("rename", *args))
             recipient.get_first_child().emit("clicked")
-            recipient.get_last_child().emit("clicked")
+            remove = recipient.get_last_child()
+            edit = remove.get_prev_sibling()
+            paste = edit.get_prev_sibling()
+            assert edit.get_icon_name() == "document-edit-symbolic"
+            paste.emit("clicked")
+            edit.emit("clicked")
+            remove.emit("clicked")
             assert calls == [{"peer": peer, "owner": view.recipient_owner},
+                             ("paste", peer, view.recipient_owner),
+                             ("rename", view.recipient_owner, peer, "Fixture laptop", None, False),
                              (("remove", view.recipient_owner), {"target": peer})]
             view.recipient_entry.set_text("Remote person")
             view.recipient_entry.emit("activate")
