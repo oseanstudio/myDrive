@@ -89,7 +89,7 @@ class MyDrive(Gtk.Application):
         if self.desktop_appearance:
             self.desktop_appearance.connect("changed::color-scheme", lambda *_: self.apply_appearance())
         self.apply_appearance()
-        titles = ["Send", "Sync", "SMB Storage", "Activity", "Settings"]
+        titles = ["Send", "Sync", "SMB Drives", "Activity", "Settings"]
         view = Gtk.DropDown.new_from_strings(titles)
         view.set_selected(titles.index("Sync"))
         header_content = Gtk.Box(spacing=7)
@@ -141,15 +141,15 @@ class MyDrive(Gtk.Application):
             self.stack.set_visible_child_name(title)
             if title == "Sync" and not self.fixture:
                 self.refresh_background_sync(force=True)
-            if title == "SMB Storage" and not self.fixture:
+            if title == "SMB Drives" and not self.fixture:
                 self.storage_view.check_now("view")
             if title == "Settings" and not self.fixture:
                 self.change_startup("startup.status")
         view.connect("notify::selected", show_view)
-        self.storage_view = StorageView(self, self.pages["SMB Storage"])
+        self.storage_view = StorageView(self, self.pages["SMB Drives"])
         if not self.fixture:
             def check_visible_storage(window, _property):
-                if window.get_visible() and self.stack.get_visible_child_name() == "SMB Storage":
+                if window.get_visible() and self.stack.get_visible_child_name() == "SMB Drives":
                     self.storage_view.check_now("view")
             self.window.connect("notify::visible", check_visible_storage)
         self.transfer_view = TransferView(self, self.pages["Send"], self.blip)

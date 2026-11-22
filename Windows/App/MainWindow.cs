@@ -59,7 +59,7 @@ public sealed partial class MainWindow : Window
     private ContentDialog? activeDialog;
     private readonly Dictionary<(ElementTheme,string),SolidColorBrush> themeBrushes=new();
     private Windows.Graphics.PointInt32? quickOrigin;
-    private const string StorageViewName = "SMB Storage";
+    private const string StorageViewName = "SMB Drives";
     private const string SendViewName = "Send";
     private static string DisplayVersion => typeof(MainWindow).Assembly.GetName().Version?.ToString(3) ?? "";
 

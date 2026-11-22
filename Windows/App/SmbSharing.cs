@@ -48,7 +48,7 @@ internal sealed class SmbShareHost : IDisposable
             catch (Exception error) when (error is IOException or JsonException or OperationCanceledException or ObjectDisposedException)
             {
                 ClosePipe();
-                throw new IOException("The private SMB host stopped. Open SMB Storage and try again.");
+                throw new IOException("The private SMB host stopped. Open SMB Drives and try again.");
             }
             if (reply.Error is not null) throw new IOException(reply.Error);
             return reply;

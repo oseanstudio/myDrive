@@ -86,21 +86,6 @@ private final class BlipThumbnailReply:@unchecked Sendable {
         if chosen==nil{let picker=NSOpenPanel();picker.title="Choose application";picker.directoryURL=URL(fileURLWithPath:"/Applications");picker.allowedContentTypes=[.application];picker.canChooseDirectories=false;picker.allowsMultipleSelection=false;guard picker.runModal() == .OK else{return};chosen=picker.url}
         guard let chosen else{return};NSWorkspace.shared.open([file],withApplicationAt:chosen,configuration:NSWorkspace.OpenConfiguration())
     }
-    static func info(_ item:BlipReceivedItem,_ transfer:BlipTransfer)throws {
-        let file=try url(item,transfer),attributes=try FileManager.default.attributesOfItem(atPath:file.path)
-        let date: (Any?)->String={($0 as? Date)?.formatted(date:.abbreviated,time:.shortened) ?? "—"}
-        let alert=NSAlert();alert.messageText=item.displayName;alert.informativeText="Kind: \(item.is_directory ? "Folder":file.pathExtension.uppercased()+" file")\nSize: \(ByteCountFormatter.string(fromByteCount:(attributes[.size] as? NSNumber)?.int64Value ?? 0,countStyle:.file))\nCreated: \(date(attributes[.creationDate]))\nModified: \(date(attributes[.modificationDate]))\n\n\(file.path)";alert.addButton(withTitle:"Done");alert.runModal()
-    }
-    static func canPrint(_ item:BlipReceivedItem)->Bool{let file=URL(fileURLWithPath:item.path);return !item.is_directory&&(BlipFileKind.image(file)||BlipFileKind.text(file)||file.pathExtension.lowercased()=="pdf")}
-    static func printFile(_ item:BlipReceivedItem,_ transfer:BlipTransfer)throws {
-        let file=try url(item,transfer);let operation:NSPrintOperation
-        let byteCount=(try? file.resourceValues(forKeys:[.fileSizeKey]))?.fileSize ?? Int.max
-        if file.pathExtension.lowercased()=="pdf",let pdf=PDFDocument(url:file),let print=pdf.printOperation(for:NSPrintInfo.shared,scalingMode:.pageScaleDownToFit,autoRotate:true){operation=print}
-        else if BlipFileKind.image(file),let image=NSImage(contentsOf:file){let view=NSImageView(frame:NSRect(x:0,y:0,width:480,height:640));view.image=image;view.imageScaling = .scaleProportionallyUpOrDown;operation=NSPrintOperation(view:view)}
-        else if BlipFileKind.text(file),byteCount<16_000_000,let text=try? String(contentsOf:file,encoding:.utf8){let view=NSTextView(frame:NSRect(x:0,y:0,width:480,height:640));view.string=text;operation=NSPrintOperation(view:view)}
-        else{throw BlipReceiverError.message("Open this file in its app to print it.")}
-        operation.showsPrintPanel=true;operation.showsProgressPanel=true;operation.run()
-    }
 }
 
 @MainActor struct BlipReceivedFileView:View {
@@ -141,8 +126,6 @@ private final class BlipThumbnailReply:@unchecked Sendable {
                         Button("Open Folder"){act{try BlipFileActions.folder(selected,transfer)}}
                         Button("Show in Finder"){act{try BlipFileActions.reveal(selected,transfer)}}
                         Button("Quick Look"){if let file{BlipQuickLook.shared.show(file)}}.disabled(file.map(BlipFileKind.shortcut)==true)
-                        Button("Print…"){act{try BlipFileActions.printFile(selected,transfer)}}.disabled(!BlipFileActions.canPrint(selected))
-                        Button("Get Info"){act{try BlipFileActions.info(selected,transfer)}}
                         if items.count>1{Divider();Button("Copy Listed Files"){act{try BlipFileActions.copy(items,transfer)}};Button("Copy Listed Paths"){act{try BlipFileActions.copy(items,transfer,paths:true)}}}
                     }label:{Image(systemName:"chevron.down").font(.system(size:10))}.menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().padding(.horizontal,6).accessibilityLabel("Received file actions")
                     Button("Copy"){act(success:"Copied"){try BlipFileActions.copy([selected],transfer)}}.padding(.leading,6)

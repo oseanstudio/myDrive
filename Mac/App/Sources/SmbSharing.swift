@@ -78,7 +78,7 @@ final class SmbSharingHost: @unchecked Sendable {
             pending.removeSubrange(...end)
         } catch {
             close()
-            throw CoreError(message: "The private SMB host stopped. Open SMB Storage and try again.")
+            throw CoreError(message: "The private SMB host stopped. Open SMB Drives and try again.")
         }
         if let error = response.error { throw CoreError(message: error) }
         return response

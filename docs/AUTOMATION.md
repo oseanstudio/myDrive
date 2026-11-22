@@ -32,7 +32,7 @@ mydrive-cli smb browse DEVICE_NAME SHARE_NAME "Projects/2026"
 
 Sign in to the official Blip app once. Keep `blip serve` running in one terminal and send or accept files in another. `blip transfers` reports delivery and received file locations. Windows uses the [prepared Blip runtime](BLIP.md#runtime-preparation). Linux uses the [installed Blip backend and Java](../Linux/README.md). macOS uses the [supported installed framework](../Mac/README.md). No new Blip sign-in is requested by the CLI or MCP.
 
-Set `MYDRIVE_SMB_USERNAME` and `MYDRIVE_SMB_PASSWORD` in your shell or your MCP client's local environment before browsing. Use the share's own account. Credentials stay out of tool arguments and command output. When a server hides its share list, `smb browse` can still open a known share by name. SMB connections use your personal Tailscale device addresses and signed SMB 3.1.1 sessions. In the desktop app, open **SMB Storage** to see locally shared folders, browse Tailscale devices, or open saved SMB shares.
+Set `MYDRIVE_SMB_USERNAME` and `MYDRIVE_SMB_PASSWORD` in your shell or your MCP client's local environment before browsing. Use the share's own account. Credentials stay out of tool arguments and command output. When a server hides its share list, `smb browse` can still open a known share by name. SMB connections use your personal Tailscale device addresses and signed SMB 3.1.1 sessions. In the desktop app, open **SMB Drives** to see locally shared folders, browse Tailscale devices, or open saved SMB shares.
 
 ## Connect an MCP client
 

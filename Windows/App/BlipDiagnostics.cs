@@ -129,7 +129,8 @@ public sealed partial class MainWindow
             incoming.ReceivedItems=new(){new(){Name=Path.GetFileName(textFile),Path=textFile},new(){Name="Generated folder",Path=receivedFolder,IsDirectory=true}};
             card.SetTransfer(incoming);await card.LoadedPreview;
             if(card.PreviewKind!="text")throw new IOException("Received text preview did not load");
-            foreach(var label in new[]{"Open","Open with…","Copy","Copy path","Open folder","Show in folder","Print","Properties","Copy listed files","Copy listed paths"})if(!card.ActionLabels.Contains(label))throw new IOException("Missing received action: "+label);
+            foreach(var label in new[]{"Open","Open with…","Copy","Copy path","Open folder","Show in folder","Copy listed files","Copy listed paths"})if(!card.ActionLabels.Contains(label))throw new IOException("Missing received action: "+label);
+            if(card.ActionLabels.Any(label=>label is "Print" or "Properties"))throw new IOException("Unneeded receive actions are visible.");
             foreach(var action in Enum.GetValues<BlipFileAction>())await card.Perform(action);
             if(calls.Count!=Enum.GetValues<BlipFileAction>().Length)throw new IOException("A received action did not dispatch");
             var previewDialog=new Microsoft.UI.Xaml.Controls.ContentDialog{Title="Received files",Content=card,CloseButtonText="Done",XamlRoot=root.XamlRoot};

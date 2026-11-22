@@ -5,14 +5,10 @@ using Windows.Storage.Streams;
 using Windows.System;
 namespace MyDrive;
 
-internal enum BlipFileAction {Open,OpenWith,Copy,CopyPath,OpenFolder,ShowInFolder,Print,Properties,CopyListedFiles,CopyListedPaths}
+internal enum BlipFileAction {Open,OpenWith,Copy,CopyPath,OpenFolder,ShowInFolder,CopyListedFiles,CopyListedPaths}
 internal static class BlipReceivedActions {
     private static string Require(BlipTransfer transfer,BlipReceivedItem item)=>BlipReceivedFiles.LocalPath(transfer,item)??throw new IOException("This received file is unavailable or has moved.");
     private static async Task<IStorageItem> StorageItem(BlipReceivedItem item,string path)=>item.IsDirectory?await StorageFolder.GetFolderFromPathAsync(path):await StorageFile.GetFileFromPathAsync(path);
-    public static bool CanPrint(BlipReceivedItem item) {
-        if(item.IsDirectory||BlipReceivedFiles.IsShortcut(item.Path))return false;
-        try{uint size=0;AssocQueryString(0,1,Path.GetExtension(item.Path),"print",null,ref size);return size>1&&size<32768;}catch{return false;}
-    }
     public static async Task Execute(BlipFileAction action,BlipTransfer transfer,BlipReceivedItem item,nint owner) {
         string path=Require(transfer,item);
         if(action==BlipFileAction.CopyPath||action==BlipFileAction.CopyListedPaths) {
@@ -47,14 +43,8 @@ internal static class BlipReceivedActions {
             var info=new OpenAsInfo{File=path,Flags=4};int result=SHOpenWithDialog(owner,ref info);
             if(result<0&&result!=unchecked((int)0x800704C7))Marshal.ThrowExceptionForHR(result);return;
         }
-        var shell=new ShellExecuteInfo{Size=(uint)Marshal.SizeOf<ShellExecuteInfo>(),Mask=0xC,Owner=owner,Verb=action==BlipFileAction.Print?"print":"properties",File=path,Show=1};
-        if(!ShellExecuteEx(ref shell))throw new IOException("The selected file action is unavailable.");
+        throw new IOException("The selected file action is unavailable.");
     }
     [StructLayout(LayoutKind.Sequential,CharSet=CharSet.Unicode)]private struct OpenAsInfo{[MarshalAs(UnmanagedType.LPWStr)]public string File;[MarshalAs(UnmanagedType.LPWStr)]public string? Class;public uint Flags;}
     [DllImport("shell32.dll",CharSet=CharSet.Unicode)]private static extern int SHOpenWithDialog(nint owner,ref OpenAsInfo info);
-    [DllImport("shlwapi.dll",CharSet=CharSet.Unicode,EntryPoint="AssocQueryStringW")]private static extern int AssocQueryString(uint flags,uint text,string association,string extra,System.Text.StringBuilder? output,ref uint count);
-    [StructLayout(LayoutKind.Sequential,CharSet=CharSet.Unicode)]private struct ShellExecuteInfo {
-        public uint Size,Mask;public nint Owner;[MarshalAs(UnmanagedType.LPWStr)]public string? Verb;[MarshalAs(UnmanagedType.LPWStr)]public string? File;[MarshalAs(UnmanagedType.LPWStr)]public string? Parameters;[MarshalAs(UnmanagedType.LPWStr)]public string? Directory;public int Show;public nint Instance,IdList;[MarshalAs(UnmanagedType.LPWStr)]public string? Class;public nint ClassKey;public uint HotKey;public nint Icon,Process;
-    }
-    [DllImport("shell32.dll",CharSet=CharSet.Unicode,SetLastError=true,EntryPoint="ShellExecuteExW")][return:MarshalAs(UnmanagedType.Bool)]private static extern bool ShellExecuteEx(ref ShellExecuteInfo info);
 }

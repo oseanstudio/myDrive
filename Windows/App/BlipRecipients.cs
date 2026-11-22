@@ -2,6 +2,7 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Windows.Storage.Pickers;
 using Windows.System;
 using WinRT.Interop;
@@ -10,7 +11,23 @@ namespace MyDrive;
 
 public sealed partial class MainWindow
 {
-    private sealed record RecentRecipient(string peer, string label);
+    private sealed record RecentRecipient(string peer, string label, string? person = null, string? device = null,
+                                          string? nickname = null, string? person_nickname = null)
+    {
+        [JsonIgnore] public string Account => peer.Split(':')[0];
+        [JsonIgnore] public string FallbackLabel
+        {
+            get
+            {
+                var parts = label.Split(" · ", 2);
+                if (parts.Length == 2 && DeviceType(parts[1])) return parts[0];
+                return DeviceType(label) ? "Device" : label;
+            }
+        }
+        private static bool DeviceType(string name) =>
+            name is "Desktop" or "Laptop" or "Tablet" or "Phone" ||
+            (name.Split(' ', 2) is [var kind, var count] && (kind is "Desktop" or "Laptop" or "Tablet" or "Phone") && int.TryParse(count, out _));
+    }
     private List<RecentRecipient> recentRecipients = new();
     private List<BlipDevice> directoryRecipients = new();
     private readonly SemaphoreSlim recentGate = new(1, 1);
@@ -26,19 +43,23 @@ public sealed partial class MainWindow
         .Where(d => !d.History && BlipTrustPolicy.ExactPeer(d.Peer) &&
             !d.Peer.Equals(owner, StringComparison.OrdinalIgnoreCase)).ToList();
 
-    private async Task UpdateRecentRecipients(string action, string owner, BlipDevice? recipient = null, string? target = null)
+    private static RecentRecipient Recent(BlipDevice device) => new(device.Peer, device.ToString(),
+        device.ContactName, device.HasDeviceName ? device.DisplayName : null);
+
+    private async Task UpdateRecentRecipients(string action, string owner, BlipDevice? recipient = null,
+                                              string? target = null, string? name = null)
     {
         if (diagnosticMode || !BlipTrustPolicy.ExactPeer(owner)) return;
         await recentGate.WaitAsync();
         try
         {
-            var names = KnownRecipients(owner).ToDictionary(d => d.Peer, d => d.ToString(), StringComparer.OrdinalIgnoreCase);
+            var names = KnownRecipients(owner).ToDictionary(d => d.Peer, Recent, StringComparer.OrdinalIgnoreCase);
             var seed = (blipSnapshot?.Transfers ?? new())
                 .Where(t => t.Direction == "Outgoing" && t.ConfirmedComplete && !IsRelayPacket(t) && names.ContainsKey(t.Peer))
                 .OrderByDescending(t => t.UpdatedAt).DistinctBy(t => t.Peer, StringComparer.OrdinalIgnoreCase).Take(24)
-                .Select(t => new RecentRecipient(t.Peer, names[t.Peer])).ToArray();
+                .Select(t => names[t.Peer]).ToArray();
             var result = await CoreBridge.Call(new { action = "blip.recents." + action, data_dir = CoreBridge.DataDir,
-                payload = new { owner, seed, recipient = recipient == null ? null : new RecentRecipient(recipient.Peer, recipient.ToString()), target } });
+                payload = new { owner, seed, recipient = recipient == null ? null : Recent(recipient), target, name } });
             if (owner == BlipOwner && owner == recentOwner)
             {
                 recentRecipients = result.Deserialize<List<RecentRecipient>>() ?? new();
@@ -135,28 +156,49 @@ public sealed partial class MainWindow
         }
         if (recentRecipients.Count == 0) return;
         rows.Children.Add(QuickText("Recent recipients", 12, true));
-        foreach (var group in recentRecipients.GroupBy(r => r.peer.Split(':')[0]))
+        foreach (var group in recentRecipients.GroupBy(r => r.Account))
         {
             var entries = group.ToList();
-            if (entries.Count > 1 && !owner.StartsWith(group.Key + ":", StringComparison.OrdinalIgnoreCase))
+            bool own = owner.StartsWith(group.Key + ":", StringComparison.OrdinalIgnoreCase);
+            bool grouped = entries.Count > 1;
+            var person = FirstName(entries[0].person_nickname, own ? "Your devices" : null,
+                devices.FirstOrDefault(d => d.Peer.StartsWith(group.Key + ":", StringComparison.OrdinalIgnoreCase))?.ContactName,
+                entries[0].person, entries[0].FallbackLabel);
+            if (grouped)
+                AddRecipientRow(rows, owner, person, null, group.Key, entries[0].person_nickname, person: true);
+            for (int index = 0; index < entries.Count; index++)
             {
-                var name = devices.Find(d => d.Peer.StartsWith(group.Key + ":", StringComparison.OrdinalIgnoreCase))?.ContactName;
-                if (!string.IsNullOrWhiteSpace(name)) AddRecipientRow(rows, owner, name, null, group.Key);
-            }
-            foreach (var entry in entries)
-            {
+                var entry = entries[index];
                 var device = devices.Find(d => d.Peer.Equals(entry.peer, StringComparison.OrdinalIgnoreCase));
-                AddRecipientRow(rows, owner, device?.ToString() ?? entry.label, device, entry.peer);
+                var name = FirstName(entry.nickname, !grouped && !own ? person : null,
+                    device?.HasDeviceName == true ? device.DisplayName : null, entry.device,
+                    grouped ? $"Device {index + 1}" : entry.FallbackLabel);
+                AddRecipientRow(rows, owner, name, device, entry.peer, entry.nickname, nested: grouped);
             }
         }
     }
 
-    private void AddRecipientRow(StackPanel rows, string owner, string name, BlipDevice? device, string? remove)
+    private static string FirstName(params string?[] names) =>
+        names.FirstOrDefault(name => !string.IsNullOrWhiteSpace(name)) ?? "Device";
+
+    private async Task RenameRecentRecipient(string owner, string target, string name, string? nickname, bool person)
     {
-        var row = new Grid { ColumnSpacing = 4 };
+        if (busy || modalDepth > 0 || diagnosticMode || owner != BlipOwner) return;
+        var input = new TextBox { Text = nickname ?? "", PlaceholderText = name, MaxLength = 80 };
+        var dialog = new ContentDialog { XamlRoot = root.XamlRoot, Title = person ? "Person name" : "Device name",
+            Content = input, PrimaryButtonText = "Save", CloseButtonText = "Cancel", DefaultButton = ContentDialogButton.Primary };
+        dialog.Opened += (_, _) => input.Focus(FocusState.Programmatic);
+        if (await ShowDialog(dialog) == ContentDialogResult.Primary && owner == BlipOwner)
+            await UpdateRecentRecipients("rename", owner, target: target, name: input.Text);
+    }
+
+    private void AddRecipientRow(StackPanel rows, string owner, string name, BlipDevice? device, string? remove,
+                                 string? nickname = null, bool person = false, bool nested = false)
+    {
+        var row = new Grid { ColumnSpacing = 4, Margin = new Thickness(nested ? 12 : 0, 0, 0, 0) };
         row.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
         row.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
-        if (device == null) row.Children.Add(QuickText(name, 12));
+        if (device == null) row.Children.Add(QuickText(name, 12, person));
         else
         {
             var send = QuickButton("", () => _ = SendToBlipRecipient(owner, device));
@@ -174,9 +216,20 @@ public sealed partial class MainWindow
         }
         if (remove != null)
         {
+            var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 3 };
+            if (device != null)
+            {
+                var paste = QuickIcon("\uE77F", "Paste and send to " + name,
+                    () => _ = SendToBlipRecipient(owner, device, paste: true));
+                paste.IsEnabled = BlipRunning && !busy;
+                actions.Children.Add(paste);
+            }
+            actions.Children.Add(QuickIcon("\uE70F", "Rename " + name,
+                () => _ = RenameRecentRecipient(owner, remove, name, nickname, person)));
             var button = QuickIcon("\uE711", "Remove " + name + " from recent recipients", () => _ = UpdateRecentRecipients("remove", owner, target: remove));
-            Grid.SetColumn(button, 1);
-            row.Children.Add(button);
+            actions.Children.Add(button);
+            Grid.SetColumn(actions, 1);
+            row.Children.Add(actions);
         }
         rows.Children.Add(row);
     }

@@ -1,6 +1,6 @@
 # myDrive for macOS
 
-Preview 0.4.6 adds received-file previews and Open/Copy controls to the native receive panel. Its action menu includes Open With, Copy Path, Open Folder, Show in Finder, Quick Look, supported printing, and Get Info. Images, text, PDFs and supported Quick Look formats use local previews; other files show their native icon. Multiple received items have a picker. Missing or incomplete files cannot be opened or copied. Completed incoming rows can reopen the panel.
+The native receive panel shows a preview and Open and Copy controls. Its action menu includes Open With, Copy Path, Open Folder, Show in Finder, and Quick Look. Images, text, PDFs and supported Quick Look formats use local previews. Other files show their native icon. Multiple received items have a picker. Completed incoming rows can reopen the panel.
 
 myDrive keeps Blip available through a background helper after you quit the Blip app. Install Blip and sign in once. The helper uses the engine from Blip 1.2.8 build 20261029214736 and keeps the same account and device. Allow access to Blip data if macOS asks. **Send** shows **Ready in the background** when connected. Use **Open Blip** from the gear menu when you need the desktop app. The DMG contains only myDrive and its dependencies.
 

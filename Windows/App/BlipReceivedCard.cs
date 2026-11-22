@@ -77,7 +77,7 @@ internal sealed class BlipReceivedCard:UserControl {
         void Add(string title,BlipFileAction action,bool enabled=true){var item=new MenuFlyoutItem{Text=title,IsEnabled=open.IsEnabled&&enabled};item.Click+=async(_,_)=>await Perform(action);menu.Items.Add(item);labels.Add(title);}
         Add("Open",BlipFileAction.Open);Add("Open with…",BlipFileAction.OpenWith,selected is {IsDirectory:false}&&!BlipReceivedFiles.IsShortcut(selected.Path));
         Add("Copy",BlipFileAction.Copy);Add("Copy path",BlipFileAction.CopyPath);menu.Items.Add(new MenuFlyoutSeparator());
-        Add("Open folder",BlipFileAction.OpenFolder);Add("Show in folder",BlipFileAction.ShowInFolder);Add("Print",BlipFileAction.Print,selected!=null&&BlipReceivedActions.CanPrint(selected));Add("Properties",BlipFileAction.Properties);
+        Add("Open folder",BlipFileAction.OpenFolder);Add("Show in folder",BlipFileAction.ShowInFolder);
         if(transfer?.ReceivedItems.Count>1){menu.Items.Add(new MenuFlyoutSeparator());Add("Copy listed files",BlipFileAction.CopyListedFiles);Add("Copy listed paths",BlipFileAction.CopyListedPaths);}
         menu.Opening+=(_,_)=>MenuActive?.Invoke(true);menu.Closed+=(_,_)=>MenuActive?.Invoke(false);open.Flyout=menu;ActionLabels=labels;
     }

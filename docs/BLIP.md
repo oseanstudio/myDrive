@@ -87,6 +87,6 @@ Receive preserves the exact native transfer ID, including uppercase Apple UUIDs.
 
 ## Received files on Windows and macOS
 
-The native receive notice includes a local preview, Open and Copy controls, and a file picker for multiple received root items. The Open dropdown also provides Open With, Copy Path, Open Folder, Show in Folder/Finder, supported Print, and Properties/Get Info. macOS additionally offers Quick Look. Print and Open With availability depend on the file type and platform. Clipboard writes, application launches and printing require an explicit click.
+The native receive notice includes a local preview, Open and Copy controls, and a file picker for multiple received root items. The Open dropdown also provides Open With, Copy Path, Open Folder, and Show in Folder or Finder. macOS additionally offers Quick Look. Open With availability depends on the file type and platform.
 
 Previews use received local files only: bounded plain text, safe web-shortcut text and supported system/image/PDF thumbnails, with a file/folder icon fallback. No web preview is fetched. Actions revalidate native incoming completion, the metadata's actual path, file existence and absence of symlink/reparse ancestors. Incomplete, errored, missing or remote paths are unavailable. Completed transfer rows reopen the notice; this does not replay automatic link handling or alter sender approvals.

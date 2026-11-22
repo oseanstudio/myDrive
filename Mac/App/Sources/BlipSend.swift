@@ -86,7 +86,7 @@ struct BlipSendPayload {
     }
 
     private func pickFilesForRecipient() {
-        guard let peer = chooseRecipient(description: "Click a device to choose what to send.") else { return }
+        guard let peer = chooseRecipient(description: nil) else { return }
         chooseFiles(to: peer)
     }
 
@@ -127,7 +127,7 @@ struct BlipSendPayload {
     }
 
     private func chooseRecipientAndSend(_ payload: BlipSendPayload) {
-        guard let peer = chooseRecipient(description: "\(payload.description)\nClick a device to send.") else {
+        guard let peer = chooseRecipient(description: payload.description) else {
             payload.discard()
             return
         }
@@ -142,7 +142,7 @@ struct BlipSendPayload {
         return true
     }
 
-    private func chooseRecipient(description: String) -> BlipPeer? {
+    private func chooseRecipient(description: String?) -> BlipPeer? {
         guard canChooseRecipient() else { return nil }
         var choices = recipients
         let owner = account
@@ -152,7 +152,7 @@ struct BlipSendPayload {
                 choices[index] = updated
                 return self.recipientLabel(updated)
             })
-        picker.dialog.window.appearance = AppDelegate.appearance(for: PrefStore.shared.preferences.appearance)
+        picker.window.appearance = AppDelegate.appearance(for: PrefStore.shared.preferences.appearance)
         guard let selected = picker.run(), choices.indices.contains(selected) else { return nil }
         return choices[selected]
     }
@@ -170,46 +170,91 @@ struct BlipSendPayload {
     }
 }
 
-@MainActor final class BlipRecipientPicker: NSObject, NSTableViewDataSource, NSTableViewDelegate {
-    let dialog = NSAlert()
+@MainActor final class BlipRecipientPicker: NSObject, NSTableViewDataSource, NSTableViewDelegate, NSWindowDelegate {
+    let window: NSPanel
     let table = BlipRecipientTable()
+    let scroll = NSScrollView()
+    let cancelButton = NSButton(title: "Cancel", target: nil, action: nil)
     private var labels: [String]
     private var chosenRow: Int?
     private let rename: ((Int) -> String?)?
 
-    init(labels: [String], description: String, rename: ((Int) -> String?)? = nil) {
+    init(labels: [String], description: String?, rename: ((Int) -> String?)? = nil) {
         self.labels = labels
         self.rename = rename
+        let listHeight = CGFloat(max(1, min(labels.count, 6)) * 30 + 2)
+        let height = listHeight + (description == nil ? 49 : 70)
+        window = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 320, height: height),
+                         styleMask: [.titled, .closable], backing: .buffered, defer: false)
         super.init()
-        dialog.messageText = "Send with Blip"
-        dialog.informativeText = description
-        dialog.addButton(withTitle: "Cancel").keyEquivalent = "\u{1b}"
+        window.title = "Send with Blip"
+        window.delegate = self
+        window.isReleasedWhenClosed = false
+        cancelButton.target = self
+        cancelButton.action = #selector(cancel(_:))
+        cancelButton.keyEquivalent = "\u{1b}"
 
         table.setAccessibilityLabel("Recipient devices")
         table.headerView = nil
-        table.rowHeight = 32
+        table.rowHeight = 28
+        table.intercellSpacing = NSSize(width: 0, height: 2)
         table.allowsMultipleSelection = false
         table.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("recipient"))
-        column.width = 326
+        column.width = 294
         table.addTableColumn(column)
         table.dataSource = self
         table.delegate = self
         table.activateRow = { [weak self] row in self?.activate(row) }
 
-        let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 340, height: CGFloat(min(labels.count, 6) * 34 + 4)))
-        scroll.borderType = .bezelBorder
+        scroll.borderType = .noBorder
         scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true
         scroll.documentView = table
-        dialog.accessoryView = scroll
+        guard let content = window.contentView else { return }
+        let footer = NSStackView(views: [cancelButton])
+        footer.orientation = .horizontal
+        var views: [NSView] = []
+        if let description {
+            let text = NSTextField(labelWithString: description)
+            text.maximumNumberOfLines = 1
+            text.lineBreakMode = .byTruncatingTail
+            text.toolTip = description
+            views.append(text)
+        }
+        views += [scroll, footer]
+        let stack = NSStackView(views: views)
+        stack.orientation = .vertical
+        stack.alignment = .trailing
+        stack.spacing = 5
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        content.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 12),
+            stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -12),
+            stack.topAnchor.constraint(equalTo: content.topAnchor, constant: 9),
+            scroll.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            scroll.heightAnchor.constraint(equalToConstant: listHeight),
+        ])
+        if let text = views.first as? NSTextField {
+            text.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        }
         table.reloadData()
     }
 
     func run() -> Int? {
         chosenRow = nil
-        dialog.window.initialFirstResponder = table
-        return dialog.runModal() == .OK ? chosenRow : nil
+        window.initialFirstResponder = table
+        window.center()
+        defer { window.orderOut(nil) }
+        return NSApp.runModal(for: window) == .OK ? chosenRow : nil
+    }
+
+    @objc private func cancel(_ sender: Any?) { NSApp.stopModal(withCode: .cancel) }
+
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        cancel(nil)
+        return false
     }
 
     func numberOfRows(in tableView: NSTableView) -> Int { labels.count }
@@ -221,6 +266,9 @@ struct BlipSendPayload {
         send.isBordered = false
         send.alignment = .left
         send.font = .systemFont(ofSize: 12)
+        send.attributedTitle = NSAttributedString(string: label, attributes: [
+            .foregroundColor: NSColor.labelColor, .font: NSFont.systemFont(ofSize: 12),
+        ])
         send.lineBreakMode = .byTruncatingTail
         send.tag = row
         send.toolTip = label

@@ -13,7 +13,7 @@ enum PopupViewKind: String, CaseIterable, Identifiable {
         case .sync: return "Sync"
         case .syncFiles: return "Sync files"
         case .syncInfo, .syncAttention: return "Sync"
-        case .connections: return "SMB Storage"
+        case .connections: return "SMB Drives"
         case .activity: return "Activity"
         case .transfers: return "Send"
         case .settings: return "Settings"

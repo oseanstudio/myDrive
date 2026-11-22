@@ -69,8 +69,9 @@ struct BlipView: View {
                     .disabled(searching || query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }.controlSize(.small)
             let term = query.trimmingCharacters(in: .whitespacesAndNewlines)
+            let available = receiver.recipients
             if !term.isEmpty {
-                let known = receiver.recipients.filter {
+                let known = available.filter {
                     [$0.contactName, $0.contact, $0.name, $0.displayName].compactMap { $0 }
                         .contains { $0.localizedStandardContains(term) }
                 }
@@ -92,14 +93,23 @@ struct BlipView: View {
                 let order = receiver.recentRecipients.map { accountPart($0.peer) }.filter { seen.insert($0).inserted }
                 ForEach(order, id: \.self) { account in
                     let entries = groups[account] ?? []
-                    if entries.count > 1 && account.caseInsensitiveCompare(receiver.account) != .orderedSame,
-                       let name = receiver.recipients.first(where: { accountPart($0.peer) == account })?.contactName,
-                       !name.isEmpty {
-                        recipientRow(name, peer: nil, removing: account)
-                    }
-                    ForEach(entries) { entry in
-                        let device = receiver.recipients.first { $0.peer.caseInsensitiveCompare(entry.peer) == .orderedSame }
-                        recipientRow(device.map(receiver.recipientLabel) ?? entry.label, peer: device, removing: entry.peer)
+                    if let first = entries.first {
+                        let grouped = entries.count > 1
+                        let own = account.caseInsensitiveCompare(receiver.account) == .orderedSame
+                        let person = firstName(first.person_nickname, own ? "Your devices" : nil,
+                            available.first { accountPart($0.peer) == account }?.contactName,
+                            first.person, first.fallbackLabel)
+                        if grouped {
+                            recipientRow(person, peer: nil, removing: account, nickname: first.person_nickname, person: true)
+                        }
+                        ForEach(Array(entries.enumerated()), id: \.element.id) { index, entry in
+                            let device = available.first { $0.peer.caseInsensitiveCompare(entry.peer) == .orderedSame }
+                            let name = firstName(entry.nickname, !grouped && !own ? person : nil,
+                                device?.hasDeviceName == true ? device?.displayName : nil, entry.device,
+                                grouped ? "Device \(index + 1)" : entry.fallbackLabel)
+                            recipientRow(name, peer: device, removing: entry.peer, nickname: entry.nickname)
+                                .padding(.leading, grouped ? 12 : 0)
+                        }
                     }
                 }
             }
@@ -134,7 +144,12 @@ struct BlipView: View {
         peer.split(separator: ":").first.map { $0.lowercased() } ?? ""
     }
 
-    private func recipientRow(_ name: String, peer: BlipPeer?, removing: String? = nil) -> some View {
+    private func firstName(_ names: String?...) -> String {
+        names.compactMap { $0 }.first { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } ?? "Device"
+    }
+
+    private func recipientRow(_ name: String, peer: BlipPeer?, removing: String? = nil,
+                              nickname: String? = nil, person: Bool = false) -> some View {
         HStack(spacing: 4) {
             if let peer {
                 Button { receiver.chooseFiles(to: peer) } label: {
@@ -144,9 +159,21 @@ struct BlipView: View {
                     .disabled(receiver.sending || receiver.preparingSend)
                     .contextMenu { Button("Paste and send") { receiver.pasteAndSend(to: peer) } }
             } else {
-                Text(name).lineLimit(1).help(name).frame(maxWidth: .infinity, alignment: .leading)
+                Text(name).fontWeight(person ? .semibold : .regular)
+                    .lineLimit(1).help(name).frame(maxWidth: .infinity, alignment: .leading)
             }
             if let removing {
+                if let peer {
+                    Button { receiver.pasteAndSend(to: peer) } label: { Image(systemName: "clipboard") }
+                        .accessibilityLabel("Paste and send to " + name)
+                        .help("Paste and send")
+                        .disabled(receiver.sending || receiver.preparingSend)
+                }
+                Button { receiver.renameRecent(removing, displayed: name, nickname: nickname, person: person) } label: {
+                    Image(systemName: "pencil")
+                }
+                .accessibilityLabel("Rename " + name)
+                .help("Rename")
                 Button { receiver.removeRecent(removing) } label: { Image(systemName: "xmark") }
                     .accessibilityLabel("Remove " + name + " from recent recipients")
                     .help("Remove from recent recipients")

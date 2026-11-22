@@ -4,7 +4,7 @@ myDrive helps you move files between your computers and keep your folders up to 
 
 - Keep a project folder up to date on your laptop and desktop.
 - Send a folder of photos or a web link to another device with Blip.
-- Use **SMB Storage** to browse your desktop’s shared folders from your laptop as if they were local. The files stay on your desktop, and you can open them without copying or syncing the folder first.
+- Use **SMB Drives** to browse your desktop’s shared folders from your laptop as if they were local. The files stay on your desktop, and you can open them without copying or syncing the folder first.
 
 ## Download
 

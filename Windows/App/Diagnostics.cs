@@ -153,9 +153,9 @@ public sealed partial class MainWindow
             SetMode(false);await Task.Delay(150);await Capture(directory,"full-errors.png");SetMode(true);
             BackFromSyncInfo();if(currentView!="sync"||activeDialog!=null)throw new IOException("Errors Back did not return to Sync.");
             NavigateQuick("connections");
-            if(quickViews.Content?.ToString()!="SMB Storage"||navigation.MenuItems.OfType<Microsoft.UI.Xaml.Controls.NavigationViewItem>().First(i=>i.Tag?.ToString()=="connections").Content?.ToString()!="SMB Storage")throw new IOException("SMB Storage navigation labels are inconsistent.");
+            if(quickViews.Content?.ToString()!="SMB Drives"||navigation.MenuItems.OfType<Microsoft.UI.Xaml.Controls.NavigationViewItem>().First(i=>i.Tag?.ToString()=="connections").Content?.ToString()!="SMB Drives")throw new IOException("SMB Drives navigation labels are inconsistent.");
             var viewMenu=quickViews.Flyout as Microsoft.UI.Xaml.Controls.MenuFlyout;
-            if(viewMenu==null||!viewMenu.Items.OfType<Microsoft.UI.Xaml.Controls.MenuFlyoutItem>().Any(i=>i.Text=="SMB Storage")||viewMenu.Items.OfType<Microsoft.UI.Xaml.Controls.MenuFlyoutItem>().Any(i=>i.Text is "Storage" or "Connections"))throw new IOException("The view menu uses an inconsistent SMB Storage name.");
+            if(viewMenu==null||!viewMenu.Items.OfType<Microsoft.UI.Xaml.Controls.MenuFlyoutItem>().Any(i=>i.Text=="SMB Drives")||viewMenu.Items.OfType<Microsoft.UI.Xaml.Controls.MenuFlyoutItem>().Any(i=>i.Text is "Storage" or "Connections"))throw new IOException("The view menu uses an inconsistent SMB Drives name.");
             await Task.Delay(150);await Capture(directory,"quick-storage.png");
             report["in_place_folder_details"]="pass: same popup/header; stable bounds; back to Sync; light/dark; empty/error states; full-window parity";
             report["storage_navigation_labels"]="pass: menu, compact header and full-window navigation agree";

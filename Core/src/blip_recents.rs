@@ -8,6 +8,20 @@ const MAX_RECIPIENTS: usize = 24;
 struct Recipient {
     peer: String,
     label: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    person: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    device: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    nickname: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    person_nickname: String,
+}
+
+impl Recipient {
+    fn account(&self) -> &str {
+        self.peer.split_once(':').map_or("", |(account, _)| account)
+    }
 }
 
 fn is_peer(peer: &str) -> bool {
@@ -21,17 +35,29 @@ fn recipient(value: &Value) -> Option<Recipient> {
     if !is_peer(&peer) {
         return None;
     }
-    let label: String = value["label"]
-        .as_str()?
-        .trim()
-        .chars()
-        .filter(|c| !c.is_control())
-        .take(240)
-        .collect();
+    let label = display_text(&value["label"], 240);
     if label.is_empty() {
         return None;
     }
-    Some(Recipient { peer, label })
+    Some(Recipient {
+        peer,
+        label,
+        person: display_text(&value["person"], 160),
+        device: display_text(&value["device"], 160),
+        nickname: String::new(),
+        person_nickname: String::new(),
+    })
+}
+
+fn display_text(value: &Value, limit: usize) -> String {
+    value
+        .as_str()
+        .unwrap_or_default()
+        .trim()
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(limit)
+        .collect()
 }
 
 pub fn run(action: &str, data: &Path, payload: &Value) -> Result<Value, String> {
@@ -80,9 +106,21 @@ pub fn run(action: &str, data: &Path, payload: &Value) -> Result<Value, String> 
     match action {
         "list" => {}
         "remember" => {
-            let saved = recipient(&payload["recipient"])
+            let mut saved = recipient(&payload["recipient"])
                 .filter(|p| p.peer != owner)
                 .ok_or("Choose a valid Blip recipient.")?;
+            if let Some(previous) = history.iter().find(|r| r.peer == saved.peer) {
+                saved.nickname.clone_from(&previous.nickname);
+                if saved.person.is_empty() {
+                    saved.person.clone_from(&previous.person);
+                }
+                if saved.device.is_empty() {
+                    saved.device.clone_from(&previous.device);
+                }
+            }
+            if let Some(previous) = history.iter().find(|r| r.account() == saved.account()) {
+                saved.person_nickname.clone_from(&previous.person_nickname);
+            }
             history.retain(|r| r.peer != saved.peer);
             history.insert(0, saved);
             history.truncate(MAX_RECIPIENTS);
@@ -94,9 +132,32 @@ pub fn run(action: &str, data: &Path, payload: &Value) -> Result<Value, String> 
                 .to_ascii_lowercase();
             if is_peer(&target) {
                 history.retain(|r| r.peer != target);
-            } else if crate::automation::uuid(&target) && target != account {
-                history.retain(|r| r.peer.split_once(':').map(|(user, _)| user) != Some(&target));
+            } else if crate::automation::uuid(&target) {
+                history.retain(|r| r.account() != target);
             } else {
+                return Err("Choose a valid recent recipient.".into());
+            }
+        }
+        "rename" => {
+            let target = payload["target"]
+                .as_str()
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            if !is_peer(&target) && !crate::automation::uuid(&target) {
+                return Err("Choose a valid recent recipient.".into());
+            }
+            let name = display_text(&payload["name"], 80);
+            let mut found = false;
+            for candidate in history.iter_mut() {
+                if candidate.peer == target {
+                    candidate.nickname.clone_from(&name);
+                    found = true;
+                } else if candidate.account() == target {
+                    candidate.person_nickname.clone_from(&name);
+                    found = true;
+                }
+            }
+            if !found {
                 return Err("Choose a valid recent recipient.".into());
             }
         }
@@ -144,6 +205,19 @@ mod tests {
             operation("remember", json!({"owner":owner,"recipient":seed[0]})),
             seed
         );
+        let renamed = operation(
+            "rename",
+            json!({"owner":owner,"target":another,"name":"Studio"}),
+        );
+        assert_eq!(renamed[0]["person_nickname"], "Studio");
+        assert_eq!(renamed[1]["person_nickname"], "Studio");
+        operation(
+            "rename",
+            json!({"owner":owner,"target":recipient,"name":"Edit bay"}),
+        );
+        let remembered = operation("remember", json!({"owner":owner,"recipient":seed[0]}));
+        assert_eq!(remembered[0]["nickname"], "Edit bay");
+        assert_eq!(remembered[0]["person_nickname"], "Studio");
         assert_eq!(
             operation("remove", json!({"owner":owner,"target":another})),
             json!([])

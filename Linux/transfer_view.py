@@ -270,7 +270,7 @@ class TransferView:
             name = names.get(self.delivery.get("peer", "").lower(), "Previous device")
             self.page.append(row(name, "Received", button("View files", lambda: self.show_received(self.delivery))))
 
-    def update_recents(self, action, identity, peer=None, title=None, target=None):
+    def update_recents(self, action, identity, peer=None, title=None, target=None, name=None):
         if not identity or self.app.fixture:
             return
         names = self.recipients()
@@ -278,8 +278,12 @@ class TransferView:
         prior = dict.fromkeys(t["peer"].lower() for t in transfers
                               if t.get("direction") == "Outgoing" and t.get("completed") and not t.get("has_error")
                               and not packet(t) and str(t.get("peer", "")).lower() in names)
-        seed = [{"peer": key, "label": names[key]} for key in list(prior)[:24]]
-        payload = {"owner": identity, "seed": seed, "recipient": {"peer": peer, "label": title}, "target": target}
+        details = self.recent_details(identity)
+        def saved(key, display):
+            person, device = details.get(key, ("", ""))
+            return {"peer": key, "label": display, "person": person, "device": device}
+        seed = [saved(key, names[key]) for key in list(prior)[:24]]
+        payload = {"owner": identity, "seed": seed, "recipient": saved(peer, title), "target": target, "name": name}
         def loaded(result):
             if identity == self.recipient_owner:
                 self.recent_recipients = result
@@ -339,32 +343,77 @@ class TransferView:
         groups = defaultdict(list)
         for entry in self.recent_recipients:
             groups[entry["peer"].partition(":")[0]].append(entry)
+        details = self.recent_details(owner)
         for account, entries in groups.items():
-            if len(entries) > 1 and not owner.startswith(account + ":"):
-                person = next((d.get("user_name") or d.get("contact") for d in self.snapshot.get("devices", [])
-                               if str(d.get("peer", "")).lower().startswith(account + ":")
-                               and (d.get("user_name") or d.get("contact"))), None)
-                if person:
-                    self.add_recipient_row(owner, person, remove=account)
-            for entry in entries:
+            first = entries[0]
+            grouped = len(entries) > 1
+            own = owner.startswith(account + ":")
+            live_person = next((details[entry["peer"]][0] for entry in entries
+                                if details.get(entry["peer"], ("", ""))[0]), "")
+            alias = first.get("person_nickname")
+            person = alias or ("Your devices" if own else live_person) or first.get("person") or self.recent_fallback(first)
+            if grouped:
+                self.add_recipient_row(owner, person, remove=account, nickname=alias, person=True)
+            for index, entry in enumerate(entries, 1):
                 peer = entry["peer"]
-                self.add_recipient_row(owner, known.get(peer, entry["label"]), peer if peer in known else None, peer)
+                device_name = details.get(peer, ("", ""))[1]
+                name = (entry.get("nickname") or (person if not grouped and not own else None)
+                        or device_name or entry.get("device") or (f"Device {index}" if grouped else self.recent_fallback(entry)))
+                self.add_recipient_row(owner, name, peer if peer in known else None, peer,
+                                       nickname=entry.get("nickname"), nested=grouped)
 
-    def add_recipient_row(self, owner, name, peer=None, remove=None):
-        controls = Gtk.Box(spacing=4)
+    def recent_details(self, owner):
+        catalog = self.catalog(owner)
+        rows = self.snapshot.get("devices", []) + self.directory_recipients
+        result = {}
+        for device in rows:
+            peer = str(device.get("peer", "")).lower()
+            if not exact_peer(peer):
+                continue
+            person = device.get("user_name") or device.get("contact") or ""
+            name = catalog.get(peer, {}).get("name") or (device.get("name") if device.get("name_known") else "")
+            result[peer] = person, name or ""
+        return result
+
+    @staticmethod
+    def recent_fallback(entry):
+        def is_type(value):
+            kind, _, suffix = value.partition(" ")
+            return kind in {"Desktop", "Laptop", "Tablet", "Phone"} and (not suffix or suffix.isdecimal())
+        name, separator, kind = entry["label"].partition(" · ")
+        if separator and is_type(kind):
+            return name
+        return "Device" if is_type(entry["label"]) else entry["label"]
+
+    def rename_recent(self, owner, target, displayed, nickname, person):
+        if self.owner(self.snapshot) != owner:
+            return
+        name = Gtk.Entry(text=nickname or "", placeholder_text=displayed, max_length=80, activates_default=True)
+        self.app.dialog("Person name" if person else "Device name", "Save", [name],
+                        lambda: self.update_recents("rename", owner, target=target, name=name.get_text()))
+
+    def add_recipient_row(self, owner, name, peer=None, remove=None, nickname=None, person=False, nested=False):
+        controls = Gtk.Box(spacing=4, margin_start=12 if nested else 0)
         if peer:
             select = button(name, lambda: self.choose_files(peer=peer, owner=owner))
             select.set_child(label(name))
             select.set_tooltip_text("Send files to " + name)
             select.set_hexpand(True)
             controls.append(select)
-            controls.append(menu([("Send folder…", lambda: self.choose_files(folder=True, peer=peer, owner=owner)),
-                                  ("Paste and send", lambda: self.paste(peer, owner))]))
+            actions = [("Send folder…", lambda: self.choose_files(folder=True, peer=peer, owner=owner))]
+            if not remove:
+                actions.append(("Paste and send", lambda: self.paste(peer, owner)))
+            controls.append(menu(actions))
         else:
-            name_label = label(name)
+            name_label = label(name, "heading" if person else None)
             name_label.set_hexpand(True)
             controls.append(name_label)
         if remove:
+            if peer:
+                paste = Gtk.Button(icon_name="edit-paste-symbolic", tooltip_text="Paste and send to " + name)
+                paste.connect("clicked", lambda *_: self.paste(peer, owner))
+                controls.append(paste)
+            controls.append(self.rename_button(name, lambda: self.rename_recent(owner, remove, name, nickname, person)))
             cross = Gtk.Button(icon_name="window-close-symbolic", tooltip_text="Remove " + name + " from recent recipients")
             cross.connect("clicked", lambda *_: self.update_recents("remove", owner, target=remove))
             controls.append(cross)
@@ -404,7 +453,7 @@ class TransferView:
         provider = Gdk.ContentProvider.new_for_bytes("text/uri-list", GLib.Bytes.new((uri + "\r\n").encode()))
         self.app.window.get_clipboard().set_content(provider)
 
-    def choose_recipient(self, devices, selected, cancelled=lambda: None, *, files_ready=False):
+    def choose_recipient(self, devices, selected, cancelled=lambda: None):
         box = Gtk.ListBox()
         box.set_selection_mode(Gtk.SelectionMode.NONE)
         entries = list(devices.items())
@@ -416,9 +465,8 @@ class TransferView:
         dialog.set_default_size(344, -1)
         dialog.add_button("Cancel", Gtk.ResponseType.CANCEL)
         content = dialog.get_content_area()
-        content.set_spacing(6)
-        content.append(label("Click a device to send." if files_ready else "Click a device to choose what to send."))
-        content.append(self.app.scrolled_list(box))
+        content.set_spacing(4)
+        content.append(self.app.scrolled_list(box, height=min(len(entries), 6) * 36 + 2))
         finished = False
 
         def activate(peer):
@@ -438,7 +486,7 @@ class TransferView:
 
         owner = self.owner(self.snapshot)
         for peer, name in entries:
-            controls = Gtk.Box(spacing=4, margin_top=2, margin_bottom=2)
+            controls = Gtk.Box(spacing=4, margin_top=1, margin_bottom=1)
             send = button(name, lambda peer=peer: activate(peer))
             send.set_child(label(name))
             send.set_hexpand(True)
@@ -562,7 +610,7 @@ class TransferView:
     def send_dropped(self, paths, cancelled=lambda: None):
         self.with_send_connection(
             lambda: self.choose_recipient(
-                self.recipients(), lambda peer: self.send(peer, paths), cancelled, files_ready=True
+                self.recipients(), lambda peer: self.send(peer, paths), cancelled
             ),
             cancelled,
         )

@@ -349,7 +349,7 @@ public sealed partial class MainWindow
     private async Task ShowBlipSend(List<string>? initialPaths=null,string? initialDescription=null,Action? sendingStarted=null)
     {
         if (busy || modalDepth > 0 || blipSnapshot?.Status.Authenticated != true) return;
-        var content = new StackPanel { Spacing = 10 };
+        var content = new StackPanel { Spacing = 4 };
         string localPeer = blipSnapshot.Status.UserId + ":" + blipSnapshot.Status.DeviceId;
         var devices = blipSnapshot.Devices.Where(d => !d.History && !d.Peer.Equals(localPeer, StringComparison.OrdinalIgnoreCase))
             .OrderBy(d => d.ContactName, StringComparer.CurrentCultureIgnoreCase)
@@ -357,27 +357,25 @@ public sealed partial class MainWindow
         var paths = initialPaths ?? new List<string>();
         var recipients = new ListView { SelectionMode = ListViewSelectionMode.None, MaxHeight = compact ? 172 : 280 };
         AutomationProperties.SetName(recipients, "Recipient devices");
-        var instruction = Text(paths.Count > 0 ? "Click a device to send." : "Choose files or a folder, then click a device to send.", 12);
-        if (devices.Count > 0) content.Children.Add(instruction);
+        var selected = QuickText(initialDescription ?? "", 12);
+        selected.Visibility = paths.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+        content.Children.Add(selected);
         var dialog = new ContentDialog { XamlRoot = root.XamlRoot, Title = "Send with Blip", Content = content,
             CloseButtonText = "Cancel" };
         BlipDevice? clickedPeer = null;
-        var sendButtons = new List<Button>();
         foreach (var device in devices)
         {
             var title = QuickText(device.ToString(), 13);
             var send = QuickButton("", () =>
             {
-                if (clickedPeer != null || nativePickerDepth > 0 || paths.Count == 0) return;
+                if (clickedPeer != null || nativePickerDepth > 0) return;
                 clickedPeer = device;
                 dialog.Hide();
             });
             send.Content = title;
             send.HorizontalAlignment = HorizontalAlignment.Stretch;
             send.HorizontalContentAlignment = HorizontalAlignment.Left;
-            send.IsEnabled = paths.Count > 0;
             send.Tag = device;
-            sendButtons.Add(send);
             var rename = QuickIcon("\uE70F", "Rename " + device.DisplayName, () =>
                 EditRecipientName(dialog, content, localPeer, device, title, send));
             var row = new Grid { ColumnSpacing = 4 };
@@ -388,37 +386,22 @@ public sealed partial class MainWindow
             row.Children.Add(rename);
             AutomationProperties.SetName(send, "Send to " + title.Text);
             ToolTipService.SetToolTip(send, title.Text);
-            recipients.Items.Add(new ListViewItem { Content = row, MinHeight = 36, Padding = new Thickness(2),
+            recipients.Items.Add(new ListViewItem { Content = row, MinHeight = 30, Padding = new Thickness(1, 0, 1, 0),
                 HorizontalContentAlignment = HorizontalAlignment.Stretch, IsTabStop = false });
         }
         if (devices.Count > 0) content.Children.Add(recipients);
         else content.Children.Add(Text("No other Blip devices are available.", 12));
 
-        var selected = QuickText(initialDescription ?? "", 12);
-        selected.Visibility = paths.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
-        content.Children.Add(selected);
         void SetPayload(List<string> value, string description)
         {
             paths = value;
             selected.Text = description;
             ToolTipService.SetToolTip(selected, description);
             selected.Visibility = Visibility.Visible;
-            instruction.Text = "Click a device to send.";
-            foreach (var send in sendButtons) send.IsEnabled = true;
-            sendButtons.FirstOrDefault()?.Focus(FocusState.Programmatic);
         }
         if (devices.Count > 0 && initialPaths == null)
         {
             var choices = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
-            choices.Children.Add(QuickButton("Choose files…", async () =>
-            {
-                var picker = new FileOpenPicker();
-                InitializeWithWindow.Initialize(picker, hwnd);
-                picker.FileTypeFilter.Add("*");
-                var files = await Modal(async () => await picker.PickMultipleFilesAsync());
-                if (files.Count > 0) SetPayload(files.Select(f => f.Path).ToList(),
-                    files.Count == 1 ? files[0].Name : files.Count + " files selected");
-            }));
             choices.Children.Add(QuickButton("Choose folder…", async () =>
             {
                 var picker = new FolderPicker();
@@ -427,10 +410,11 @@ public sealed partial class MainWindow
                 var folder = await Modal(async () => await picker.PickSingleFolderAsync());
                 if (folder != null) SetPayload(new() { folder.Path }, folder.Name);
             }));
-            content.Children.Insert(1, choices);
+            content.Children.Add(choices);
         }
         await ShowDialog(dialog);
         if (clickedPeer is not { } peer || diagnosticMode) return;
+        if (paths.Count == 0) { await SendToBlipRecipient(localPeer.ToLowerInvariant(), peer); return; }
         await DispatchBlipSend(peer, paths, localPeer, sendingStarted);
     }
 

@@ -131,7 +131,7 @@ class StorageView:
     def check_health(self):
         self.health_timer = 0
         trigger, self.trigger = self.trigger, "periodic"
-        if self.app.stack.get_visible_child_name() == "SMB Storage" and (
+        if self.app.stack.get_visible_child_name() == "SMB Drives" and (
             trigger != "periodic" or monotonic() >= self.next_inventory
         ):
             self.load()

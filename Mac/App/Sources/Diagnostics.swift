@@ -80,15 +80,14 @@ enum Diagnostics {
                 let labels = ["Studio desktop", "Travel laptop", "A very long registered phone name for checking how recipient rows handle truncation"] +
                     (1...8).map { "Studio contact · Laptop \($0)" }
                 let picker = BlipRecipientPicker(labels: labels, description: "Click a device to send.")
-                picker.dialog.layout()
+                picker.window.contentView?.layoutSubtreeIfNeeded()
                 guard picker.table.numberOfRows == labels.count, picker.table.selectedRow == -1,
-                      picker.dialog.buttons.map(\.title) == ["Cancel"], picker.table.activateRow != nil,
-                      let list = picker.dialog.accessoryView,
-                      list.frame.height < CGFloat(labels.count) * picker.table.rowHeight else {
+                      picker.cancelButton.title == "Cancel", picker.table.activateRow != nil,
+                      picker.scroll.frame.height < CGFloat(labels.count) * picker.table.rowHeight else {
                     throw BlipReceiverError.message("The recipient list did not start unselected and scrollable")
                 }
                 picker.table.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
-                if let content = picker.dialog.window.contentView,
+                if let content = picker.window.contentView,
                    let bitmap = content.bitmapImageRepForCachingDisplay(in: content.bounds) {
                     content.cacheDisplay(in: content.bounds, to: bitmap)
                     if let data = bitmap.representation(using: .png, properties: [:]) {

@@ -12,7 +12,23 @@ extension Notification.Name { static let myDriveIncomingBlip = Notification.Name
 struct BlipRecentRecipient: Codable, Identifiable {
     let peer: String
     let label: String
+    var person: String?
+    var device: String?
+    var nickname: String?
+    var person_nickname: String?
     var id: String { peer }
+    var fallbackLabel: String {
+        let parts = label.components(separatedBy: " · ")
+        func isType(_ value: String) -> Bool {
+            let tokens = value.split(separator: " ", maxSplits: 1)
+            guard let head = tokens.first, ["Desktop", "Laptop", "Tablet", "Phone"].contains(String(head)) else { return false }
+            return tokens.count == 1 || Int(tokens[1]) != nil
+        }
+        if parts.count == 2, isType(parts[1]) {
+            return parts[0]
+        }
+        return isType(label) ? "Device" : label
+    }
 }
 
 /// Uses the same-user local socket served by the headless helper or an existing Blip session.
@@ -116,19 +132,43 @@ struct BlipRecentRecipient: Codable, Identifiable {
         Task { await updateRecents("remove", owner: owner, target: target) }
     }
 
-    private func updateRecents(_ action: String, owner: String, peer: BlipPeer? = nil, target: String? = nil) async {
+    func renameRecent(_ target: String, displayed: String, nickname: String?, person: Bool) {
+        let owner = selfPeer
+        guard BlipPolicy.exactPeer(owner) else { return }
+        let prompt = NSAlert()
+        prompt.messageText = person ? "Person name" : "Device name"
+        prompt.addButton(withTitle: "Save")
+        prompt.addButton(withTitle: "Cancel")
+        let field = NSTextField(string: nickname ?? "")
+        field.placeholderString = displayed
+        field.frame = NSRect(x: 0, y: 0, width: 260, height: 24)
+        prompt.accessoryView = field
+        guard Self.runSignInPrompt(prompt, field: field) == .alertFirstButtonReturn, selfPeer == owner else { return }
+        let name = field.stringValue
+        Task { await updateRecents("rename", owner: owner, target: target, name: name) }
+    }
+
+    private func updateRecents(_ action: String, owner: String, peer: BlipPeer? = nil,
+                               target: String? = nil, name: String? = nil) async {
         let previous = recentUpdates
         let update = Task {
             await previous?.value
-            await changeRecents(action, owner: owner, peer: peer, target: target)
+            await changeRecents(action, owner: owner, peer: peer, target: target, name: name)
         }
         recentUpdates = update
         await update.value
     }
 
-    private func changeRecents(_ action: String, owner: String, peer: BlipPeer?, target: String?) async {
+    private func recent(_ peer: BlipPeer) -> JSON {
+        var result: JSON = ["peer": peer.peer, "label": recipientLabel(peer)]
+        if let person = peer.contactName { result["person"] = person }
+        if peer.hasDeviceName { result["device"] = peer.displayName }
+        return result
+    }
+
+    private func changeRecents(_ action: String, owner: String, peer: BlipPeer?, target: String?, name: String?) async {
         guard BlipPolicy.exactPeer(owner) else { return }
-        let labels = Dictionary(recipients.map { ($0.peer.lowercased(), recipientLabel($0)) },
+        let labels = Dictionary(recipients.map { ($0.peer.lowercased(), recent($0)) },
                                 uniquingKeysWith: { first, _ in first })
         var seen = Set<String>()
         let previous = transfers.filter {
@@ -137,12 +177,13 @@ struct BlipRecentRecipient: Codable, Identifiable {
         }.sorted { ($0.updated_at ?? 0) > ($1.updated_at ?? 0) }
         let seed: [JSON] = previous.compactMap { transfer in
             let peer = transfer.peer.lowercased()
-            guard seen.insert(peer).inserted, let label = labels[peer] else { return nil }
-            return ["peer": peer, "label": label]
+            guard seen.insert(peer).inserted else { return nil }
+            return labels[peer]
         }
         var payload: JSON = ["owner": owner, "seed": Array(seed.prefix(24))]
-        if let peer { payload["recipient"] = ["peer": peer.peer, "label": recipientLabel(peer)] }
+        if let peer { payload["recipient"] = recent(peer) }
         if let target { payload["target"] = target }
+        if let name { payload["name"] = name }
         do {
             let result = try await CoreBridge.shared.call(action: "blip.recents." + action,
                 request: ["data_dir": Paths.dataDir.path, "payload": payload])
@@ -414,8 +455,6 @@ struct BlipRecentRecipient: Codable, Identifiable {
             if receiveReady {
                 do { try await updateRelay(value, owner: identity, rawTransfers: rawTransfers) }
                 catch { receiveProblem = "A relay action needs attention. Stored files are kept." }
-            } else {
-                receiveProblem = "Sending is available. Allow myDrive access to Downloads, then click Refresh to enable receiving."
             }
             transfers = rawTransfers.filter {
                 !sameAccount($0.peer, account) || ($0.item_names?.count != 1 || $0.item_names?.first?.hasPrefix("mydrive-relay-v1.") != true)
@@ -567,7 +606,11 @@ struct BlipRecentRecipient: Codable, Identifiable {
     }
     func receive(_ transfer: BlipTransfer) {
         let owner = selfPeer
-        guard receiveReady, !owner.isEmpty, transfer.pending, UUID(uuidString: transfer.id) != nil,
+        guard receiveReady else {
+            problem = "Allow myDrive access to Downloads, then click Refresh to receive."
+            return
+        }
+        guard !owner.isEmpty, transfer.pending, UUID(uuidString: transfer.id) != nil,
               BlipPolicy.exactPeer(transfer.peer), receiving.insert(transfer.id).inserted else { return }
         Task {
             do {
