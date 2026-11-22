@@ -102,6 +102,23 @@ enum Diagnostics {
                 let link=try BlipSendPayload.textPayload("https://example.test/local-fixture",outbox:outbox)
                 defer { link.discard() }
                 guard BlipWebLink.read(link.files[0].path)?.host == "example.test" else { throw BlipReceiverError.message("Clipboard link fixture did not round trip") }
+                let clipboard = NSPasteboard.withUniqueName()
+                defer { clipboard.releaseGlobally() }
+                let address = "example.com/?mydrive-check=win0445"
+                clipboard.setString(address, forType: .string)
+                let implicitLink = try BlipSendPayload.clipboard(clipboard, outbox: outbox)
+                defer { implicitLink.discard() }
+                guard implicitLink.files.first?.pathExtension == "url",
+                      implicitLink.files.first.flatMap({ BlipWebLink.read($0.path)?.absoluteString }) == "https://" + address else {
+                    throw BlipReceiverError.message("A copied web address without its scheme did not round trip")
+                }
+                for text in ["notes.txt", "/Users/Shared/report.txt", "user@example.com/path", "file://example.com/path"] {
+                    let plain = try BlipSendPayload.textPayload(text, outbox: outbox)
+                    defer { plain.discard() }
+                    guard plain.files.first?.pathExtension == "txt" else {
+                        throw BlipReceiverError.message("Non-web clipboard text was converted to a shortcut")
+                    }
+                }
                 let batch = try BlipSendPayload.textPayload("https://example.test/one\nhttps://example.test/two", outbox: outbox)
                 defer { batch.discard() }
                 guard batch.files.compactMap({ BlipWebLink.read($0.path)?.path }) == ["/one", "/two"] else {

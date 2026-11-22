@@ -39,13 +39,7 @@ struct BlipSendPayload {
     static func textPayload(_ text: String, outbox: URL) throws -> Self {
         let lines = text.split(whereSeparator: \.isNewline)
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
-        let links = lines.prefix(17).compactMap { link -> URL? in
-            guard link.utf8.count <= 8192, !link.contains(where: \.isWhitespace),
-           link.rangeOfCharacter(from: .controlCharacters) == nil, !link.contains("\\"),
-           let url = URL(string: link), ["http", "https"].contains(url.scheme?.lowercased() ?? ""),
-           let host = url.host, !host.isEmpty, url.user == nil, url.password == nil else { return nil }
-            return url
-        }
+        let links = lines.prefix(17).compactMap(webClipboardURL)
         if !links.isEmpty, links.count <= 16, links.count == lines.count {
             let items = links.enumerated().map { index, link in
                 let name = links.count == 1 ? "Clipboard link.url" : String(format: "Clipboard link %02d.url", index + 1)
@@ -54,6 +48,21 @@ struct BlipSendPayload {
             return try stage(items, description: links.count == 1 ? "Web link from clipboard" : "\(links.count) web links from clipboard", outbox: outbox)
         }
         return try stage(Data(text.utf8), name: "Clipboard text.txt", description: "Text from clipboard", outbox: outbox)
+    }
+
+    private static func webClipboardURL(_ text: String) -> URL? {
+        guard text.utf8.count <= 8192, !text.contains(where: \.isWhitespace),
+              text.rangeOfCharacter(from: .controlCharacters) == nil, !text.contains("\\") else { return nil }
+        var address = text
+        // A copied address can omit its scheme. Require a DNS name and a URL delimiter before inferring HTTPS.
+        let domainWithPath = #"^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}[/?#]"#
+        if text.range(of: domainWithPath, options: [.regularExpression, .caseInsensitive]) != nil {
+            address = "https://" + text
+        }
+        guard address.utf8.count <= 8192, let url = URL(string: address),
+              ["http", "https"].contains(url.scheme?.lowercased() ?? ""),
+              let host = url.host, !host.isEmpty, url.user == nil, url.password == nil else { return nil }
+        return url
     }
 
     private static func stage(_ data: Data, name: String, description: String, outbox: URL) throws -> Self {
