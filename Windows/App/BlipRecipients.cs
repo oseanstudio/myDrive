@@ -157,9 +157,23 @@ public sealed partial class MainWindow
             else if (matches.Count == 0) rows.Children.Add(QuickText(searched ? "No matching Blip devices." : "Press Enter to search Blip.", 12));
             return;
         }
-        if (recentRecipients.Count == 0) return;
-        rows.Children.Add(QuickText("Recent recipients", 12, true));
-        foreach (var group in recentRecipients.GroupBy(r => r.Account))
+        var ownAccount = owner.Split(':')[0];
+        var myDevices = devices.Where(d => d.Peer.StartsWith(ownAccount + ":", StringComparison.OrdinalIgnoreCase))
+            .OrderBy(d => d.DisplayName, StringComparer.CurrentCultureIgnoreCase).ToList();
+        if (myDevices.Count > 0)
+        {
+            rows.Children.Add(QuickText("My devices", 12, true));
+            foreach (var device in myDevices)
+            {
+                var recent = recentRecipients.Find(r => r.peer.Equals(device.Peer, StringComparison.OrdinalIgnoreCase));
+                var name = FirstName(recent?.nickname, device.DisplayName);
+                AddRecipientRow(rows, owner, name, device, null, deviceShortcut: true, nickname: recent?.nickname);
+            }
+        }
+        var listedDevices = myDevices.Select(d => d.Peer).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var otherRecents = recentRecipients.Where(r => !listedDevices.Contains(r.peer)).ToList();
+        if (otherRecents.Count > 0) rows.Children.Add(QuickText("Recent recipients", 12, true));
+        foreach (var group in otherRecents.GroupBy(r => r.Account))
         {
             var entries = group.ToList();
             bool own = owner.StartsWith(group.Key + ":", StringComparison.OrdinalIgnoreCase);
@@ -179,6 +193,12 @@ public sealed partial class MainWindow
                 AddRecipientRow(rows, owner, name, device, entry.peer, entry.nickname, nested: grouped);
             }
         }
+        listedDevices.UnionWith(otherRecents.Select(r => r.peer));
+        var otherDevices = devices.Where(d => !listedDevices.Contains(d.Peer))
+            .OrderBy(d => d.ToString(), StringComparer.CurrentCultureIgnoreCase).ToList();
+        if (otherDevices.Count > 0) rows.Children.Add(QuickText("Other devices", 12, true));
+        foreach (var device in otherDevices)
+            AddRecipientRow(rows, owner, device.ToString(), device, null, deviceShortcut: true);
     }
 
     private static string FirstName(params string?[] names) =>
@@ -186,17 +206,40 @@ public sealed partial class MainWindow
 
     private async Task RenameRecentRecipient(string owner, string target, string name, string? nickname, bool person)
     {
-        if (busy || modalDepth > 0 || diagnosticMode || owner != BlipOwner) return;
+        var edited = await PromptBlipName(owner, name, nickname, person);
+        if (edited != null) await UpdateRecentRecipients("rename", owner, target: target, name: edited);
+    }
+
+    private async Task<string?> PromptBlipName(string owner, string name, string? nickname, bool person)
+    {
+        if (busy || modalDepth > 0 || diagnosticMode || owner != BlipOwner) return null;
         var input = new TextBox { Text = nickname ?? "", PlaceholderText = name, MaxLength = 80 };
         var dialog = new ContentDialog { XamlRoot = root.XamlRoot, Title = person ? "Person name" : "Device name",
             Content = input, PrimaryButtonText = "Save", CloseButtonText = "Cancel", DefaultButton = ContentDialogButton.Primary };
         dialog.Opened += (_, _) => input.Focus(FocusState.Programmatic);
-        if (await ShowDialog(dialog) == ContentDialogResult.Primary && owner == BlipOwner)
-            await UpdateRecentRecipients("rename", owner, target: target, name: input.Text);
+        return await ShowDialog(dialog) == ContentDialogResult.Primary && owner == BlipOwner ? input.Text : null;
+    }
+
+    private async Task RenameBlipDevice(string owner, string name, BlipDevice device, string? nickname)
+    {
+        if (nickname != null)
+        {
+            await RenameRecentRecipient(owner, device.Peer, name, nickname, false);
+            return;
+        }
+        var edited = await PromptBlipName(owner, name, device.Nickname, false);
+        if (edited == null || blipSnapshot?.Status is not { } status) return;
+        try
+        {
+            SaveBlipDeviceName(status.UserId, device, edited);
+            RenderRecipientRows();
+        }
+        catch (IOException error) { Error(error); }
     }
 
     private void AddRecipientRow(StackPanel rows, string owner, string name, BlipDevice? device, string? remove,
-                                 string? nickname = null, bool person = false, bool nested = false)
+                                 string? nickname = null, bool person = false, bool nested = false,
+                                 bool deviceShortcut = false)
     {
         var row = new Grid { ColumnSpacing = 4, Margin = new Thickness(nested ? 12 : 0, 0, 0, 0) };
         row.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
@@ -217,7 +260,7 @@ public sealed partial class MainWindow
             send.ContextFlyout = alternatives;
             row.Children.Add(send);
         }
-        if (remove != null)
+        if (remove != null || deviceShortcut)
         {
             var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 3 };
             if (device != null)
@@ -227,10 +270,16 @@ public sealed partial class MainWindow
                 paste.IsEnabled = BlipRunning && !busy;
                 actions.Children.Add(paste);
             }
-            actions.Children.Add(QuickIcon("\uE70F", "Rename " + name,
-                () => _ = RenameRecentRecipient(owner, remove, name, nickname, person)));
-            var button = QuickIcon("\uE711", "Remove " + name + " from recent recipients", () => _ = UpdateRecentRecipients("remove", owner, target: remove));
-            actions.Children.Add(button);
+            if (deviceShortcut && device != null)
+                actions.Children.Add(QuickIcon("\uE70F", "Rename " + name,
+                    () => _ = RenameBlipDevice(owner, name, device, nickname)));
+            if (remove != null)
+            {
+                actions.Children.Add(QuickIcon("\uE70F", "Rename " + name,
+                    () => _ = RenameRecentRecipient(owner, remove, name, nickname, person)));
+                actions.Children.Add(QuickIcon("\uE711", "Remove " + name + " from recent recipients",
+                    () => _ = UpdateRecentRecipients("remove", owner, target: remove)));
+            }
             Grid.SetColumn(actions, 1);
             row.Children.Add(actions);
         }

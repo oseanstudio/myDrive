@@ -337,13 +337,23 @@ class TransferView:
             elif not matched:
                 self.recipient_rows.append(label("No matching Blip devices." if searched else "Press Enter to search Blip."))
             return
-        if not self.recent_recipients:
-            return
-        self.recipient_rows.append(label("Recent recipients", "heading"))
-        groups = defaultdict(list)
-        for entry in self.recent_recipients:
-            groups[entry["peer"].partition(":")[0]].append(entry)
         details = self.recent_details(owner)
+        account_prefix = owner.partition(":")[0] + ":"
+        my_devices = {peer for peer in known if peer.startswith(account_prefix)}
+        aliases = {entry["peer"]: entry.get("nickname") for entry in self.recent_recipients}
+        if my_devices:
+            self.recipient_rows.append(label("My devices", "heading"))
+            for peer, name in known.items():
+                if peer in my_devices:
+                    nickname = aliases.get(peer)
+                    displayed = nickname or details.get(peer, ("", ""))[1] or name.rsplit(" · ", 1)[-1]
+                    self.add_recipient_row(owner, displayed, peer, nickname=nickname, device_shortcut=True)
+        recents = [entry for entry in self.recent_recipients if entry["peer"] not in my_devices]
+        if recents:
+            self.recipient_rows.append(label("Recent recipients", "heading"))
+        groups = defaultdict(list)
+        for entry in recents:
+            groups[entry["peer"].partition(":")[0]].append(entry)
         for account, entries in groups.items():
             first = entries[0]
             grouped = len(entries) > 1
@@ -361,6 +371,12 @@ class TransferView:
                         or device_name or entry.get("device") or (f"Device {index}" if grouped else self.recent_fallback(entry)))
                 self.add_recipient_row(owner, name, peer if peer in known else None, peer,
                                        nickname=entry.get("nickname"), nested=grouped)
+        listed = my_devices | {entry["peer"] for entry in recents}
+        others = [(peer, name) for peer, name in known.items() if peer not in listed]
+        if others:
+            self.recipient_rows.append(label("Other devices", "heading"))
+        for peer, name in others:
+            self.add_recipient_row(owner, name, peer, device_shortcut=True)
 
     def recent_details(self, owner):
         catalog = self.catalog(owner)
@@ -392,7 +408,8 @@ class TransferView:
         self.app.dialog("Person name" if person else "Device name", "Save", [name],
                         lambda: self.update_recents("rename", owner, target=target, name=name.get_text()))
 
-    def add_recipient_row(self, owner, name, peer=None, remove=None, nickname=None, person=False, nested=False):
+    def add_recipient_row(self, owner, name, peer=None, remove=None, nickname=None, person=False, nested=False,
+                          device_shortcut=False):
         controls = Gtk.Box(spacing=4, margin_start=12 if nested else 0)
         if peer:
             select = button(name, lambda: self.choose_files(peer=peer, owner=owner))
@@ -401,18 +418,25 @@ class TransferView:
             select.set_hexpand(True)
             controls.append(select)
             actions = [("Send folder…", lambda: self.choose_files(folder=True, peer=peer, owner=owner))]
-            if not remove:
+            if not (remove or device_shortcut):
                 actions.append(("Paste and send", lambda: self.paste(peer, owner)))
             controls.append(menu(actions))
         else:
             name_label = label(name, "heading" if person else None)
             name_label.set_hexpand(True)
             controls.append(name_label)
+        if peer and (remove or device_shortcut):
+            paste = Gtk.Button(icon_name="edit-paste-symbolic", tooltip_text="Paste and send to " + name)
+            paste.connect("clicked", lambda *_: self.paste(peer, owner))
+            controls.append(paste)
+        if device_shortcut:
+            def rename():
+                if nickname:
+                    self.rename_recent(owner, peer, name, nickname, False)
+                else:
+                    self.rename_device(owner, peer, name, None, lambda _: None)
+            controls.append(self.rename_button(name, rename))
         if remove:
-            if peer:
-                paste = Gtk.Button(icon_name="edit-paste-symbolic", tooltip_text="Paste and send to " + name)
-                paste.connect("clicked", lambda *_: self.paste(peer, owner))
-                controls.append(paste)
             controls.append(self.rename_button(name, lambda: self.rename_recent(owner, remove, name, nickname, person)))
             cross = Gtk.Button(icon_name="window-close-symbolic", tooltip_text="Remove " + name + " from recent recipients")
             cross.connect("clicked", lambda *_: self.update_recents("remove", owner, target=remove))

@@ -44,7 +44,7 @@ public sealed partial class MainWindow
             Render();
             recentRecipients = blipSnapshot.Devices.Take(2).Select(Recent).ToList();
             RenderRecipientRows();
-            var recentRows = recipientRows?.Children.OfType<Grid>().ToArray();
+            var recentRows = recipientRows?.Children.OfType<Grid>().Take(3).ToArray();
             if (recentRows is not { Length: 3 } ||
                 recentRows[0].Children.OfType<TextBlock>().SingleOrDefault()?.Text != "Studio tester" ||
                 recentRows.Skip(1).Any(row => row.Margin.Left <= 0 ||
@@ -53,6 +53,21 @@ public sealed partial class MainWindow
                         .SequenceEqual(new[] { "Paste", "Rename", "Remove" }) == false))
                 throw new IOException("Recent devices must appear under their contact with Paste, Rename and Remove controls.");
             await Capture(directory, "blip-recent-recipients.png");
+            var own = new BlipDevice { Peer = blipSnapshot.Status.UserId + ":" + Guid.NewGuid(), Name = "Fixture spare", NameKnown = true, Online = false };
+            var current = new BlipDevice { Peer = BlipOwner, Name = "Fixture current", NameKnown = true };
+            blipSnapshot.Devices.AddRange(new[] { own, current });
+            recentRecipients.Add(Recent(own));
+            RenderRecipientRows();
+            var devicesInSend = recipientRows?.Children.OfType<Grid>()
+                .Select(row => row.Children.OfType<Button>().FirstOrDefault()?.Content)
+                .OfType<TextBlock>().Select(text => text.Text).ToArray() ?? Array.Empty<string>();
+            var headings = recipientRows?.Children.OfType<TextBlock>().Select(text => text.Text).ToArray();
+            if (headings?.SequenceEqual(new[] { "My devices", "Recent recipients", "Other devices" }) != true ||
+                devicesInSend.Count(name => name == "Fixture spare") != 1 ||
+                devicesInSend.Contains("Fixture current") || devicesInSend.Length != 5)
+                throw new IOException("Send must show each registered destination once, including offline devices.");
+            blipSnapshot.Devices.Remove(own);
+            blipSnapshot.Devices.Remove(current);
             recentRecipients.Clear();
             RenderRecipientRows();
             var senderChoices=ChooseLinkSenders();await Task.Delay(200);if(activeDialog==null)throw new IOException("Sender permissions did not open");await Capture(directory,"blip-sender-permissions.png",activeDialog);activeDialog.Hide();await senderChoices;

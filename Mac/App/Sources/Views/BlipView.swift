@@ -86,30 +86,55 @@ struct BlipView: View {
                     Text(searched ? "No matching Blip devices." : "Press Return to search Blip.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
-            } else if !receiver.recentRecipients.isEmpty {
-                Text("Recent recipients").font(.caption).fontWeight(.semibold)
-                let groups = Dictionary(grouping: receiver.recentRecipients) { accountPart($0.peer) }
-                var seen = Set<String>()
-                let order = receiver.recentRecipients.map { accountPart($0.peer) }.filter { seen.insert($0).inserted }
-                ForEach(order, id: \.self) { account in
-                    let entries = groups[account] ?? []
-                    if let first = entries.first {
-                        let grouped = entries.count > 1
-                        let own = account.caseInsensitiveCompare(receiver.account) == .orderedSame
-                        let person = firstName(first.person_nickname, own ? "Your devices" : nil,
-                            available.first { accountPart($0.peer) == account }?.contactName,
-                            first.person, first.fallbackLabel)
-                        if grouped {
-                            recipientRow(person, peer: nil, removing: account, nickname: first.person_nickname, person: true)
-                        }
-                        ForEach(Array(entries.enumerated()), id: \.element.id) { index, entry in
-                            let device = available.first { $0.peer.caseInsensitiveCompare(entry.peer) == .orderedSame }
-                            let name = firstName(entry.nickname, !grouped && !own ? person : nil,
-                                device?.hasDeviceName == true ? device?.displayName : nil, entry.device,
-                                grouped ? "Device \(index + 1)" : entry.fallbackLabel)
-                            recipientRow(name, peer: device, removing: entry.peer, nickname: entry.nickname)
-                                .padding(.leading, grouped ? 12 : 0)
-                        }
+            } else {
+                let account = receiver.account.lowercased()
+                let myDevices = available.filter { accountPart($0.peer) == account }
+                if !myDevices.isEmpty {
+                    Text("My devices").font(.caption).fontWeight(.semibold)
+                    ForEach(myDevices) { device in
+                        let recent = receiver.recentRecipients.first { $0.peer.caseInsensitiveCompare(device.peer) == .orderedSame }
+                        recipientRow(firstName(recent?.nickname, device.displayName), peer: device,
+                                     nickname: recent?.nickname, deviceShortcut: true)
+                    }
+                }
+                let listed = Set(myDevices.map { $0.peer.lowercased() })
+                recentRows(receiver.recentRecipients.filter { !listed.contains($0.peer.lowercased()) }, available: available)
+                let seen = listed.union(receiver.recentRecipients.map { $0.peer.lowercased() })
+                let others = available.filter { !seen.contains($0.peer.lowercased()) }
+                if !others.isEmpty {
+                    Text("Other devices").font(.caption).fontWeight(.semibold)
+                    ForEach(others) { device in
+                        recipientRow(receiver.recipientLabel(device), peer: device, deviceShortcut: true)
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private func recentRows(_ recents: [BlipRecentRecipient], available: [BlipPeer]) -> some View {
+        if !recents.isEmpty {
+            Text("Recent recipients").font(.caption).fontWeight(.semibold)
+            let groups = Dictionary(grouping: recents) { accountPart($0.peer) }
+            var seen = Set<String>()
+            let order = recents.map { accountPart($0.peer) }.filter { seen.insert($0).inserted }
+            ForEach(order, id: \.self) { account in
+                let entries = groups[account] ?? []
+                if let first = entries.first {
+                    let grouped = entries.count > 1
+                    let own = account.caseInsensitiveCompare(receiver.account) == .orderedSame
+                    let person = firstName(first.person_nickname, own ? "Your devices" : nil,
+                        available.first { accountPart($0.peer) == account }?.contactName,
+                        first.person, first.fallbackLabel)
+                    if grouped {
+                        recipientRow(person, peer: nil, removing: account, nickname: first.person_nickname, person: true)
+                    }
+                    ForEach(Array(entries.enumerated()), id: \.element.id) { index, entry in
+                        let device = available.first { $0.peer.caseInsensitiveCompare(entry.peer) == .orderedSame }
+                        let name = firstName(entry.nickname, !grouped && !own ? person : nil,
+                            device?.hasDeviceName == true ? device?.displayName : nil, entry.device,
+                            grouped ? "Device \(index + 1)" : entry.fallbackLabel)
+                        recipientRow(name, peer: device, removing: entry.peer, nickname: entry.nickname)
+                            .padding(.leading, grouped ? 12 : 0)
                     }
                 }
             }
@@ -149,7 +174,7 @@ struct BlipView: View {
     }
 
     private func recipientRow(_ name: String, peer: BlipPeer?, removing: String? = nil,
-                              nickname: String? = nil, person: Bool = false) -> some View {
+                              nickname: String? = nil, person: Bool = false, deviceShortcut: Bool = false) -> some View {
         HStack(spacing: 4) {
             if let peer {
                 Button { receiver.chooseFiles(to: peer) } label: {
@@ -162,13 +187,24 @@ struct BlipView: View {
                 Text(name).fontWeight(person ? .semibold : .regular)
                     .lineLimit(1).help(name).frame(maxWidth: .infinity, alignment: .leading)
             }
+            if let peer, deviceShortcut || removing != nil {
+                Button { receiver.pasteAndSend(to: peer) } label: { Image(systemName: "clipboard") }
+                    .accessibilityLabel("Paste and send to " + name)
+                    .help("Paste and send")
+                    .disabled(receiver.sending || receiver.preparingSend)
+            }
+            if deviceShortcut, let peer {
+                Button {
+                    if let nickname {
+                        receiver.renameRecent(peer.peer, displayed: name, nickname: nickname, person: false)
+                    } else {
+                        receiver.rename(peer)
+                    }
+                } label: { Image(systemName: "pencil") }
+                .accessibilityLabel("Rename " + name)
+                .help("Rename")
+            }
             if let removing {
-                if let peer {
-                    Button { receiver.pasteAndSend(to: peer) } label: { Image(systemName: "clipboard") }
-                        .accessibilityLabel("Paste and send to " + name)
-                        .help("Paste and send")
-                        .disabled(receiver.sending || receiver.preparingSend)
-                }
                 Button { receiver.renameRecent(removing, displayed: name, nickname: nickname, person: person) } label: {
                     Image(systemName: "pencil")
                 }

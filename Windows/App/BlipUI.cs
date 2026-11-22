@@ -454,13 +454,8 @@ public sealed partial class MainWindow
                 dialog.Hide();
                 return;
             }
-            if (!diagnosticMode)
-            {
-                try { SenderCatalog.SetNicknames(status.UserId, new[] { (device.Peer, input.Text) }); }
-                catch (IOException error) { Error(error); return; }
-            }
-            device.Nickname = new string(input.Text.Trim().Where(c => !char.IsControl(c)).Take(80).ToArray());
-            device.SelectionName = "";
+            try { SaveBlipDeviceName(status.UserId, device, input.Text); }
+            catch (IOException error) { Error(error); return; }
             name.Text = device.ToString();
             AutomationProperties.SetName(send, "Send to " + name.Text);
             ToolTipService.SetToolTip(send, name.Text);
@@ -471,5 +466,13 @@ public sealed partial class MainWindow
         dialog.Content = form;
         input.Focus(FocusState.Programmatic);
     }
+
+    private void SaveBlipDeviceName(string account, BlipDevice device, string name)
+    {
+        if (!diagnosticMode) SenderCatalog.SetNicknames(account, new[] { (device.Peer, name) });
+        device.Nickname = new string(name.Trim().Where(c => !char.IsControl(c)).Take(80).ToArray());
+        device.SelectionName = "";
+    }
+
     private Task AcceptBlip(BlipTransfer transfer)=>ReceiveFromBlipNotice(transfer);
 }

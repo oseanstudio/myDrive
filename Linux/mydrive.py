@@ -980,31 +980,35 @@ class MyDrive(Gtk.Application):
             print("Linux GTK fixed popup, cold Blip connection and one-click recipient passed", flush=True)
             peer = next(iter(view.recipients()))
             second = peer.partition(":")[0] + ":00000000-0000-4000-8000-000000000006"
-            view.snapshot["devices"].append({"peer": second, "name": "Fixture studio", "name_known": True})
-            view.recent_recipients = [{"peer": second, "label": "Fixture studio"},
-                                      {"peer": peer, "label": "Fixture laptop"}]
+            view.snapshot["devices"].extend([
+                {"peer": second, "name": "Fixture studio", "name_known": True, "online": False},
+                {"peer": view.recipient_owner, "name": "This fixture device", "name_known": True},
+                {"peer": "00000000-0000-4000-8000-000000000009:00000000-0000-4000-8000-000000000008",
+                 "name": "Fixture external", "name_known": True},
+            ])
+            view.recent_recipients = [{"peer": peer, "label": "Fixture laptop", "nickname": "Fixture laptop"}]
             view.render_recipient_rows()
-            recipient = view.recipient_rows.get_last_child()
-            heading = recipient.get_prev_sibling().get_prev_sibling()
-            assert heading.get_first_child().get_label() == "Your devices"
-            assert recipient.get_margin_start() > 0
+            heading = view.recipient_rows.get_first_child()
+            recipient = heading.get_next_sibling()
+            other_owned = recipient.get_next_sibling()
+            other_heading = other_owned.get_next_sibling()
+            assert heading.get_label() == "My devices"
+            assert other_owned.get_first_child().get_child().get_label() == "Fixture studio"
+            assert other_heading.get_label() == "Other devices"
+            assert other_heading.get_next_sibling() == view.recipient_rows.get_last_child()
             calls = []
             view.choose_files = lambda **options: calls.append(options)
-            view.update_recents = lambda *args, **kwargs: calls.append((args, kwargs))
             view.paste = lambda selected, owner: calls.append(("paste", selected, owner))
             view.rename_recent = lambda *args: calls.append(("rename", *args))
             recipient.get_first_child().emit("clicked")
-            remove = recipient.get_last_child()
-            edit = remove.get_prev_sibling()
+            edit = recipient.get_last_child()
             paste = edit.get_prev_sibling()
             assert edit.get_icon_name() == "document-edit-symbolic"
             paste.emit("clicked")
             edit.emit("clicked")
-            remove.emit("clicked")
             assert calls == [{"peer": peer, "owner": view.recipient_owner},
                              ("paste", peer, view.recipient_owner),
-                             ("rename", view.recipient_owner, peer, "Fixture laptop", None, False),
-                             (("remove", view.recipient_owner), {"target": peer})]
+                             ("rename", view.recipient_owner, peer, "Fixture laptop", "Fixture laptop", False)]
             view.recipient_entry.set_text("Remote person")
             view.recipient_entry.emit("activate")
             GLib.timeout_add(25, verify_directory)
@@ -1014,7 +1018,7 @@ class MyDrive(Gtk.Application):
                 return GLib.SOURCE_CONTINUE
             result = self.transfer_view.recipient_rows.get_first_child().get_first_child()
             assert result.get_child().get_label() == "Remote person · Remote desktop"
-            print("Linux GTK directory lookup, direct recipient selection and remove button passed", flush=True)
+            print("Linux GTK directory lookup, grouped destinations and direct recipient controls passed", flush=True)
             self.stack.set_visible_child_name("Sync")
             warning.emit("clicked")
             GLib.timeout_add(25, verify_attention)
