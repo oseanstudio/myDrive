@@ -127,7 +127,7 @@ struct BlipSendPayload {
 
     private func canChooseRecipient() -> Bool {
         guard connected, !sending, !recipients.isEmpty else {
-            reportSend("Connect to Blip and wait for a recipient device to appear in Send & Receive.")
+            reportSend("Connect to Blip and wait for a recipient device to appear in the Send view.")
             return false
         }
         return true

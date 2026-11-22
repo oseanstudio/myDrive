@@ -44,7 +44,7 @@ public sealed partial class MainWindow
         identity.Children.Add(new TextBlock { Text = DisplayVersion, FontSize = 10, Opacity = .73, VerticalAlignment = VerticalAlignment.Center });
         quickHeader.Children.Add(identity);
         var views=new MenuFlyout();
-        foreach(var view in new[]{("Sync","sync"),(StorageViewName,"connections"),("Send & Receive","transfers"),("Activity","activity"),("Settings","settings")})
+        foreach(var view in new[]{(SendViewName,"transfers"),("Sync","sync"),(StorageViewName,"connections"),("Activity","activity"),("Settings","settings")})
             MenuAction(views,view.Item1,()=>NavigateQuick(view.Item2));
         views.Items.Add(new MenuFlyoutSeparator());
         MenuAction(views,"Hide to tray",DismissQuickPopup);
@@ -69,7 +69,7 @@ public sealed partial class MainWindow
     }
     private void UpdateQuickChrome()
     {
-        quickViews.Content=currentView switch{"sync" or "sync-files" or "sync-info" or "sync-attention"=>"Sync","transfers"=>"Send & Receive","activity"=>"Activity","settings"=>"Settings",_=>StorageViewName};
+        quickViews.Content=currentView switch{"sync" or "sync-files" or "sync-info" or "sync-attention"=>"Sync","transfers"=>SendViewName,"activity"=>"Activity","settings"=>"Settings",_=>StorageViewName};
         quickViews.IsEnabled=!busy;
         quickExpand.IsEnabled = !busy;
         if(statusFooter!=null){statusFooter.Visibility=compact&&!busy?Visibility.Collapsed:Visibility.Visible;if(statusFooter.Child is Grid footer)footer.Padding=compact?new Thickness(10,5,10,5):new Thickness(24,10,24,10);}

@@ -12,6 +12,9 @@ enum Diagnostics {
                 try FileManager.default.createDirectory(at:directory,withIntermediateDirectories:true)
                 var captures:[String]=[]
                 let layout=layoutCheck(directory:directory,captures:&captures)
+                guard PopupViewKind.pickerCases.first?.label == "Send" else {
+                    throw BlipReceiverError.message("The view picker must start with Send.")
+                }
                 let failedSync = Snapshot(from: ["folders": [
                     ["id": "moved-folder", "label": "Moved folder", "path": "/tmp/mydrive-old-folder",
                      "status": ["pullErrors": 1]]
@@ -27,7 +30,7 @@ enum Diagnostics {
                 receiver.peers=[BlipPeer(peer:peer,name:"A long studio laptop name for overflow checking",name_known:true)]
                 receiver.transfers=(0..<12).map {index in BlipTransfer(transfer_id:UUID().uuidString,peer:peer,direction:"Incoming",status:index==0 ? "Invited" : index==1 ? "Paused" : "Completed",completed:index>1,has_error:index==2,link_files:[],link_only:true)}
                 guard receiver.transfers.filter(\.isLive).map(\.status) == ["Invited", "Paused"] else {
-                    throw BlipReceiverError.message("Send & Receive shows completed transfer history")
+                    throw BlipReceiverError.message("The Send view shows completed transfer history")
                 }
                 state.blip=receiver;state.view = .transfers
                 for scheme in [ColorScheme.light,.dark] {

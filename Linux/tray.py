@@ -37,7 +37,7 @@ class Tray:
             "Status": GLib.Variant("s", "Active"),
             "IconName": GLib.Variant("s", "folder-sync-symbolic" if not pixmaps else ""),
             "IconPixmap": GLib.Variant("a(iiay)", pixmaps),
-            "ToolTip": GLib.Variant("(sa(iiay)ss)", ("", pixmaps, "myDrive", "Sync, SMB Storage and Send & Receive")),
+            "ToolTip": GLib.Variant("(sa(iiay)ss)", ("", pixmaps, "myDrive", "Sync, SMB Storage and Send")),
             "ItemIsMenu": GLib.Variant("b", False),
         }
         try:

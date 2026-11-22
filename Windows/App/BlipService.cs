@@ -133,8 +133,8 @@ public sealed class BlipService : IAsyncDisposable
         "IllegalStateException" => "Blip is not ready for this action. Check the account and transfer status, then refresh.",
         "IllegalArgumentException" => "Blip rejected the selected device, file or transfer. Refresh the list and select it again.",
         "registration_failed" => "Blip could not complete sign-in. Check the code or request a new one.",
-        "acceptance_unconfirmed" => "Blip has not confirmed receiving. Check Transfers before trying Receive again.",
-        "accept_not_waiting" => "This transfer is no longer waiting to receive. Refresh Transfers to see its current state.",
+        "acceptance_unconfirmed" => "Blip has not confirmed receiving. Check the Send view before trying Receive again.",
+        "accept_not_waiting" => "This transfer is no longer waiting to receive. Refresh Blip in the Send view to see its current state.",
         "desktop_profile_missing" => "Open and sign in to Blip once on this computer, then reconnect myDrive. No new account is needed.",
         "native_engine_missing" => "Choose Add Blip engine to use a compatible copy of blip-jni.dll.",
         "native_engine_unsupported" => "This version of Blip’s engine is unsupported. See the Windows setup guide.",
@@ -298,7 +298,7 @@ public sealed class BlipService : IAsyncDisposable
         }
         finally { lifecycle.Release(); }
     }
-    private void RequireRunning() { if (!IsRunning) throw new IOException("Start Blip in Transfers first."); }
+    private void RequireRunning() { if (!IsRunning) throw new IOException("Start Blip in the Send view first."); }
     public async Task<BlipSnapshot> PollAsync(CancellationToken token = default)
     {
         RequireRunning();

@@ -89,8 +89,9 @@ class MyDrive(Gtk.Application):
         if self.desktop_appearance:
             self.desktop_appearance.connect("changed::color-scheme", lambda *_: self.apply_appearance())
         self.apply_appearance()
-        titles = ["Sync", "SMB Storage", "Send & Receive", "Activity", "Settings"]
+        titles = ["Send", "Sync", "SMB Storage", "Activity", "Settings"]
         view = Gtk.DropDown.new_from_strings(titles)
+        view.set_selected(titles.index("Sync"))
         header_content = Gtk.Box(spacing=7)
         header_content.append(label(f"myDrive {VERSION}", "heading"))
         header_content.append(view)
@@ -134,6 +135,7 @@ class MyDrive(Gtk.Application):
             scroll = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER, child=page)
             self.pages[title] = page
             self.stack.add_named(scroll, title)
+        self.stack.set_visible_child_name(titles[view.get_selected()])
         def show_view(dropdown, *_):
             title = titles[dropdown.get_selected()]
             self.stack.set_visible_child_name(title)
@@ -150,13 +152,14 @@ class MyDrive(Gtk.Application):
                 if window.get_visible() and self.stack.get_visible_child_name() == "SMB Storage":
                     self.storage_view.check_now("view")
             self.window.connect("notify::visible", check_visible_storage)
-        self.transfer_view = TransferView(self, self.pages["Send & Receive"], self.blip)
+        self.transfer_view = TransferView(self, self.pages["Send"], self.blip)
         self.render_activity()
         self.render_settings()
         self.window.present()
         if self.fixture:
             assert header.get_decoration_layout() == ":close" and controls.get_last_child() == expand
             assert expand.get_icon_name() == "view-fullscreen-symbolic" and content.get_last_child() == self.stack
+            assert view.get_model().get_item(0).get_string() == "Send"
             self.run_fixture()
             return
         self.tray = Tray(self.window, ROOT / f"{APP_ID}.png")
@@ -950,7 +953,7 @@ class MyDrive(Gtk.Application):
 
         self.storage_view.render_bookmarks()
         self.transfer_view.render()
-        self.stack.set_visible_child_name("Send & Receive")
+        self.stack.set_visible_child_name("Send")
         chosen = []
         recipients = self.transfer_view.choose_recipient({f"{n}": f"Fixture device {n}" for n in range(10)},
                                                          chosen.append, files_ready=True)

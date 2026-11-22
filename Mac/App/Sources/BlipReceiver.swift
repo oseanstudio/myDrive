@@ -73,7 +73,7 @@ struct BlipRecentRecipient: Codable, Identifiable {
         guard !sending, connected, (recipients + directoryRecipients).contains(where: { $0.peer == peer.peer }),
               let socket = BlipLocalRPC.socketURL() else {
             payload.discard()
-            reportSend("This device is unavailable. Refresh Transfers before sending.")
+            reportSend("This device is unavailable. Refresh Blip in the Send view before sending.")
             return
         }
         let sender = selfPeer
@@ -95,7 +95,7 @@ struct BlipRecentRecipient: Codable, Identifiable {
                 }
                 await updateRecents("remember", owner: sender, peer: peer)
             } catch {
-                reportSend("Blip could not confirm the send. Refresh Transfers before retrying.")
+                reportSend("Blip could not confirm the send. Refresh Blip in the Send view before retrying.")
             }
             await refresh()
         }

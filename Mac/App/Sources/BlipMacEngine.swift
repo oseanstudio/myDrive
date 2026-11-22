@@ -17,7 +17,7 @@ enum BlipMacEngine: Int32, LocalizedError {
         case .version: return "This Blip version is unsupported by the background service."
         case .profile: return "myDrive could not open its Blip profile."
         case .launch: return "The native background Blip engine could not start."
-        case .permission: return "myDrive needs permission to access Blip’s local data. Allow access if macOS asks, then refresh Send & Receive."
+        case .permission: return "myDrive needs permission to access Blip’s local data. Allow access if macOS asks, then refresh Blip in the Send view."
         case .download: return "The Blip engine could not be downloaded. Check your internet connection and try again."
         }
     }

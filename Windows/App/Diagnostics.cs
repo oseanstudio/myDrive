@@ -24,6 +24,9 @@ public sealed partial class MainWindow
             SetMode(true);
             await Task.Delay(400);
             root.UpdateLayout();
+            if(quickViews.Flyout is not Microsoft.UI.Xaml.Controls.MenuFlyout viewMenu||
+                viewMenu.Items.FirstOrDefault() is not Microsoft.UI.Xaml.Controls.MenuFlyoutItem { Text: "Send" })
+                throw new IOException("The view picker must start with Send.");
             var list=syncFolderList??throw new IOException("The compact Sync list did not load.");
             double top=list.TransformToVisual(root).TransformPoint(new Windows.Foundation.Point(0,0)).Y;
             double gap=root.ActualHeight-top-list.ActualHeight;

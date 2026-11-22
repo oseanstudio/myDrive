@@ -60,6 +60,7 @@ public sealed partial class MainWindow : Window
     private readonly Dictionary<(ElementTheme,string),SolidColorBrush> themeBrushes=new();
     private Windows.Graphics.PointInt32? quickOrigin;
     private const string StorageViewName = "SMB Storage";
+    private const string SendViewName = "Send";
     private static string DisplayVersion => typeof(MainWindow).Assembly.GetName().Version?.ToString(3) ?? "";
 
     private SolidColorBrush Brush(string resource)
@@ -87,7 +88,7 @@ public sealed partial class MainWindow : Window
         navigation.MenuItems.Add(new NavigationViewItem{Content=StorageViewName,Icon=new SymbolIcon(Symbol.World),Tag="connections"});
         navigation.MenuItems.Add(new NavigationViewItem{Content="Sync",Icon=new SymbolIcon(Symbol.Switch),Tag="sync"});
         navigation.MenuItems.Add(new NavigationViewItem{Content="Activity",Icon=new SymbolIcon(Symbol.Sync),Tag="activity"});
-        navigation.MenuItems.Add(new NavigationViewItem{Content="Send & Receive",Icon=new SymbolIcon(Symbol.Send),Tag="transfers"});
+        navigation.MenuItems.Add(new NavigationViewItem{Content=SendViewName,Icon=new SymbolIcon(Symbol.Send),Tag="transfers"});
         navigation.PaneFooter=Text($"  myDrive {DisplayVersion}",12);
         var content=new Grid();content.RowDefinitions.Add(new(){Height=GridLength.Auto});content.RowDefinitions.Add(new(){Height=GridLength.Auto});content.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});
         content.Children.Add(notice);Grid.SetRow(updateOffer,1);content.Children.Add(updateOffer);

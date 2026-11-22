@@ -15,14 +15,14 @@ enum PopupViewKind: String, CaseIterable, Identifiable {
         case .syncInfo, .syncAttention: return "Sync"
         case .connections: return "SMB Storage"
         case .activity: return "Activity"
-        case .transfers: return "Send & Receive"
+        case .transfers: return "Send"
         case .settings: return "Settings"
         }
     }
     /// The view picker lists only top-level destinations. `syncFiles` is a
     /// drill-in screen reached by clicking a folder row, so listing it next
     /// to `sync` showed two near-identical entries.
-    static var pickerCases: [PopupViewKind] { [.sync, .connections, .transfers, .activity, .settings] }
+    static var pickerCases: [PopupViewKind] { [.transfers, .sync, .connections, .activity, .settings] }
 }
 
 enum StatusTint {

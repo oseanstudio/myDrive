@@ -139,7 +139,7 @@ public sealed partial class MainWindow
     }
     private void RenderBlip()
     {
-        if (!compact) Heading("Send & Receive", "");
+        if (!compact) Heading(SendViewName, "");
         bool running = BlipRunning, signedIn = blipSnapshot?.Status.Authenticated == true;
         var header = new Grid { ColumnSpacing = 6 }; header.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) }); header.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
         var label = running ? signedIn ? BlipDesktop ? "Ready in the background" : blipSnapshot!.Status.ReceivePolicyVerified ? "Ready to send and receive" : "Checking receiving settings" : "Sign in to send or receive" : Preferences.Current.BlipAutoConnectDesktop ? "Preparing background Blip" : "Blip is disconnected";

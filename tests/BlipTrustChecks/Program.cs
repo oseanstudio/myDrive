@@ -56,7 +56,7 @@ Check(tracker.Update(status,new[]{old,active,fast}).Single()==fast,"fast complet
 var outgoing=new BlipTransfer{Id=Guid.NewGuid().ToString(),Peer=peer,Direction="Outgoing",Status="Active"};
 Check(outgoing.IsLive && !old.IsLive && !new BlipTransfer { Status="Cancelled" }.IsLive &&
     !new BlipTransfer { Status="Paused", Dismissed=true }.IsLive,
-    "Send & Receive shows active work without completed, cancelled or dismissed history");
+    "The Send view shows active work without completed, cancelled or dismissed history");
 Check(tracker.Update(status,new[]{old,active,fast,outgoing}).Count==0,"outgoing transfers never produce incoming popups");
 await Task.WhenAll(Enumerable.Range(0,16).Select(_=>Task.Run(()=>ledger.TryClaim(account,Guid.NewGuid().ToString()))));
 Check(System.Text.Json.JsonSerializer.Deserialize<HashSet<string>>(File.ReadAllText(path))!.Count==17,"manual and automatic receipt claims persist safely when concurrent");
