@@ -393,7 +393,13 @@ fn blip_command(command: &str, values: &[String], host: bool) -> Result<Command,
 }
 
 #[cfg(target_os = "macos")]
-fn blip_command(command: &str, values: &[String], _host: bool) -> Result<Command, String> {
+fn blip_command(command: &str, values: &[String], host: bool) -> Result<Command, String> {
+    if !host {
+        let executable = env::current_exe().map_err(|_| "The myDrive helper is unavailable.")?;
+        let mut child = helper_command(executable);
+        child.arg("--blip-engine").arg(command).args(values);
+        return Ok(child);
+    }
     let directory = binary_dir()?;
     let app = if directory.ends_with("Resources") {
         directory.join("../MacOS/myDrive")
@@ -419,7 +425,7 @@ fn bridge(mut child: Command) -> Result<Value, String> {
         "Could not start the installed Blip backend. Check the Blip setup documentation."
     })?;
     if !output.status.success() {
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "macos"))]
         if let Ok(result) = serde_json::from_slice::<Value>(&output.stdout) {
             if let Some(error) = result["error"].as_str() {
                 return Err(crate::blip::error_message(error).into());

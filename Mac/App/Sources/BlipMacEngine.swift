@@ -3,6 +3,19 @@ import CryptoKit
 import Darwin
 import Foundation
 
+enum BlipMacPaths {
+    static let managedNamespace = "net.oseanstudio.mydrive.blip/"
+    static var managedProfile: URL {
+        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/myDrive/Blip", isDirectory: true)
+    }
+    static var managedCache: URL {
+        FileManager.default.temporaryDirectory.appendingPathComponent("mdblip", isDirectory: true)
+    }
+    static var receivedDirectory: URL {
+        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Downloads/myDrive", isDirectory: true)
+    }
+}
+
 enum BlipMacEngine: Int32, LocalizedError {
     case missing = 20
     case version = 21
@@ -31,7 +44,7 @@ enum BlipMacEngine: Int32, LocalizedError {
     private static let archiveHash = "1109ced4e804026c73bb108c2a9b1ae1324d99a94b9d7f1725d7c1f191b37825"
     private static let supportHash = "05256a8721361bb24eb006313bc95b02f326895f3ab71644e9ec2af98840b882"
     private static let archiveURL = "https://static.blip.net/mac/Blip-20261029214736.zip"
-    private static var runtimeDirectory: URL { BlipLocalRPC.managedProfile.appendingPathComponent("runtime-1", isDirectory: true) }
+    private static var runtimeDirectory: URL { BlipMacPaths.managedProfile.appendingPathComponent("runtime-1", isDirectory: true) }
     private static var runtimeLibrary: URL { runtimeDirectory.appendingPathComponent(frameworkPath) }
     static func frameworkBundle(containing library: URL) -> URL {
         (0..<3).reduce(library) { path, _ in path.deletingLastPathComponent() }
@@ -63,8 +76,8 @@ enum BlipMacEngine: Int32, LocalizedError {
             try run(framework: framework, cache: cache, storage: groupDirectory,
                     server: "https://prod.blip.net", namespace: group + "/")
         } else {
-            let storage = BlipLocalRPC.managedProfile.appendingPathComponent("state", isDirectory: true)
-            let cache = BlipLocalRPC.managedCache
+            let storage = BlipMacPaths.managedProfile.appendingPathComponent("state", isDirectory: true)
+            let cache = BlipMacPaths.managedCache
             for directory in [storage, cache] {
                 try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
                                                          attributes: [.posixPermissions: 0o700])
@@ -72,9 +85,22 @@ enum BlipMacEngine: Int32, LocalizedError {
                 guard values.isDirectory == true, values.isSymbolicLink != true else { throw Self.profile }
             }
             try run(framework: framework, cache: cache, storage: storage,
-                    server: "https://prod.blip.net", namespace: BlipLocalRPC.managedNamespace,
-                    prepare: BlipLocalRPC.prepareManagedProfile)
+                    server: "https://prod.blip.net", namespace: BlipMacPaths.managedNamespace,
+                    prepare: prepareManagedProfile)
         }
+    }
+
+    private static func prepareManagedProfile() throws {
+        guard let core = Bundle.main.url(forResource: "mydrive-core", withExtension: nil) else { throw Self.launch }
+        let process = Process()
+        process.executableURL = core
+        process.arguments = ["--blip-engine", "prepare"]
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else { throw Self.launch }
     }
 
     private static func checkedContents(_ file: URL, hash: String, limit: UInt64) -> Data? {
@@ -95,9 +121,9 @@ enum BlipMacEngine: Int32, LocalizedError {
         }
         if verified(runtimeDirectory) { return runtimeLibrary }
         let fm = FileManager.default
-        try fm.createDirectory(at: BlipLocalRPC.managedProfile, withIntermediateDirectories: true,
+        try fm.createDirectory(at: BlipMacPaths.managedProfile, withIntermediateDirectories: true,
                                attributes: [.posixPermissions: 0o700])
-        let work = BlipLocalRPC.managedProfile.appendingPathComponent(".engine-" + UUID().uuidString)
+        let work = BlipMacPaths.managedProfile.appendingPathComponent(".engine-" + UUID().uuidString)
         try fm.createDirectory(at: work, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
         defer { try? fm.removeItem(at: work) }
         let staged = work.appendingPathComponent("Blip.app", isDirectory: true)

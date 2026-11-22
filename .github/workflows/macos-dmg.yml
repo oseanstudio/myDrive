@@ -44,18 +44,6 @@ jobs:
           "$RUNNER_TEMP/preferences-test"
           swiftc -swift-version 5 Mac/App/Sources/BlipPolicy.swift Mac/Tests/BlipPolicySmoke.swift -o "$RUNNER_TEMP/blip-policy-test"
           "$RUNNER_TEMP/blip-policy-test"
-          swiftc -swift-version 5 Mac/App/Sources/BlipLocalRPC.swift Mac/Tests/BlipRPCSmoke.swift -o "$RUNNER_TEMP/blip-rpc-test"
-          "$RUNNER_TEMP/blip-rpc-test"
-      - name: Exercise cached Blip engine without the desktop app
-        timeout-minutes: 3
-        run: |
-          fixture=$(mktemp -d /tmp/mdblip.XXXXXX)
-          archive="$RUNNER_TEMP/blip-vendor.zip"
-          framework=Blip.app/Contents/Frameworks/BlipKit.framework/Versions/A/BlipKit
-          curl --fail --location --silent --show-error --max-time 60 https://static.blip.net/mac/Blip-20261029214736.zip -o "$archive"
-          ditto -x -k "$archive" "$RUNNER_TEMP/blip-vendor"
-          swiftc -swift-version 5 Mac/App/Sources/BlipMacEngine.swift Mac/App/Sources/BlipLocalRPC.swift Mac/Tests/BlipHostSmoke.swift -o "$RUNNER_TEMP/blip-host-test"
-          "$RUNNER_TEMP/blip-host-test" "$RUNNER_TEMP/blip-vendor/$framework" "$fixture"
       - name: Typecheck native shell
         run: |
           sources=()
@@ -71,6 +59,16 @@ jobs:
         run: |
           cargo test --locked --manifest-path Core/Cargo.toml
           bash Mac/build.sh
+      - name: Exercise cached Blip engine without the desktop app
+        timeout-minutes: 3
+        run: |
+          fixture=$(mktemp -d /tmp/mdblip.XXXXXX)
+          archive="$RUNNER_TEMP/blip-vendor.zip"
+          framework=Blip.app/Contents/Frameworks/BlipKit.framework/Versions/A/BlipKit
+          curl --fail --location --silent --show-error --max-time 60 https://static.blip.net/mac/Blip-20261029214736.zip -o "$archive"
+          ditto -x -k "$archive" "$RUNNER_TEMP/blip-vendor"
+          swiftc -swift-version 5 Mac/App/Sources/BlipMacEngine.swift Mac/Tests/BlipHostSmoke.swift -o "$RUNNER_TEMP/blip-host-test"
+          "$RUNNER_TEMP/blip-host-test" "$RUNNER_TEMP/blip-vendor/$framework" "$fixture" "$MYDRIVE_BUILD_DIR/myDrive.app/Contents/Resources/mydrive-core"
       - name: Verify distributable
         run: |
           if [[ -n "$MYDRIVE_VERSION" ]]; then

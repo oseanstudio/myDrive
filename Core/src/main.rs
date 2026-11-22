@@ -18,7 +18,7 @@ mod webdav;
 #[cfg(windows)]
 #[path = "../../Windows/Network/smb.rs"]
 mod windows_smb;
-#[cfg(any(windows, target_os = "linux"))]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 mod blip;
 #[cfg(test)]
 mod wire_tests;
@@ -55,6 +55,10 @@ struct Request {
     payload: Value,
 }
 fn execute(r: Request) -> Result<Value, String> {
+    #[cfg(target_os = "macos")]
+    if let Some(action) = r.action.strip_prefix("blip.native.") {
+        return blip::mac::request(action, &r.payload);
+    }
     if let Some(action) = r.action.strip_prefix("blip.recents.") {
         return blip_recents::run(action, Path::new(&r.data_dir), &r.payload);
     }
@@ -190,7 +194,11 @@ fn execute(r: Request) -> Result<Value, String> {
 fn main() {
     let mut arguments = std::env::args_os().skip(1);
     if let Some(command) = arguments.next() {
-        #[cfg(any(windows, target_os = "linux"))]
+        #[cfg(target_os = "macos")]
+        if command == "--blip-mac-poll" {
+            std::process::exit(blip::mac::poll_loop());
+        }
+        #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
         if command == "--blip-engine" || (cfg!(windows) && command == "--windows-blip") {
             std::process::exit(blip::run(arguments));
         }

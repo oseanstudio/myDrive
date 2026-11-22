@@ -43,6 +43,8 @@ struct BlipRecentRecipient: Codable, Identifiable {
     private var claims: BlipClaims?
     private var canSavePolicy = true
     private var refreshing = false
+    private let client = BlipMacClient()
+    private var adapterAvailable = false
     private var activity: NSObjectProtocol?
     private var backgroundProcess: Process?
     private var backgroundInput: FileHandle?
@@ -70,8 +72,7 @@ struct BlipRecentRecipient: Codable, Identifiable {
     func reportSend(_ message: String) { sendMessage = message }
 
     func send(_ payload: BlipSendPayload, to peer: BlipPeer) {
-        guard !sending, connected, (recipients + directoryRecipients).contains(where: { $0.peer == peer.peer }),
-              let socket = BlipLocalRPC.socketURL() else {
+        guard !sending, connected, (recipients + directoryRecipients).contains(where: { $0.peer == peer.peer }) else {
             payload.discard()
             reportSend("This device is unavailable. Refresh Blip in the Send view before sending.")
             return
@@ -84,13 +85,11 @@ struct BlipRecentRecipient: Codable, Identifiable {
         Task {
             defer { sending = false }
             do {
-                if try await queueRelay(paths: paths, target: peer, owner: sender, socket: socket) {
+                if try await queueRelay(paths: paths, target: peer, owner: sender) {
                     payload.discard()
                     sendMessage = nil
                 } else {
-                    try await Task.detached(priority: .utility) {
-                        try BlipLocalRPC.send(paths: paths, peer: destination, sender: sender, socket: socket)
-                    }.value
+                    _ = try await BlipMacClient.request("send", ["paths": paths, "peer": destination, "owner": sender])
                     sendMessage = nil
                 }
                 await updateRecents("remember", owner: sender, peer: peer)
@@ -103,14 +102,12 @@ struct BlipRecentRecipient: Codable, Identifiable {
 
     func findRecipients(_ query: String) async throws {
         let owner = selfPeer
-        guard !owner.isEmpty, let socket = BlipLocalRPC.socketURL() else { throw BlipRPCError.rejected }
+        guard !owner.isEmpty else { throw BlipReceiverError.message("Sign in to Blip to find recipients.") }
         directoryRecipients = []
-        let result = try await Task.detached(priority: .utility) {
-            let devices = try BlipLocalRPC.search(query, owner: owner, socket: socket)
-            return try JSONDecoder().decode([BlipPeer].self, from: JSONSerialization.data(withJSONObject: devices))
-        }.value
-        guard selfPeer == owner else { throw BlipRPCError.rejected }
-        directoryRecipients = result
+        let value = try await BlipMacClient.request("search", ["text": query, "owner": owner])
+        guard selfPeer == owner else { return }
+        let devices = try JSONDecoder().decode([BlipPeer].self, from: JSONSerialization.data(withJSONObject: value.array("devices")))
+        directoryRecipients = devices.filter { $0.peer.caseInsensitiveCompare(owner) != .orderedSame }
     }
 
     func removeRecent(_ target: String) {
@@ -160,9 +157,9 @@ struct BlipRecentRecipient: Codable, Identifiable {
         BlipPolicy.exactPeer(peer) && peer.split(separator: ":").first?.lowercased() == account.lowercased()
     }
 
-    private func queueRelay(paths: [String], target: BlipPeer, owner: String, socket: URL) async throws -> Bool {
+    private func queueRelay(paths: [String], target: BlipPeer, owner: String) async throws -> Bool {
         guard sameAccount(target.peer, account) else { return false }
-        let snapshot = try await Task.detached { try BlipLocalRPC.request("poll", arguments: [], socket: socket) }.value
+        let snapshot = try await BlipMacClient.request("poll", ["owner": owner])
         let status = snapshot.dict("status")
         guard status.bool("authenticated"), status.str("user_id") + ":" + status.str("device_id") == owner else { return false }
         let devices = snapshot["devices"] as? [JSON] ?? []
@@ -193,8 +190,8 @@ struct BlipRecentRecipient: Codable, Identifiable {
         let now = Date()
         if relayWaiting == 0, transportState == relayTransportState,
            !transports.contains(where: \.isLive), now < nextRelayDiscovery { return }
-        let payload: JSON = ["self": owner, "inbox": BlipLocalRPC.receivedDirectory.path,
-                             "downloads": BlipLocalRPC.receivedDirectory.deletingLastPathComponent().path,
+        let payload: JSON = ["self": owner, "inbox": BlipMacPaths.receivedDirectory.path,
+                             "downloads": BlipMacPaths.receivedDirectory.deletingLastPathComponent().path,
                              "devices": snapshot.array("devices"), "transfers": snapshot.array("transfers")]
         guard let result = try await CoreBridge.shared.call(action: "relay.tick",
                 request: ["data_dir": Paths.dataDir.path, "payload": payload], timeout: 10) as? JSON else { return }
@@ -205,13 +202,10 @@ struct BlipRecentRecipient: Codable, Identifiable {
         let id = command.str("id")
         switch command.str("action") {
         case "accept":
-            _ = try await request("accept", ["--id", id])
+            _ = try await BlipMacClient.request("accept", ["id": id, "owner": owner])
         case "send":
-            guard let socket = BlipLocalRPC.socketURL(), let paths = command["paths"] as? [String] else { return }
-            let destination = command.str("peer")
-            try await Task.detached(priority: .utility) {
-                try BlipLocalRPC.send(paths: paths, peer: destination, sender: owner, socket: socket, requestID: id)
-            }.value
+            guard let paths = command["paths"] as? [String] else { return }
+            _ = try await BlipMacClient.request("send", ["paths": paths, "peer": command.str("peer"), "owner": owner, "id": id])
         case "deliver":
             guard let transport = rawTransfers.first(where: { $0.id == id && $0.direction == "Incoming" && $0.confirmed }),
                   sameAccount(transport.peer, account), let paths = command["paths"] as? [String] else { return }
@@ -253,7 +247,7 @@ struct BlipRecentRecipient: Codable, Identifiable {
             }
         }
     }
-    func stop() { task?.cancel(); task = nil; stopBackground(); setActivity(false) }
+    func stop() { task?.cancel(); task = nil; client.stop(); stopBackground(); setActivity(false) }
 
     @Published private(set) var needsSignIn = false
     @Published private(set) var registrationCodeSent = false
@@ -348,17 +342,17 @@ struct BlipRecentRecipient: Codable, Identifiable {
         if enabled && activity == nil {activity=ProcessInfo.processInfo.beginActivity(options:.userInitiatedAllowingIdleSystemSleep,reason:"Watch for incoming Blip transfers")}
         if !enabled,let activity {ProcessInfo.processInfo.endActivity(activity);self.activity=nil}
     }
-    var adapterAvailable: Bool { BlipLocalRPC.socketURL() != nil }
-    private func request(_ command: String, _ arguments: [String] = []) async throws -> JSON {
-        guard let socket = BlipLocalRPC.socketURL() else { throw BlipRPCError.unavailable }
-        return try await Task.detached(priority: .utility) {
-            try BlipLocalRPC.request(command,arguments:arguments,socket:socket)
-        }.value
-    }
     func refresh() async {
         guard !refreshing else { return }; refreshing = true; defer { refreshing = false }
         ensureBackground()
-        guard adapterAvailable else {
+        let value: JSON
+        do {
+            value = try await client.poll()
+            guard !Task.isCancelled else { return }
+            adapterAvailable = true
+        } catch is BlipMacClient.Unavailable {
+            guard !Task.isCancelled else { return }
+            adapterAvailable = false
             let starting = backgroundEnabled && backgroundInput != nil &&
                 Date().timeIntervalSince(hostStartedAt) < (provisioning ? 150 : 30)
             if backgroundInput != nil && !starting {
@@ -375,15 +369,20 @@ struct BlipRecentRecipient: Codable, Identifiable {
             needsSignIn = false
             session = ""; selfPeer = ""; setActivity(false)
             return
+        } catch {
+            guard !Task.isCancelled else { return }
+            problem = error.localizedDescription
+            state = "Blip needs attention"
+            session = ""; selfPeer = ""; setActivity(false)
+            return
         }
         do {
-            let value = try await request("poll"), status = value.dict("status")
-            guard !Task.isCancelled else { return }
-            let managed = BlipLocalRPC.socketURL().map(BlipLocalRPC.isManaged) ?? false
+            let status = value.dict("status")
+            let managed = !status.bool("desktop_session")
             provisioning = false
             needsSignIn = managed && !status.bool("authenticated")
-            if !signingIn { registrationCodeSent = needsSignIn && status.bool("registration_code_sent") }
-            guard status.bool("authenticated"), status.bool("desktop_session") else {
+            if !signingIn { registrationCodeSent = needsSignIn && status.str("registration") == "CODE_SENT" }
+            guard status.bool("authenticated") else {
                 state = "Sign in to Blip"
                 problem = needsSignIn ? nil : "Set up a myDrive Blip profile to sign in here."
                 account="";session="";selfPeer="";peers=[];transfers=[];setActivity(false);return
@@ -437,7 +436,11 @@ struct BlipRecentRecipient: Codable, Identifiable {
                 if policy.autoReceive(transfer,account:account,openLinks:autoOpen) {
                     if try claims.claim(identity+":accept:"+transfer.id) {
                         receiving.insert(transfer.id)
-                        do {_ = try await request("accept",["--id",transfer.id])}catch{receiving.remove(transfer.id);problem=error.localizedDescription}
+                        do {
+                            _ = try await BlipMacClient.request("accept", ["id": transfer.id, "owner": identity])
+                        } catch {
+                            receiving.remove(transfer.id); problem = error.localizedDescription
+                        }
                     }
                 }
             }
@@ -460,7 +463,7 @@ struct BlipRecentRecipient: Codable, Identifiable {
         } catch { problem = error.localizedDescription; state = "Blip needs attention"; session = "";selfPeer="";setActivity(false) }
     }
     func signIn() {
-        guard needsSignIn, !signingIn, let socket = BlipLocalRPC.socketURL() else { return }
+        guard needsSignIn, !signingIn else { return }
         let verifying = registrationCodeSent
         let prompt = NSAlert()
         prompt.messageText = verifying ? "Enter your Blip sign-in code" : "Sign in to Blip"
@@ -476,9 +479,7 @@ struct BlipRecentRecipient: Codable, Identifiable {
         Task {
             defer { signingIn = false }
             do {
-                try await Task.detached(priority: .utility) {
-                    try BlipLocalRPC.register(value, verifying: verifying, socket: socket)
-                }.value
+                _ = try await BlipMacClient.request(verifying ? "verify" : "login", ["text": value])
                 registrationCodeSent = !verifying
                 await refresh()
             } catch { problem = "Blip could not confirm sign-in. Check the email or code and try again." }
@@ -547,10 +548,24 @@ struct BlipRecentRecipient: Codable, Identifiable {
             return nil
         }
     }
-    func receive(_ transfer: BlipTransfer) { guard transfer.pending, UUID(uuidString:transfer.id) != nil, BlipPolicy.exactPeer(transfer.peer), !receiving.contains(transfer.id) else {return};receiving.insert(transfer.id);Task { do {try claims?.claim(session+":accept:"+transfer.id);_ = try await request("accept",["--id",transfer.id]);await refresh()}catch{receiving.remove(transfer.id);problem=error.localizedDescription} } }
+    func receive(_ transfer: BlipTransfer) {
+        let owner = selfPeer
+        guard !owner.isEmpty, transfer.pending, UUID(uuidString: transfer.id) != nil,
+              BlipPolicy.exactPeer(transfer.peer), receiving.insert(transfer.id).inserted else { return }
+        Task {
+            do {
+                try claims?.claim(owner + ":accept:" + transfer.id)
+                _ = try await BlipMacClient.request("accept", ["id": transfer.id, "owner": owner])
+                await refresh()
+            } catch {
+                receiving.remove(transfer.id)
+                problem = error.localizedDescription
+            }
+        }
+    }
     func setAutoOpen(_ value: Bool) { autoOpen=value;PrefStore.shared.update{$0.blipAutoOpenLinks=value};session="" }
     func openReceived() {
-        do {let directory=BlipLocalRPC.receivedDirectory;try FileManager.default.createDirectory(at:directory,withIntermediateDirectories:true);NSWorkspace.shared.open(directory)}
+        do {let directory=BlipMacPaths.receivedDirectory;try FileManager.default.createDirectory(at:directory,withIntermediateDirectories:true);NSWorkspace.shared.open(directory)}
         catch {problem="The received-files folder could not open."}
     }
 }

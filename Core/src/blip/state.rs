@@ -232,6 +232,11 @@ impl Snapshot {
             downloads: user_directory("XDG_DOWNLOAD_DIR", "Downloads"),
             documents: user_directory("XDG_DOCUMENTS_DIR", "Documents"),
         };
+        #[cfg(target_os = "macos")]
+        let paths = LocalPaths {
+            downloads: super::mac::home().map(|home| home.join("Downloads")),
+            documents: super::mac::home().map(|home| home.join("Documents")),
+        };
         let mut devices = BTreeMap::new();
         let mut names = HashMap::new();
         for entry in state.message(500)?.messages(1) {
@@ -381,12 +386,33 @@ impl LocalPaths {
         } else if value.starts_with("file:") {
             url::Url::parse(value).ok()?.to_file_path().ok()?
         } else {
+            #[cfg(target_os = "macos")]
+            if let Some((alias, suffix)) = value.split_once(':') {
+                let directory = match alias {
+                    "downloads" => Some("Downloads"),
+                    "documents" => Some("Documents"),
+                    "desktop" => Some("Desktop"),
+                    "pictures" => Some("Pictures"),
+                    "music" => Some("Music"),
+                    "movies" => Some("Movies"),
+                    _ => None,
+                };
+                if let Some(directory) = directory {
+                    if suffix.contains('\\') {
+                        return None;
+                    }
+                    return join_relative(
+                        &super::mac::home()?.join(directory),
+                        suffix.trim_start_matches('/'),
+                    );
+                }
+            }
             PathBuf::from(value)
         };
         #[cfg(windows)]
         let allowed = matches!(path.components().next(), Some(Component::Prefix(prefix))
             if matches!(prefix.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_)));
-        #[cfg(target_os = "linux")]
+        #[cfg(unix)]
         let allowed = true;
         (allowed
             && path.is_absolute()

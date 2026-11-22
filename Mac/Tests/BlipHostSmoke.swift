@@ -12,13 +12,18 @@ typealias JSON = [String: Any]
         let namespace = "mydrive-" + root.lastPathComponent + "/"
         let cache = root.appendingPathComponent("cache", isDirectory: true)
         let storage = root.appendingPathComponent("storage", isDirectory: true)
-        if args.count == 4 {
+        if args[3] == "child" {
             try BlipMacEngine.run(framework: framework, cache: cache, storage: storage,
                                   server: "https://127.0.0.1:9", namespace: namespace,
                                   diagnostic: { FileHandle.standardError.write(Data(($0 + "\n").utf8)) })
             return
         }
         let fm = FileManager.default
+        let core = URL(fileURLWithPath: args[3])
+        let home = root.appendingPathComponent("home")
+        let profile = home.appendingPathComponent("Library/Application Support/myDrive/Blip")
+        try fm.createDirectory(at: profile, withIntermediateDirectories: true)
+        let override = profile.appendingPathComponent("desktop-socket.txt")
         precondition(NSRunningApplication.runningApplications(withBundleIdentifier: BlipMacEngine.bundleID).isEmpty)
         let cached = root.appendingPathComponent(BlipMacEngine.frameworkPath)
         let cachedBundle = BlipMacEngine.frameworkBundle(containing: cached)
@@ -54,8 +59,24 @@ typealias JSON = [String: Any]
                 for socket in candidates {
                     var info = stat()
                     guard lstat(socket.path, &info) == 0, (info.st_mode & S_IFMT) == S_IFSOCK else { continue }
-                    if let response = try? BlipLocalRPC.request("poll", arguments: [], socket: socket),
-                       let status = response["status"] as? JSON, status["authenticated"] as? Bool == false {
+                    try socket.path.write(to: override, atomically: true, encoding: .utf8)
+                    let client = Process(), input = Pipe(), output = Pipe()
+                    client.executableURL = core
+                    client.arguments = ["--blip-mac-poll"]
+                    var environment = ProcessInfo.processInfo.environment
+                    environment["HOME"] = home.path
+                    client.environment = environment
+                    client.standardInput = input
+                    client.standardOutput = output
+                    try client.run()
+                    try input.fileHandleForWriting.write(contentsOf: Data("POLL\n".utf8))
+                    try input.fileHandleForWriting.close()
+                    let data = output.fileHandleForReading.readDataToEndOfFile()
+                    client.waitUntilExit()
+                    if client.terminationStatus == 0,
+                       let response = (try? JSONSerialization.jsonObject(with: data)) as? JSON,
+                       let snapshot = response["data"] as? JSON,
+                       let status = snapshot["status"] as? JSON, status["authenticated"] as? Bool == false {
                         print("Reached isolated Blip engine via \(socket.path)")
                         return
                     }

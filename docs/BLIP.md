@@ -60,7 +60,7 @@ The parser, typed saved-transfer metadata mapping, sender policy, completion han
 
 ## Background engine setup
 
-The desktop app, CLI and MCP use the native Blip backend for their platform. Windows and Linux share a Rust helper. macOS uses a Swift helper around BlipKit. They connect to the same Blip service over the native engine's local interface. myDrive verifies the engine before using its cached copy, and the installers contain the myDrive helper.
+The desktop app, CLI and MCP use the same Rust client on Windows, macOS and Linux for sign-in, device discovery and transfers. Each platform keeps its native engine and its existing profile. On macOS, a Swift host still loads BlipKit, while one Rust process polls it in the background. myDrive verifies the engine before using its cached copy.
 
 - Windows uses the verified x64 `blip-jni.dll` from Blip 1.2.8.0. myDrive can copy it from a compatible installed package, an existing prepared runtime or a DLL you select. Microsoft Store package downloads can require Microsoft Entra ID authentication, so a clean Windows setup needs the compatible file.
 - macOS retains the verified native framework in myDrive's data folder. **Set up Blip** can fetch it directly from Blip when needed.

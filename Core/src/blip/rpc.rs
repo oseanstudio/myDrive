@@ -2,7 +2,7 @@ use socket2::{Domain, SockAddr, Socket, Type};
 use std::io::{BufReader, Read, Write};
 #[cfg(windows)]
 use std::os::windows::ffi::OsStrExt;
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 use std::os::{
     fd::AsRawFd,
     unix::fs::{FileTypeExt, MetadataExt},
@@ -38,7 +38,7 @@ pub(super) fn connect(path: &Path) -> Result<Socket> {
     socket
         .connect_timeout(&address, Duration::from_millis(500))
         .map_err(|_| CONNECTION)?;
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     if !same_user(&socket) {
         return Err(CONNECTION);
     }
@@ -89,6 +89,21 @@ fn local_endpoint(path: &Path) -> bool {
             LocalFree(descriptor);
         }
         owned
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn local_endpoint(path: &Path) -> bool {
+    std::fs::symlink_metadata(path)
+        .is_ok_and(|file| file.file_type().is_socket() && file.uid() == unsafe { libc::geteuid() })
+}
+
+#[cfg(target_os = "macos")]
+fn same_user(socket: &Socket) -> bool {
+    let mut uid = 0;
+    let mut gid = 0;
+    unsafe {
+        libc::getpeereid(socket.as_raw_fd(), &mut uid, &mut gid) == 0 && uid == libc::geteuid()
     }
 }
 
@@ -143,7 +158,7 @@ fn same_user(socket: &Socket) -> bool {
     }
 }
 
-// DRPC stream framing, shared with the local macOS Blip client.
+// DRPC framing for the native Blip hosts.
 pub(super) fn call(path: &Path, method: &str, body: &[u8]) -> Result<Vec<u8>> {
     let mut socket = connect(path)?;
     let metadata = field(
@@ -223,7 +238,7 @@ fn frame(output: &mut Vec<u8>, kind: u8, message: u64, body: &[u8]) {
     output.extend_from_slice(body);
 }
 
-fn varint(mut next: impl FnMut() -> Result<u8>) -> Result<u64> {
+pub(super) fn varint(mut next: impl FnMut() -> Result<u8>) -> Result<u64> {
     let mut value = 0;
     for shift in (0..64).step_by(7) {
         let byte = next()?;
@@ -238,7 +253,7 @@ fn varint(mut next: impl FnMut() -> Result<u8>) -> Result<u64> {
     Err(INVALID)
 }
 
-fn encode_varint(output: &mut Vec<u8>, mut value: u64) {
+pub(super) fn encode_varint(output: &mut Vec<u8>, mut value: u64) {
     while value >= 128 {
         output.push(value as u8 | 128);
         value >>= 7;

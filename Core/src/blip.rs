@@ -4,6 +4,8 @@ mod host;
 #[cfg(target_os = "linux")]
 #[path = "blip/host_linux.rs"]
 mod host;
+#[cfg(target_os = "macos")]
+pub(crate) mod mac;
 mod rpc;
 mod state;
 
@@ -11,17 +13,23 @@ use crate::automation::uuid;
 use rpc::{field, number, string, Result};
 use serde_json::{json, Value};
 use state::Snapshot;
+#[cfg(not(target_os = "macos"))]
 use std::collections::{BTreeSet, HashSet};
 use std::ffi::OsString;
-use std::fs::{self, OpenOptions};
-use std::io::{self, BufRead, Read, Write};
-#[cfg(target_os = "linux")]
+use std::fs;
+#[cfg(not(target_os = "macos"))]
+use std::fs::OpenOptions;
+#[cfg(not(target_os = "macos"))]
+use std::io::BufRead;
+use std::io::{self, Read, Write};
+#[cfg(unix)]
 use std::os::unix::fs::{DirBuilderExt, MetadataExt};
 #[cfg(windows)]
 use std::os::windows::fs::MetadataExt;
 #[cfg(windows)]
 use std::os::windows::io::{AsRawHandle, FromRawHandle};
 use std::path::{Path, PathBuf};
+#[cfg(not(target_os = "macos"))]
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -34,8 +42,11 @@ use windows_sys::Win32::System::Console::{
 #[cfg(windows)]
 use windows_sys::Win32::System::Threading::GetCurrentProcess;
 
+#[cfg(not(target_os = "macos"))]
 const SERVER: &str = "https://prod.blip.net";
+#[cfg(not(target_os = "macos"))]
 const PLATFORM: &str = if cfg!(windows) { "Windows" } else { "Linux" };
+#[cfg(not(target_os = "macos"))]
 const PROFILE_MARKER: &str = "mydrive-profile.json";
 const RECIPIENT_SEARCH: &str = "6971d326-6e6d-4915-aed7-581eafa9b26d";
 
@@ -83,7 +94,8 @@ impl Arguments {
                 _ => return Err("invalid_command"),
             }
         }
-        if !result.profile.is_absolute() || result.files.len() > 256 {
+        if (!cfg!(target_os = "macos") && !result.profile.is_absolute()) || result.files.len() > 256
+        {
             return Err("invalid_command");
         }
         Ok(result)
@@ -98,8 +110,11 @@ fn text_arg(args: &mut impl Iterator<Item = OsString>) -> Result<String> {
 
 struct Session {
     profile: PathBuf,
+    #[cfg(not(target_os = "macos"))]
     cache: PathBuf,
+    #[cfg(not(target_os = "macos"))]
     state: PathBuf,
+    #[cfg(not(target_os = "macos"))]
     lock: PathBuf,
     socket: PathBuf,
     inbox: PathBuf,
@@ -107,6 +122,7 @@ struct Session {
 }
 
 impl Session {
+    #[cfg(not(target_os = "macos"))]
     fn new(local: &Path, profile: PathBuf, desktop: bool) -> Self {
         #[cfg(windows)]
         let (cache, state, lock) = if desktop {
@@ -157,13 +173,9 @@ impl Session {
         rpc::call(&self.socket, "/rpc.Service/Dispatch", &field(1, &any)).map(|_| ())
     }
 
-    fn search(&self, owner: &Value) -> Result<Value> {
-        let mut input = String::new();
-        io::stdin()
-            .take(1026)
-            .read_to_string(&mut input)
-            .map_err(|_| "invalid_search")?;
-        let query = input.trim();
+    fn search(&self, owner: &Value, input: Option<&str>) -> Result<Value> {
+        let query = input_value(input, 1024, "invalid_search")?;
+        let query = query.trim();
         if !state::safe_text(query, 254) || query.len() > 1024 {
             return Err("invalid_search");
         }
@@ -207,6 +219,7 @@ impl Session {
         Err("search_unavailable")
     }
 
+    #[cfg(not(target_os = "macos"))]
     fn start(&self, library: &Path) -> Result<Option<host::Host>> {
         let host = match host::Host::start(library, &self.cache, &self.state, SERVER, &self.lock) {
             Ok(host) => Some(host),
@@ -223,6 +236,7 @@ impl Session {
         Err("native_connection_unavailable")
     }
 
+    #[cfg(not(target_os = "macos"))]
     fn serve(&self, library: &Path, output: &mut impl Write) -> Result<()> {
         let mut host = self.start(library)?;
         let mut policy = SeparatePolicy::default();
@@ -304,6 +318,7 @@ impl Session {
         Ok(())
     }
 
+    #[cfg(not(target_os = "macos"))]
     fn configure(&self, owner: bool, policy: &mut SeparatePolicy) -> Result<()> {
         if !owner {
             return Ok(());
@@ -371,6 +386,9 @@ impl Session {
         if !uuid(id) {
             return Err("invalid_transfer_id");
         }
+        #[cfg(target_os = "macos")]
+        mac::prepare_inbox(&self.inbox)?;
+        #[cfg(not(target_os = "macos"))]
         create_plain_directory(&self.inbox)?;
         let destination = self.inbox.join(id);
         create_plain_directory(&destination)?;
@@ -480,20 +498,20 @@ impl Session {
         )
     }
 
-    fn registration(&self, verify: bool, initial: Snapshot) -> Result<Value> {
+    fn registration(&self, verify: bool, initial: Snapshot, input: Option<&str>) -> Result<Value> {
         if self.desktop || initial.status["authenticated"] == true {
             return Err("invalid_command");
         }
+        #[cfg(not(target_os = "macos"))]
         let marker = profile_marker(&self.profile)?;
+        #[cfg(not(target_os = "macos"))]
         let name = marker["name"]
             .as_str()
             .filter(|name| state::safe_text(name, 160))
             .ok_or("profile_unavailable")?;
-        let mut input = String::new();
-        io::stdin()
-            .take(257)
-            .read_to_string(&mut input)
-            .map_err(|_| "invalid_sign_in_input")?;
+        #[cfg(target_os = "macos")]
+        let name = "myDrive on Mac";
+        let input = input_value(input, 256, "invalid_sign_in_input")?;
         let input = input.trim();
         if verify {
             if !(4..=16).contains(&input.len())
@@ -503,15 +521,18 @@ impl Session {
             {
                 return Err("invalid_sign_in_input");
             }
+            #[cfg(not(target_os = "macos"))]
             let id = marker["deviceId"]
                 .as_str()
                 .filter(|id| uuid(id))
                 .ok_or("profile_unavailable")?;
+            #[cfg(target_os = "macos")]
+            let id = mac::registration_device(&self.profile)?;
             self.dispatch(
                 "RegistrationRequested",
                 [
                     string(1, input),
-                    string(2, id),
+                    string(2, id.as_ref()),
                     string(3, name),
                     number(4, 5),
                 ]
@@ -530,6 +551,8 @@ impl Session {
         while Instant::now() < deadline {
             let snapshot = self.snapshot()?;
             if verify && snapshot.status["authenticated"] == true {
+                #[cfg(target_os = "macos")]
+                mac::configure_receive(self)?;
                 return Ok(snapshot.status);
             }
             if snapshot.registration_failed {
@@ -544,6 +567,23 @@ impl Session {
     }
 }
 
+fn input_value(input: Option<&str>, max: usize, error: &'static str) -> Result<String> {
+    let mut value = String::new();
+    if let Some(input) = input {
+        value.push_str(input);
+    } else {
+        io::stdin()
+            .take((max + 1) as u64)
+            .read_to_string(&mut value)
+            .map_err(|_| error)?;
+    }
+    if value.len() > max {
+        return Err(error);
+    }
+    Ok(value)
+}
+
+#[cfg(not(target_os = "macos"))]
 #[derive(Default)]
 struct SeparatePolicy {
     verification_deadline: Option<Instant>,
@@ -572,7 +612,7 @@ fn path_text(path: &Path) -> Result<&str> {
 
 fn create_plain_directory(path: &Path) -> Result<()> {
     let builder = &mut fs::DirBuilder::new();
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     builder.mode(0o700);
     match builder.create(path) {
         Ok(()) => Ok(()),
@@ -585,7 +625,7 @@ fn check_plain_directory(path: &Path) -> Result<()> {
     let metadata = fs::symlink_metadata(path).map_err(|_| "profile_unavailable")?;
     #[cfg(windows)]
     let plain = metadata.file_attributes() & 0x400 == 0;
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     let plain = metadata.uid() == unsafe { libc::geteuid() } && metadata.mode() & 0o022 == 0;
     if metadata.is_dir() && plain {
         Ok(())
@@ -610,6 +650,7 @@ fn random_id() -> Result<String> {
     ))
 }
 
+#[cfg(not(target_os = "macos"))]
 fn profile_marker(profile: &Path) -> Result<Value> {
     check_plain_directory(profile)?;
     let contents = fs::read(profile.join(PROFILE_MARKER)).map_err(|_| "profile_unavailable")?;
@@ -620,6 +661,7 @@ fn profile_marker(profile: &Path) -> Result<Value> {
     Ok(marker)
 }
 
+#[cfg(not(target_os = "macos"))]
 fn prepare(profile: &Path, name: Option<&str>) -> Result<Value> {
     if profile.join(PROFILE_MARKER).is_file() {
         profile_marker(profile)?;
@@ -650,6 +692,7 @@ fn prepare(profile: &Path, name: Option<&str>) -> Result<Value> {
     Ok(json!({"ok": true}))
 }
 
+#[cfg(not(target_os = "macos"))]
 fn trusted_peers(profile: &Path) -> Result<BTreeSet<String>> {
     let path = profile.join("trusted-peers.txt");
     match fs::read_to_string(&path) {
@@ -671,6 +714,7 @@ fn emit(output: &mut impl Write, result: &Value) -> Result<()> {
         .map_err(|_| "reply_unavailable")
 }
 
+#[cfg(not(target_os = "macos"))]
 fn command(args: &Arguments) -> Result<Value> {
     let local = state::local()?;
     let desktop = args.desktop || args.command == "desktop-serve";
@@ -719,8 +763,28 @@ fn command(args: &Arguments) -> Result<Value> {
         }
         _ => {}
     }
+    client_command(&session, args, None, None)
+}
+
+fn client_command(
+    session: &Session,
+    args: &Arguments,
+    input: Option<&str>,
+    owner: Option<&str>,
+) -> Result<Value> {
     let snapshot = session.snapshot()?;
     let authenticated = snapshot.status["authenticated"] == true;
+    if let Some(owner) = owner {
+        let status = &snapshot.status;
+        let current = format!(
+            "{}:{}",
+            status["user_id"].as_str().unwrap_or_default(),
+            status["device_id"].as_str().unwrap_or_default()
+        );
+        if !authenticated || !owner.eq_ignore_ascii_case(&current) {
+            return Err("sign_in_required");
+        }
+    }
     let result = match args.command.as_str() {
         "poll" => snapshot.poll(),
         "status" => snapshot.status,
@@ -728,17 +792,25 @@ fn command(args: &Arguments) -> Result<Value> {
         "transfers" => json!({"ok": true, "transfers": snapshot.transfers}),
         "send" if authenticated => session.send(args, snapshot)?,
         "accept" if authenticated => session.accept(args, snapshot)?,
-        "search" if authenticated => session.search(&snapshot.status)?,
+        "search" if authenticated => session.search(&snapshot.status, input)?,
         "search-clear" if authenticated => {
             session.dispatch("AbandonSearch", string(1, RECIPIENT_SEARCH))?;
             json!({"ok": true})
         }
-        "login" => session.registration(false, snapshot)?,
-        "verify" => session.registration(true, snapshot)?,
+        "login" => session.registration(false, snapshot, input)?,
+        "verify" => session.registration(true, snapshot, input)?,
         "send" | "accept" | "search" | "search-clear" => return Err("sign_in_required"),
         _ => return Err("invalid_command"),
     };
     Ok(result)
+}
+
+#[cfg(target_os = "macos")]
+fn command(args: &Arguments) -> Result<Value> {
+    if args.command == "prepare" {
+        return mac::prepare();
+    }
+    client_command(&mac::discover()?, args, None, None)
 }
 
 #[cfg(windows)]
@@ -862,7 +934,7 @@ pub(crate) fn poll(profile: PathBuf, desktop: bool) -> std::result::Result<Value
         .map_err(|_| "The local Blip connection is unavailable.".into())
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 pub(crate) fn error_message(error: &str) -> &'static str {
     match error {
         "native_engine_missing" => {
@@ -875,6 +947,10 @@ pub(crate) fn error_message(error: &str) -> &'static str {
             "Sign in to the official Blip app once to reuse this computer's account."
         }
         "sign_in_required" => "The Blip device is signed out.",
+        "native_connection_unavailable" => "The local Blip connection is unavailable.",
+        "receive_policy_unconfirmed" => "Blip has not confirmed the receiving settings yet.",
+        "invalid_search" => "Enter a name or email address to search Blip.",
+        "search_unavailable" => "Blip could not complete the search. Try again.",
         "host_already_running" => "The Blip profile is already running.",
         "accept_not_waiting" => {
             "This incoming transfer is no longer waiting. Refresh the transfer list."
@@ -889,7 +965,7 @@ pub(crate) fn error_message(error: &str) -> &'static str {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_os = "macos")))]
 mod tests {
     use super::*;
     use std::path::PathBuf;
