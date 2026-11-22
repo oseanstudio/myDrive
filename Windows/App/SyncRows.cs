@@ -49,9 +49,16 @@ public sealed partial class MainWindow
     private TextBlock? syncTitleText,syncDetailText;
     private HyperlinkButton? syncAlertLink;
     private Microsoft.UI.Xaml.Shapes.Ellipse? syncStatusDot;
-    private void ResetSyncControls(){syncFolderList=null;syncFileList=null;syncTitleText=null;syncDetailText=null;syncAlertLink=null;syncStatusDot=null;folderRows.Clear();}
+    private void ResetSyncControls()
+    {
+        quickSyncPane.Children.Clear();
+        quickSyncPane.Visibility=Visibility.Collapsed;
+        pageScroll.Visibility=Visibility.Visible;
+        syncFolderList=null;syncFileList=null;syncTitleText=null;syncDetailText=null;syncAlertLink=null;syncStatusDot=null;
+        folderRows.Clear();
+    }
 
-    private ListView VirtualRows(object items,string template,double height)
+    private ListView VirtualRows(object items,string template,double height=double.PositiveInfinity)
     {
         var list=new ListView{ItemsSource=items,SelectionMode=ListViewSelectionMode.None,IsTabStop=false,
             HorizontalAlignment=HorizontalAlignment.Stretch,MaxHeight=height,Padding=new Thickness(0),BorderThickness=new Thickness(0)};

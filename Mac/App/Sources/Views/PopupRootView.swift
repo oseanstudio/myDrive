@@ -94,25 +94,16 @@ struct PopupRootView: View {
                 }
             }
             .fixedSize()
-            Menu {
+            Spacer(minLength: 4)
+            Menu(app.view.label) {
                 ForEach(PopupViewKind.pickerCases) { kind in
                     Button(kind.label) { app.view = kind }
                 }
-            } label: {
-                HStack(spacing: 3) {
-                    Text(app.view.label).font(.system(size: 12))
-                    Image(systemName: "chevron.down").font(.system(size: 8, weight: .bold))
-                }
-                .padding(.horizontal, 6)
-                .frame(height: 24)
-                .background(Color(nsColor: .quaternaryLabelColor).opacity(0.4),
-                            in: RoundedRectangle(cornerRadius: 5))
             }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
+            .menuStyle(.button)
+            .controlSize(.small)
             .fixedSize()
             .disabled(app.busy != nil)
-            Spacer(minLength: 4)
             Button {
                 app.view = .transfers
                 app.blip.pasteAndSend()

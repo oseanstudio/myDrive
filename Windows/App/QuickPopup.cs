@@ -143,11 +143,21 @@ public sealed partial class MainWindow
         info.Children.Add(titleRow);
         syncDetailText=QuickText(detail,11);info.Children.Add(syncDetailText);ToolTipService.SetToolTip(info,syncFailure.Length>0?syncFailure:detail);summary.Children.Add(info);
         var refresh=QuickIcon("\uE72C","Refresh sync status",()=>_=RefreshSyncthing());Grid.SetColumn(refresh,1);summary.Children.Add(refresh);
-        var more=QuickIcon("\uE712","Sync tools",()=>{});var tools=new MenuFlyout();MenuAction(tools,"Devices…",()=>_=ShowQuickDevices());MenuAction(tools,"Sync a folder…",()=>_=ShowQuickShare());MenuAction(tools,"Open Syncthing",OpenSyncthing);MenuAction(tools,"Connection settings…",()=>_=EditSyncthingConnection());more.Flyout=tools;Grid.SetColumn(more,2);summary.Children.Add(more);page.Children.Add(summary);
+        var more=QuickIcon("\uE712","Sync tools",()=>{});var tools=new MenuFlyout();MenuAction(tools,"Devices…",()=>_=ShowQuickDevices());MenuAction(tools,"Sync a folder…",()=>_=ShowQuickShare());MenuAction(tools,"Open Syncthing",OpenSyncthing);MenuAction(tools,"Connection settings…",()=>_=EditSyncthingConnection());more.Flyout=tools;Grid.SetColumn(more,2);summary.Children.Add(more);
         UpdateFolderRows();
-        syncFolderList=VirtualRows(folderRows,FolderTemplate,QuickHeight()-132);
-        page.Children.Add(syncFolderList);
-        if(folderRows.Count==0)page.Children.Add(QuickButton("Sync your first folder…",()=>_=ShowQuickShare(),true));
+        if(folderRows.Count==0)
+        {
+            page.Children.Add(summary);
+            page.Children.Add(QuickButton("Sync your first folder…",()=>_=ShowQuickShare(),true));
+            return;
+        }
+        // The list owns scrolling and uses the rest of the popup below its summary.
+        syncFolderList=VirtualRows(folderRows,FolderTemplate);
+        Grid.SetRow(syncFolderList,1);
+        quickSyncPane.Children.Add(summary);
+        quickSyncPane.Children.Add(syncFolderList);
+        pageScroll.Visibility=Visibility.Collapsed;
+        quickSyncPane.Visibility=Visibility.Visible;
     }
     private (string Title,string Detail) QuickSummary()
     {

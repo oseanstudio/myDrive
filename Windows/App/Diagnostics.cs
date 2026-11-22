@@ -7,6 +7,44 @@ using Windows.Storage.Streams;
 namespace MyDrive;
 public sealed partial class MainWindow
 {
+    public async Task DiagnoseSyncViewport(string report)
+    {
+        object result;
+        try
+        {
+            currentView="sync";
+            syncSnapshot=JsonSerializer.SerializeToElement(new
+            {
+                folders=Enumerable.Range(0,20).Select(i=>new
+                {
+                    id=$"viewport-{i}",label=$"Folder {i:00}",path=Path.GetDirectoryName(report),
+                    type="sendreceive",status=new{state="idle",pullErrors=1,localFiles=40}
+                }).ToArray()
+            });
+            SetMode(true);
+            await Task.Delay(400);
+            root.UpdateLayout();
+            var list=syncFolderList??throw new IOException("The compact Sync list did not load.");
+            double top=list.TransformToVisual(root).TransformPoint(new Windows.Foundation.Point(0,0)).Y;
+            double gap=root.ActualHeight-top-list.ActualHeight;
+            if(pageScroll.Visibility!=Microsoft.UI.Xaml.Visibility.Collapsed||list.ActualHeight<200||Math.Abs(gap)>2)
+                throw new IOException($"The Sync list does not reach the bottom of the popup (gap {gap:F1}, list height {list.ActualHeight:F1}).");
+            var last=list.Items[^1];
+            list.ScrollIntoView(last);
+            await Task.Delay(250);
+            root.UpdateLayout();
+            if(list.ContainerFromItem(last) is not Microsoft.UI.Xaml.FrameworkElement row)
+                throw new IOException("The last folder became unreachable.");
+            double rowTop=row.TransformToVisual(root).TransformPoint(new Windows.Foundation.Point(0,0)).Y;
+            if(rowTop<top-2||rowTop+row.ActualHeight>root.ActualHeight+2)
+                throw new IOException("The last folder did not scroll fully into view.");
+            result=new{ok=true,bottom_gap=gap,viewport_height=list.ActualHeight};
+        }
+        catch(Exception error){result=new{ok=false,error=error.ToString()};}
+        try{await File.WriteAllTextAsync(report,JsonSerializer.Serialize(result));}
+        finally{Quit();}
+    }
+
     // Development-only command line: --diagnose <output-directory>.
     // Renders this app's own XAML surface; it never captures other windows.
     public async Task Diagnose(string directory)

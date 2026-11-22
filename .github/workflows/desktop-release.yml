@@ -120,6 +120,12 @@ jobs:
           }
           $app = Get-Item -LiteralPath (Join-Path $directory 'myDrive.exe')
           if ($app.VersionInfo.ProductVersion.Split('+')[0] -ne $version) { throw 'Installed version differs from the build.' }
+          $viewportReport = Join-Path $env:RUNNER_TEMP 'mydrive-sync-viewport.json'
+          $viewportProcess = Start-Process -FilePath $app.FullName -ArgumentList "--diagnose-sync-viewport `"$viewportReport`"" -WindowStyle Hidden -PassThru
+          if (!$viewportProcess.WaitForExit(30000)) { $viewportProcess.Kill(); throw 'The Sync viewport check timed out.' }
+          $viewport = Get-Content -LiteralPath $viewportReport -Raw | ConvertFrom-Json
+          if (!$viewport.ok) { throw $viewport.error }
+          Write-Host "Sync viewport reaches the bottom of the popup (gap $($viewport.bottom_gap) DIP)."
           $core = Join-Path $directory 'mydrive-core.exe'
           $result = '{"action":"version"}' | & $core | ConvertFrom-Json
           if (!$result.ok) { throw 'The installed core did not respond.' }

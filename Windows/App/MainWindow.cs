@@ -15,6 +15,8 @@ public sealed partial class MainWindow : Window
 {
     private readonly Grid root=new();
     private readonly StackPanel page=new(){Spacing=20,Padding=new Thickness(36,28,36,32)};
+    private readonly ScrollViewer pageScroll=new(){HorizontalScrollBarVisibility=ScrollBarVisibility.Disabled};
+    private readonly Grid quickSyncPane=new(){Visibility=Visibility.Collapsed,Padding=new Thickness(8,4,8,0),RowSpacing=6};
     private readonly NavigationView navigation=new(){PaneDisplayMode=NavigationViewPaneDisplayMode.Left,OpenPaneLength=218,IsBackButtonVisible=NavigationViewBackButtonVisible.Collapsed,IsSettingsVisible=true,IsPaneToggleButtonVisible=false,AlwaysShowHeader=false};
     private readonly InfoBar notice=new(){IsClosable=true,Margin=new Thickness(36,12,36,0)};
     private readonly TextBlock status=new(){Text="Starting myDrive…",FontSize=12,VerticalAlignment=VerticalAlignment.Center};
@@ -89,7 +91,10 @@ public sealed partial class MainWindow : Window
         navigation.PaneFooter=Text($"  myDrive {DisplayVersion}",12);
         var content=new Grid();content.RowDefinitions.Add(new(){Height=GridLength.Auto});content.RowDefinitions.Add(new(){Height=GridLength.Auto});content.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});
         content.Children.Add(notice);Grid.SetRow(updateOffer,1);content.Children.Add(updateOffer);
-        var scroll=new ScrollViewer{Content=page,HorizontalScrollBarVisibility=ScrollBarVisibility.Disabled};Grid.SetRow(scroll,2);content.Children.Add(scroll);navigation.Content=content;
+        pageScroll.Content=page;Grid.SetRow(pageScroll,2);content.Children.Add(pageScroll);
+        quickSyncPane.RowDefinitions.Add(new(){Height=GridLength.Auto});
+        quickSyncPane.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});
+        Grid.SetRow(quickSyncPane,2);content.Children.Add(quickSyncPane);navigation.Content=content;
         navigation.SelectionChanged+=(sender,e)=>{if(busy)return;currentView=e.IsSettingsSelected?"settings":(e.SelectedItem as NavigationViewItem)?.Tag?.ToString()??"connections";Render();if(!diagnosticMode&&currentView=="sync"&&Environment.TickCount64-lastSyncRefresh>=10_000)_=RefreshSyncthing();if(currentView=="transfers")_=RefreshBlip();};
         Grid.SetRow(navigation,1);root.Children.Add(navigation);
         BuildQuickHeader();root.Children.Add(quickHeader);
