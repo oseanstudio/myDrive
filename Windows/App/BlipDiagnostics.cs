@@ -17,10 +17,11 @@ public sealed partial class MainWindow
             navigation.SelectedItem = navigation.MenuItems.OfType<Microsoft.UI.Xaml.Controls.NavigationViewItem>().First(i => i.Tag?.ToString() == "transfers");
             blipFixtureRunning = false; blipSnapshot = null; SetMode(true); await Task.Delay(200);
             var position = AppWindow.Position; var size = AppWindow.Size;
-            if (quickExpand.Visibility != Visibility.Visible)
-                throw new IOException("The fixed popup must show its footer action.");
+            if (quickExpand.Visibility != Visibility.Visible || quickExpand.Content is not FontIcon ||
+                !quickHeader.Children.Contains(quickExpand) || Grid.GetColumn(quickExpand) != quickHeader.ColumnDefinitions.Count - 1)
+                throw new IOException("The fixed popup must show the full-window icon at the end of its header.");
             DismissAt(new(position.X + size.Width / 2, position.Y + size.Height - 4), allowDiagnostic: true);
-            if (!AppWindow.IsVisible) throw new IOException("A click in the popup footer dismissed the popup.");
+            if (!AppWindow.IsVisible) throw new IOException("A click near the popup's bottom edge dismissed the popup.");
             void Stable() { if (AppWindow.Position.X != position.X || AppWindow.Position.Y != position.Y || AppWindow.Size.Width != size.Width || AppWindow.Size.Height != size.Height) throw new IOException("Blip view changed compact popup bounds."); }
             await Capture(directory, "blip-stopped.png");
             var (choice, _) = BlipConnectionDialog(); var choosing = ShowDialog(choice);

@@ -95,11 +95,6 @@ public sealed partial class MainWindow : Window
         BuildQuickHeader();root.Children.Add(quickHeader);
         var footer=new Grid{Padding=new Thickness(24,10,24,10),ColumnSpacing=10};footer.ColumnDefinitions.Add(new(){Width=GridLength.Auto});footer.ColumnDefinitions.Add(new(){Width=new GridLength(1,GridUnitType.Star)});footer.ColumnDefinitions.Add(new(){Width=GridLength.Auto});footer.Children.Add(ring);Grid.SetColumn(status,1);footer.Children.Add(status);Grid.SetColumn(cancel,2);footer.Children.Add(cancel);cancel.Click+=(_,_)=>operation?.Cancel();
         statusFooter=new Border{Child=footer,BorderBrush=Brush("DividerStrokeColorDefaultBrush"),BorderThickness=new Thickness(0,1,0,0)};Grid.SetRow(statusFooter,2);root.Children.Add(statusFooter);
-        quickExpand = QuickButton("Open full window", () => SetMode(false));
-        quickExpand.HorizontalAlignment = HorizontalAlignment.Right;
-        quickExpand.Margin = new Thickness(8, 3, 8, 6);
-        Grid.SetRow(quickExpand, 2);
-        root.Children.Add(quickExpand);
         Content=root;
         root.ActualThemeChanged+=(_,_)=>ApplyCurrentTheme();
         try{tray=new TrayIcon(hwnd,ToggleQuickMenu,Quit,()=>SetMode(false),()=>_=OnSystemResume());}catch{compact=false;}

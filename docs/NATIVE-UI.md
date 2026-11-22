@@ -4,7 +4,7 @@ The user's priority is a much smaller popup with useful information clear at a g
 
 ## Shared requirements
 
-- Use one compact header with view selection, add, expand and dismiss. Avoid repeated navigation and page headings.
+- Use one compact header with view selection and window actions. Place the full-window icon at the right edge of the app toolbar. Keep idle controls out of the footer.
 - Lead with sync state, folder count and device availability. Distinguish local up-to-date status, offline availability, pending work, paused folders and errors using text as well as color.
 - Use short rows: name, one secondary status line, frequent actions. Prioritize errors and the current project. Truncate long names with tooltips/accessibility labels; show full paths on demand.
 - Keep opening files, per-file Sync/Stop, pause/resume, refresh, pending items and version recovery in the popup. Put setup, device lists, build/cache options, history details and explanation in native menus/dialogs.
@@ -17,7 +17,7 @@ The user's priority is a much smaller popup with useful information clear at a g
 
 ## Windows implementation
 
-The popup uses a solid, fixed 344 × 420 logical-unit footprint, including native forms. Its footer provides access to the full window. This avoids shrinking, growing or jumping as users switch views or open dialogs. Long forms scroll within that footprint. Compared with the prior 430 × 610 busy view, area is about 45% smaller. Position is chosen once on open from the tray anchor; redraws never ask for a new tray/cursor anchor. Reopening can anchor again, and a changed monitor work area can clamp the popup back on-screen. Window sizes scale with monitor DPI.
+The popup uses a solid, fixed 344 × 420 logical-unit footprint, including native forms. The trailing header icon opens the full window. Long forms scroll within the fixed footprint. Position is chosen once on open from the tray anchor. Reopening can anchor again, and a changed monitor work area can clamp the popup back on-screen. Window sizes scale with monitor DPI.
 
 Folder and sync-file rows have a 44-unit minimum height, about 50 including spacing. Icon targets are 28 × 28 with accessible labels. At least five full folder rows should fit at maximum height. The view menu provides Sync, SMB Storage, Send & Receive, Activity, Settings and Quit. The + menu provides sharing and storage setup.
 

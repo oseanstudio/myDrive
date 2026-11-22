@@ -1,11 +1,10 @@
-// Compact popup shell per docs/NATIVE-UI.md: one header with view selection,
-// add and dismiss, plus a footer for the full window or active operation.
+// Compact popup shell with window controls in the header and progress at the bottom.
 import SwiftUI
 import UniformTypeIdentifiers
 
 extension Notification.Name {
     static let myDriveExpand = Notification.Name("io.mydrive.expand")
-    static let myDriveDismiss = Notification.Name("io.mydrive.dismiss")
+    static let myDriveCompact = Notification.Name("io.mydrive.compact")
 }
 
 enum PopupMetrics {
@@ -63,14 +62,6 @@ struct PopupRootView: View {
                 }
                 .padding(.horizontal, 10)
                 .padding(.vertical, 5)
-            } else if !fullWindow {
-                Button("Open full window") {
-                    NotificationCenter.default.post(name: .myDriveExpand, object: nil)
-                }
-                .controlSize(.small)
-                .frame(maxWidth: .infinity, alignment: .trailing)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 6)
             }
         }
         .frame(width: fullWindow ? 560 : PopupMetrics.width)
@@ -141,27 +132,18 @@ struct PopupRootView: View {
             .menuIndicator(.hidden)
             .fixedSize()
             .accessibilityLabel("Add folder or connection")
-            if fullWindow {
-                Button {
-                    NotificationCenter.default.post(name: .myDriveDismiss, object: nil)
-                } label: {
-                    Image(systemName: "arrow.down.right.and.arrow.up.left")
-                        .font(.system(size: 12))
-                        .frame(width: 24, height: 24)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Open compact popup")
-            } else {
-                Button {
-                    NotificationCenter.default.post(name: .myDriveDismiss, object: nil)
-                } label: {
-                    Image(systemName: "chevron.down")
-                        .font(.system(size: 12))
-                        .frame(width: 24, height: 24)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Hide popup")
+            let windowModeLabel = fullWindow ? "Open compact popup" : "Open full window"
+            Button {
+                NotificationCenter.default.post(name: fullWindow ? .myDriveCompact : .myDriveExpand, object: nil)
+            } label: {
+                Image(systemName: fullWindow ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
+                    .font(.system(size: 12))
+                    .frame(width: 24, height: 24)
             }
+            .buttonStyle(.plain)
+            .help(windowModeLabel)
+            .accessibilityLabel(windowModeLabel)
+            .disabled(!fullWindow && app.busy != nil)
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)

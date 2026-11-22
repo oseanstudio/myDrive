@@ -80,6 +80,7 @@ class MyDrive(Gtk.Application):
         self.window.set_default_size(344, 420)
         self.window.set_icon_name(APP_ID)
         header = Gtk.HeaderBar()
+        header.set_decoration_layout(":close")
         self.window.set_titlebar(header)
         self.settings = Gtk.Settings.get_default()
         schema_source = Gio.SettingsSchemaSource.get_default()
@@ -94,7 +95,22 @@ class MyDrive(Gtk.Application):
         header_content.append(label(f"myDrive {VERSION}", "heading"))
         header_content.append(view)
         header.set_title_widget(header_content)
-        header.pack_end(menu([("Sync a folder…", self.share_folder), ("Quit myDrive", self.quit)]))
+        controls = Gtk.Box(spacing=4)
+        controls.append(menu([("Sync a folder…", self.share_folder), ("Quit myDrive", self.quit)]))
+        expand = Gtk.Button()
+        expand.connect("clicked", lambda *_: self.resize())
+
+        def update_window_mode(*_):
+            full = self.window.is_maximized()
+            title = "Open compact window" if full else "Open full window"
+            expand.set_icon_name("window-restore-symbolic" if full else "view-fullscreen-symbolic")
+            expand.set_tooltip_text(title)
+            expand.update_property([Gtk.AccessibleProperty.LABEL], [title])
+
+        update_window_mode()
+        self.window.connect("notify::maximized", update_window_mode)
+        controls.append(expand)
+        header.pack_end(controls)
         content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=7)
         self.window.set_child(content)
         drop = Gtk.DropTarget.new(Gdk.FileList.__gtype__, Gdk.DragAction.COPY)
@@ -118,13 +134,6 @@ class MyDrive(Gtk.Application):
             scroll = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER, child=page)
             self.pages[title] = page
             self.stack.add_named(scroll, title)
-        expand = button("Open full window", self.resize)
-        expand.set_halign(Gtk.Align.END)
-        expand.set_margin_end(8)
-        expand.set_margin_bottom(6)
-        content.append(expand)
-        self.window.connect("notify::maximized", lambda *_: expand.set_label(
-            "Open compact window" if self.window.is_maximized() else "Open full window"))
         def show_view(dropdown, *_):
             title = titles[dropdown.get_selected()]
             self.stack.set_visible_child_name(title)
@@ -146,6 +155,8 @@ class MyDrive(Gtk.Application):
         self.render_settings()
         self.window.present()
         if self.fixture:
+            assert header.get_decoration_layout() == ":close" and controls.get_last_child() == expand
+            assert expand.get_icon_name() == "view-fullscreen-symbolic" and content.get_last_child() == self.stack
             self.run_fixture()
             return
         self.tray = Tray(self.window, ROOT / f"{APP_ID}.png")

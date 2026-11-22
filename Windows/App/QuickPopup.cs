@@ -38,7 +38,7 @@ public sealed partial class MainWindow
     private void BuildQuickHeader()
     {
         quickHeader.ColumnDefinitions.Add(new(){Width=new GridLength(1,GridUnitType.Star)});
-        for(int i=0;i<3;i++)quickHeader.ColumnDefinitions.Add(new(){Width=GridLength.Auto});
+        for(int i=0;i<4;i++)quickHeader.ColumnDefinitions.Add(new(){Width=GridLength.Auto});
         var identity = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4, VerticalAlignment = VerticalAlignment.Center };
         identity.Children.Add(QuickText("myDrive", 13, true));
         identity.Children.Add(new TextBlock { Text = DisplayVersion, FontSize = 10, Opacity = .73, VerticalAlignment = VerticalAlignment.Center });
@@ -57,6 +57,9 @@ public sealed partial class MainWindow
         add.Flyout=addMenu;
         Grid.SetColumn(add,2);quickHeader.Children.Add(add);
         var paste=QuickIcon("\uE77F","Paste clipboard and send",()=>_=PasteAndSendBlip());Grid.SetColumn(paste,3);quickHeader.Children.Add(paste);
+        quickExpand = QuickIcon("\uE740", "Open full window", () => SetMode(false));
+        Grid.SetColumn(quickExpand, 4);
+        quickHeader.Children.Add(quickExpand);
     }
     private void NavigateQuick(string view)
     {
@@ -68,7 +71,7 @@ public sealed partial class MainWindow
     {
         quickViews.Content=currentView switch{"sync" or "sync-files" or "sync-info" or "sync-attention"=>"Sync","transfers"=>"Send & Receive","activity"=>"Activity","settings"=>"Settings",_=>StorageViewName};
         quickViews.IsEnabled=!busy;
-        if (quickExpand != null) quickExpand.Visibility = compact && !busy ? Visibility.Visible : Visibility.Collapsed;
+        quickExpand.IsEnabled = !busy;
         if(statusFooter!=null){statusFooter.Visibility=compact&&!busy?Visibility.Collapsed:Visibility.Visible;if(statusFooter.Child is Grid footer)footer.Padding=compact?new Thickness(10,5,10,5):new Thickness(24,10,24,10);}
         status.MaxWidth=compact?190:double.PositiveInfinity;
         UpdateProblemColors();

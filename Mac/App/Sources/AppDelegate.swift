@@ -317,10 +317,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             self?.popover.performClose(nil)
             self?.openFullWindow()
         }
-        NotificationCenter.default.addObserver(forName: .myDriveDismiss, object: nil,
+        NotificationCenter.default.addObserver(forName: .myDriveCompact, object: nil,
                                                queue: .main) { [weak self] _ in
-            self?.popover.performClose(nil)
             self?.fullWindow?.performClose(nil)
+            self?.showPopover()
         }
         NotificationCenter.default.addObserver(forName: .myDriveAppearance, object: nil,
                                                queue: .main) { [weak self] _ in
