@@ -83,6 +83,7 @@ enum Diagnostics {
                 picker.window.contentView?.layoutSubtreeIfNeeded()
                 guard picker.table.numberOfRows == labels.count, picker.table.selectedRow == -1,
                       picker.cancelButton.title == "Cancel", picker.table.activateRow != nil,
+                      picker.table.tableColumns[0].width <= picker.scroll.contentSize.width + 1,
                       picker.scroll.frame.height < CGFloat(labels.count) * picker.table.rowHeight else {
                     throw BlipReceiverError.message("The recipient list did not start unselected and scrollable")
                 }

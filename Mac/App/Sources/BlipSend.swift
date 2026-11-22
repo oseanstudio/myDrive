@@ -195,13 +195,16 @@ struct BlipSendPayload {
         cancelButton.keyEquivalent = "\u{1b}"
 
         table.setAccessibilityLabel("Recipient devices")
+        table.style = .plain
         table.headerView = nil
         table.rowHeight = 28
         table.intercellSpacing = NSSize(width: 0, height: 2)
         table.allowsMultipleSelection = false
+        table.autoresizingMask = [.width]
         table.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("recipient"))
-        column.width = 294
+        column.resizingMask = .autoresizingMask
+        column.width = 276
         table.addTableColumn(column)
         table.dataSource = self
         table.delegate = self
@@ -239,6 +242,8 @@ struct BlipSendPayload {
         if let text = views.first as? NSTextField {
             text.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         }
+        content.layoutSubtreeIfNeeded()
+        table.sizeLastColumnToFit()
         table.reloadData()
     }
 
