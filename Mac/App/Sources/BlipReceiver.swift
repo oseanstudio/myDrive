@@ -45,6 +45,7 @@ struct BlipRecentRecipient: Codable, Identifiable {
     private var refreshing = false
     private let client = BlipMacClient()
     private var adapterAvailable = false
+    private var receiveReady = false
     private var activity: NSObjectProtocol?
     private var backgroundProcess: Process?
     private var backgroundInput: FileHandle?
@@ -158,7 +159,7 @@ struct BlipRecentRecipient: Codable, Identifiable {
     }
 
     private func queueRelay(paths: [String], target: BlipPeer, owner: String) async throws -> Bool {
-        guard sameAccount(target.peer, account) else { return false }
+        guard receiveReady, sameAccount(target.peer, account) else { return false }
         let snapshot = try await BlipMacClient.request("poll", ["owner": owner])
         let status = snapshot.dict("status")
         guard status.bool("authenticated"), status.str("user_id") + ":" + status.str("device_id") == owner else { return false }
@@ -254,6 +255,7 @@ struct BlipRecentRecipient: Codable, Identifiable {
     @Published private(set) var signingIn = false
     private var provisioning = false
     private var downloadRequested = false
+    private var triedSendSetup = false
     var canSetUpBlip: Bool { backgroundFailure != nil && backgroundProcess == nil }
 
     func setUpBlip() {
@@ -303,12 +305,16 @@ struct BlipRecentRecipient: Codable, Identifiable {
     func prepareSend(_ action: @escaping () -> Void, onUnavailable: @escaping () -> Void = {}) {
         guard !sending, !preparingSend else { onUnavailable(); return }
         if connected && adapterAvailable { action(); return }
+        if backgroundEnabled, !adapterAvailable, !triedSendSetup {
+            triedSendSetup = true
+            downloadRequested = true
+        }
         preparingSend = true
         reportSend("Connecting to Blip…")
         if !adapterAvailable && backgroundProcess == nil { nextHostAttempt = .distantPast }
         Task {
             defer { preparingSend = false }
-            let deadline = Date().addingTimeInterval(35)
+            let deadline = Date().addingTimeInterval(downloadRequested || provisioning ? 155 : 35)
             repeat {
                 await refresh()
                 if connected {
@@ -321,7 +327,7 @@ struct BlipRecentRecipient: Codable, Identifiable {
                 try? await Task.sleep(for: .milliseconds(500))
             } while Date() < deadline && !Task.isCancelled
             onUnavailable()
-            reportSend("Blip is unavailable. " + (backgroundFailure ?? state))
+            reportSend(problem ?? backgroundFailure ?? state)
         }
     }
 
@@ -342,6 +348,14 @@ struct BlipRecentRecipient: Codable, Identifiable {
         if enabled && activity == nil {activity=ProcessInfo.processInfo.beginActivity(options:.userInitiatedAllowingIdleSystemSleep,reason:"Watch for incoming Blip transfers")}
         if !enabled,let activity {ProcessInfo.processInfo.endActivity(activity);self.activity=nil}
     }
+    func refreshConnection() async {
+        if backgroundProcess == nil { nextHostAttempt = .distantPast }
+        if connected, !receiveReady {
+            _ = try? await BlipMacClient.request("configure-receive", [:])
+        }
+        await refresh()
+    }
+
     func refresh() async {
         guard !refreshing else { return }; refreshing = true; defer { refreshing = false }
         ensureBackground()
@@ -353,6 +367,7 @@ struct BlipRecentRecipient: Codable, Identifiable {
         } catch is BlipMacClient.Unavailable {
             guard !Task.isCancelled else { return }
             adapterAvailable = false
+            receiveReady = false
             let starting = backgroundEnabled && backgroundInput != nil &&
                 Date().timeIntervalSince(hostStartedAt) < (provisioning ? 150 : 30)
             if backgroundInput != nil && !starting {
@@ -371,6 +386,8 @@ struct BlipRecentRecipient: Codable, Identifiable {
             return
         } catch {
             guard !Task.isCancelled else { return }
+            adapterAvailable = false
+            receiveReady = false
             problem = error.localizedDescription
             state = "Blip needs attention"
             session = ""; selfPeer = ""; setActivity(false)
@@ -379,6 +396,7 @@ struct BlipRecentRecipient: Codable, Identifiable {
         do {
             let status = value.dict("status")
             let managed = !status.bool("desktop_session")
+            receiveReady = !managed || status.bool("receive_policy_verified")
             provisioning = false
             needsSignIn = managed && !status.bool("authenticated")
             if !signingIn { registrationCodeSent = needsSignIn && status.str("registration") == "CODE_SENT" }
@@ -387,19 +405,18 @@ struct BlipRecentRecipient: Codable, Identifiable {
                 problem = needsSignIn ? nil : "Set up a myDrive Blip profile to sign in here."
                 account="";session="";selfPeer="";peers=[];transfers=[];setActivity(false);return
             }
-            if managed && !status.bool("receive_policy_verified") {
-                state = "Checking receiving settings…"
-                selfPeer = ""
-                return
-            }
             account = status.str("user_id"); guard UUID(uuidString:account) != nil else { throw BlipReceiverError.message("Blip identity could not be verified.") }
             let identity = account + ":" + status.str("device_id")
             let data = try JSONSerialization.data(withJSONObject:value.array("transfers"))
             let rawTransfers = try JSONDecoder().decode([BlipTransfer].self, from:data)
             selfPeer = identity
-            var relayProblem: String?
-            do { try await updateRelay(value, owner: identity, rawTransfers: rawTransfers) }
-            catch { relayProblem = "A relay action needs attention. Stored files are kept." }
+            var receiveProblem: String?
+            if receiveReady {
+                do { try await updateRelay(value, owner: identity, rawTransfers: rawTransfers) }
+                catch { receiveProblem = "A relay action needs attention. Stored files are kept." }
+            } else {
+                receiveProblem = "Sending is available. Allow myDrive access to Downloads, then click Refresh to enable receiving."
+            }
             transfers = rawTransfers.filter {
                 !sameAccount($0.peer, account) || ($0.item_names?.count != 1 || $0.item_names?.first?.hasPrefix("mydrive-relay-v1.") != true)
             } + relayReceived.values.sorted { $0.id < $1.id }
@@ -422,7 +439,7 @@ struct BlipRecentRecipient: Codable, Identifiable {
             let nativeHost = backgroundEnabled && backgroundProcess?.isRunning == true
                 && NSRunningApplication.runningApplications(withBundleIdentifier: BlipMacEngine.bundleID).isEmpty
             state = nativeHost ? "Ready in the background" : "Using desktop Blip"
-            problem = relayProblem
+            problem = receiveProblem
             setActivity(true)
             let baseline=noticeSession != identity
             if baseline {noticeStates=[:];noticeSession=identity}
@@ -432,7 +449,7 @@ struct BlipRecentRecipient: Codable, Identifiable {
                 let live = !transfer.has_error && ["Invited","Pending","Active","Paused","ResumeRequested"].contains(transfer.status)
                 if changed && (!baseline || live) {NotificationCenter.default.post(name:.myDriveIncomingBlip,object:transfer.id)}
             }
-            for transfer in transfers where transfer.pending {
+            for transfer in transfers where receiveReady && transfer.pending {
                 if policy.autoReceive(transfer,account:account,openLinks:autoOpen) {
                     if try claims.claim(identity+":accept:"+transfer.id) {
                         receiving.insert(transfer.id)
@@ -550,7 +567,7 @@ struct BlipRecentRecipient: Codable, Identifiable {
     }
     func receive(_ transfer: BlipTransfer) {
         let owner = selfPeer
-        guard !owner.isEmpty, transfer.pending, UUID(uuidString: transfer.id) != nil,
+        guard receiveReady, !owner.isEmpty, transfer.pending, UUID(uuidString: transfer.id) != nil,
               BlipPolicy.exactPeer(transfer.peer), receiving.insert(transfer.id).inserted else { return }
         Task {
             do {

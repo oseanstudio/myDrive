@@ -17,20 +17,25 @@ const GROUP: &str = "AY8UB8KTUX.blip";
 const NAMESPACE: &str = "net.oseanstudio.mydrive.blip";
 
 pub(super) fn home() -> Option<PathBuf> {
-    env::var_os("HOME")
-        .map(PathBuf::from)
-        .filter(|path| path.is_absolute())
+    env::home_dir().filter(|path| path.is_absolute())
 }
 
 pub(super) fn discover() -> Result<Session> {
     let home = home().ok_or("profile_unavailable")?;
-    let profile = home.join("Library/Application Support/myDrive/Blip");
-    let temp = env::temp_dir();
-    let managed = [
+    discover_in(&home, &env::temp_dir())
+}
+
+fn managed_candidates(temp: &Path) -> [PathBuf; 3] {
+    [
         temp.join("mdblip/sock"),
         temp.join(NAMESPACE).join("sock"),
         Path::new("/tmp").join(NAMESPACE).join("sock"),
-    ];
+    ]
+}
+
+fn discover_in(home: &Path, temp: &Path) -> Result<Session> {
+    let profile = home.join("Library/Application Support/myDrive/Blip");
+    let managed = managed_candidates(temp);
     let override_path = fs::File::open(profile.join("desktop-socket.txt"))
         .ok()
         .and_then(|file| {
@@ -39,11 +44,11 @@ pub(super) fn discover() -> Result<Session> {
             let path = PathBuf::from(text.trim());
             (text.len() <= 1024 && path.is_absolute()).then_some(path)
         });
-    let socket = if let Some(path) = override_path {
-        live_socket(vec![path])
-    } else {
-        live_socket(managed.to_vec()).or_else(|| {
-            let mut candidates = vec![
+    let socket = override_path
+        .filter(|path| rpc::connect(path).is_ok())
+        .or_else(|| live_socket(managed.to_vec()))
+        .or_else(|| {
+            let known = [
                 temp.join(GROUP).join("sock"),
                 Path::new("/tmp").join(GROUP).join("sock"),
                 home.join("Library/Group Containers")
@@ -54,10 +59,15 @@ pub(super) fn discover() -> Result<Session> {
                 home.join("Library/Caches/net.blip.Blip/sock"),
                 home.join("Library/Caches/net.blip.macos/sock"),
             ];
+            // These endpoints belong to the official profile. Broad discovery is only a fallback.
+            if let Some(socket) = known.into_iter().find(|path| rpc::connect(path).is_ok()) {
+                return Some(socket);
+            }
+            let mut candidates = Vec::new();
             for root in [
                 home.join("Library/Caches"),
                 home.join("Library/Application Support"),
-                temp,
+                temp.to_owned(),
             ] {
                 if let Ok(entries) = fs::read_dir(root) {
                     for entry in entries
@@ -78,8 +88,7 @@ pub(super) fn discover() -> Result<Session> {
             }
             live_socket(candidates)
         })
-    }
-    .ok_or("native_connection_unavailable")?;
+        .ok_or("native_connection_unavailable")?;
     let resolved = socket
         .canonicalize()
         .map_err(|_| "native_connection_unavailable")?;
@@ -139,8 +148,8 @@ pub(super) fn prepare_inbox(inbox: &Path) -> Result<()> {
 }
 
 pub(super) fn configure_receive(session: &Session) -> Result<()> {
-    prepare_inbox(&session.inbox)?;
     session.dispatch("TransferSetAutoAccept", number(1, 0))?;
+    prepare_inbox(&session.inbox)?;
     session.dispatch(
         "TransferSetCustomDefaultSavePath",
         string(1, super::path_text(&session.inbox)?),
@@ -148,22 +157,29 @@ pub(super) fn configure_receive(session: &Session) -> Result<()> {
 }
 
 pub(super) fn prepare() -> Result<Value> {
+    let home = home().ok_or("profile_unavailable")?;
+    let managed = managed_candidates(&env::temp_dir());
     let deadline = Instant::now() + Duration::from_secs(12);
     while Instant::now() < deadline {
-        if let Ok(session) = discover() {
-            if !session.desktop {
-                let agent = [
-                    string(101, "Mac"),
-                    number(102, 5),
-                    string(200, "macOS"),
-                    string(300, "net.oseanstudio.mydrive"),
-                    string(301, "myDrive"),
-                ]
-                .concat();
-                session.dispatch("SetUserAgent", field(1, &agent))?;
-                configure_receive(&session)?;
-                return Ok(json!({"ok": true}));
-            }
+        if let Some(socket) = live_socket(managed.to_vec()) {
+            let session = Session {
+                profile: home.join("Library/Application Support/myDrive/Blip"),
+                socket,
+                inbox: home.join("Downloads/myDrive"),
+                desktop: false,
+            };
+            let agent = [
+                string(101, "Mac"),
+                number(102, 5),
+                string(200, "macOS"),
+                string(300, "net.oseanstudio.mydrive"),
+                string(301, "myDrive"),
+            ]
+            .concat();
+            session.dispatch("SetUserAgent", field(1, &agent))?;
+            // Send can still work when macOS denies access to Downloads.
+            let receive_configured = configure_receive(&session).is_ok();
+            return Ok(json!({"ok": true, "receive_configured": receive_configured}));
         }
         thread::sleep(Duration::from_millis(150));
     }
@@ -182,6 +198,13 @@ pub(crate) fn request(action: &str, payload: &Value) -> std::result::Result<Valu
 
 fn run_request(action: &str, payload: &Value) -> Result<Value> {
     let session = discover()?;
+    if action == "configure-receive" {
+        if session.desktop {
+            return Err("invalid_command");
+        }
+        configure_receive(&session)?;
+        return Ok(json!({"ok": true}));
+    }
     let args = Arguments {
         command: action.to_owned(),
         profile: PathBuf::new(),
@@ -228,9 +251,10 @@ pub(crate) fn poll_loop() -> i32 {
         }
         let result = match discover().and_then(|session| session.snapshot()) {
             Ok(snapshot) => json!({"ok": true, "data": snapshot.poll()}),
-            Err(error) => {
-                json!({"ok": false, "unavailable": error == "native_connection_unavailable", "error": super::error_message(error)})
-            }
+            Err(error) => json!({
+                "ok": false, "unavailable": error == "native_connection_unavailable",
+                "error": super::error_message(error)
+            }),
         };
         if emit(&mut output, &result).is_err() {
             return 1;
@@ -246,6 +270,32 @@ mod tests {
     const USER: &str = "11111111-1111-4111-8111-111111111111";
     const DEVICE: &str = "22222222-2222-4222-8222-222222222222";
     const ID: &str = "ABCD1234-EF56-4789-ABCD-123456789ABC";
+
+    #[test]
+    fn official_socket_is_discovered_with_a_stale_override_and_other_local_socket() {
+        let fixture = tempfile::Builder::new()
+            .prefix("md-blip-")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let home = fixture.path().join("home");
+        let temp = fixture.path().join("tmp");
+        let profile = home.join("Library/Application Support/myDrive/Blip");
+        fs::create_dir_all(&profile).unwrap();
+        fs::write(
+            profile.join("desktop-socket.txt"),
+            temp.join("stale/sock").to_str().unwrap(),
+        )
+        .unwrap();
+        let official = temp.join(GROUP).join("sock");
+        let other = temp.join("legacy-blip").join("sock");
+        fs::create_dir_all(official.parent().unwrap()).unwrap();
+        fs::create_dir_all(other.parent().unwrap()).unwrap();
+        let _official = UnixListener::bind(&official).unwrap();
+        let _other = UnixListener::bind(&other).unwrap();
+        let session = discover_in(&home, &temp).unwrap();
+        assert!(session.desktop);
+        assert_eq!(session.socket, official);
+    }
 
     #[test]
     fn signed_in_profile_accepts_the_exact_invitation_and_retains_received_paths() {

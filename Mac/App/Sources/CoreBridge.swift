@@ -12,8 +12,10 @@ struct CoreError: LocalizedError {
 final class CoreBridge {
     static let shared = CoreBridge()
     let executable: URL
+    private let environment: [String: String]?
 
-    init(executable overrideURL: URL? = nil) {
+    init(executable overrideURL: URL? = nil, environment: [String: String]? = nil) {
+        self.environment = environment
         if let overrideURL { executable = overrideURL; return }
         if let bundled = Bundle.main.url(forResource: "mydrive-core", withExtension: nil) {
             executable = bundled
@@ -34,7 +36,7 @@ final class CoreBridge {
         let stdinData = try JSONSerialization.data(withJSONObject: payload)
 
         try Task.checkCancellation()
-        let invocation = CoreInvocation(executable: executable)
+        let invocation = CoreInvocation(executable: executable, environment: environment)
         let result: (code: Int32, output: Data) = try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 DispatchQueue.global(qos: .userInitiated).async {
@@ -90,7 +92,10 @@ private final class CoreInvocation: @unchecked Sendable {
     private let lock = NSLock()
     private var cancellation = false
     private var timedOut = false
-    init(executable: URL) { process.executableURL = executable }
+    init(executable: URL, environment: [String: String]?) {
+        process.executableURL = executable
+        process.environment = environment
+    }
 
     func stop(cancelled: Bool) {
         lock.lock()

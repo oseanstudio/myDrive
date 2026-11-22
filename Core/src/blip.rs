@@ -552,7 +552,7 @@ impl Session {
             let snapshot = self.snapshot()?;
             if verify && snapshot.status["authenticated"] == true {
                 #[cfg(target_os = "macos")]
-                mac::configure_receive(self)?;
+                let _ = mac::configure_receive(self);
                 return Ok(snapshot.status);
             }
             if snapshot.registration_failed {
@@ -948,6 +948,10 @@ pub(crate) fn error_message(error: &str) -> &'static str {
         }
         "sign_in_required" => "The Blip device is signed out.",
         "native_connection_unavailable" => "The local Blip connection is unavailable.",
+        "invalid_native_response" => "Blip returned a response myDrive could not read.",
+        "native_response_too_large" => "Blip’s local response was too large to read.",
+        "native_request_rejected" => "The local Blip engine rejected the request.",
+        "profile_unavailable" => "myDrive could not access the Blip profile or receiving folder.",
         "receive_policy_unconfirmed" => "Blip has not confirmed the receiving settings yet.",
         "invalid_search" => "Enter a name or email address to search Blip.",
         "search_unavailable" => "Blip could not complete the search. Try again.",

@@ -10,6 +10,7 @@ import Foundation
             }
             let process = Process()
             process.executableURL = CoreBridge.shared.executable
+            process.environment = BlipMacPaths.environment
             process.arguments = ["--blip-engine"] + arguments
             try process.run()
             process.waitUntilExit()

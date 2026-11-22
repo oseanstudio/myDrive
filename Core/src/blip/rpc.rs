@@ -28,6 +28,9 @@ pub(super) type Result<T> = std::result::Result<T, &'static str>;
 const MAXIMUM: usize = 32 * 1024 * 1024;
 const INVALID: &str = "invalid_native_response";
 const CONNECTION: &str = "native_connection_unavailable";
+const READ_TIMEOUT: Duration = Duration::from_secs(if cfg!(target_os = "macos") { 5 } else { 2 });
+const RESPONSE_TIMEOUT: Duration =
+    Duration::from_secs(if cfg!(target_os = "macos") { 15 } else { 5 });
 
 pub(super) fn connect(path: &Path) -> Result<Socket> {
     if !local_endpoint(path) {
@@ -43,10 +46,10 @@ pub(super) fn connect(path: &Path) -> Result<Socket> {
         return Err(CONNECTION);
     }
     socket
-        .set_read_timeout(Some(Duration::from_secs(2)))
+        .set_read_timeout(Some(READ_TIMEOUT))
         .map_err(|_| CONNECTION)?;
     socket
-        .set_write_timeout(Some(Duration::from_secs(2)))
+        .set_write_timeout(Some(READ_TIMEOUT))
         .map_err(|_| CONNECTION)?;
     Ok(socket)
 }
@@ -179,7 +182,7 @@ pub(super) fn call(path: &Path, method: &str, body: &[u8]) -> Result<Vec<u8>> {
     let mut payload = Vec::new();
     let mut receiving = None;
     let mut total = 0;
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + RESPONSE_TIMEOUT;
     for _ in 0..4096 {
         let flags = byte(&mut reader, deadline)?;
         let mut next = || byte(&mut reader, deadline);

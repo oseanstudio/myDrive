@@ -5,6 +5,12 @@ import Foundation
 
 enum BlipMacPaths {
     static let managedNamespace = "net.oseanstudio.mydrive.blip/"
+    static var environment: [String: String] {
+        var environment = ProcessInfo.processInfo.environment
+        environment["HOME"] = FileManager.default.homeDirectoryForCurrentUser.path
+        environment["TMPDIR"] = FileManager.default.temporaryDirectory.path
+        return environment
+    }
     static var managedProfile: URL {
         FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/myDrive/Blip", isDirectory: true)
     }
@@ -70,13 +76,25 @@ enum BlipMacEngine: Int32, LocalizedError {
 
     @MainActor static func runBackground(allowDownload: Bool) throws {
         let framework = try prepareEngine(installed: installedApplication, allowDownload: allowDownload)
-        if (try? checkProfile(groupDirectory.appendingPathComponent("state.dat"))) != nil {
+        let desktopState = groupDirectory.appendingPathComponent("state.dat")
+        let storage = BlipMacPaths.managedProfile.appendingPathComponent("state", isDirectory: true)
+        let useDesktopProfile: Bool
+        do {
+            try checkProfile(desktopState)
+            useDesktopProfile = true
+        } catch BlipMacEngine.permission {
+            // A separate, existing myDrive sign-in is still usable if access to Blip's profile was denied.
+            guard (try? checkProfile(storage.appendingPathComponent("state.dat"))) != nil else { throw Self.permission }
+            useDesktopProfile = false
+        } catch BlipMacEngine.profile {
+            useDesktopProfile = false
+        }
+        if useDesktopProfile {
             let cache = groupDirectory.appendingPathComponent("Library/Caches", isDirectory: true)
             try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
             try run(framework: framework, cache: cache, storage: groupDirectory,
                     server: "https://prod.blip.net", namespace: group + "/")
         } else {
-            let storage = BlipMacPaths.managedProfile.appendingPathComponent("state", isDirectory: true)
             let cache = BlipMacPaths.managedCache
             for directory in [storage, cache] {
                 try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
@@ -94,6 +112,7 @@ enum BlipMacEngine: Int32, LocalizedError {
         guard let core = Bundle.main.url(forResource: "mydrive-core", withExtension: nil) else { throw Self.launch }
         let process = Process()
         process.executableURL = core
+        process.environment = BlipMacPaths.environment
         process.arguments = ["--blip-engine", "prepare"]
         process.standardInput = FileHandle.nullDevice
         process.standardOutput = FileHandle.nullDevice
@@ -145,10 +164,16 @@ enum BlipMacEngine: Int32, LocalizedError {
         // Preserve the bundle's resources and signature. dyld rejects the bare framework executable.
         try tool("/usr/bin/codesign", ["--verify", "--strict", staged.appendingPathComponent(frameworkBundlePath).path])
         do {
-            try fm.moveItem(at: staged, to: runtimeDirectory)
+            if fm.fileExists(atPath: runtimeDirectory.path) {
+                if verified(runtimeDirectory) { return runtimeLibrary }
+                _ = try fm.replaceItemAt(runtimeDirectory, withItemAt: staged)
+            } else {
+                try fm.moveItem(at: staged, to: runtimeDirectory)
+            }
         } catch {
             guard verified(runtimeDirectory) else { throw error }
         }
+        guard verified(runtimeDirectory) else { throw Self.version }
         return runtimeLibrary
     }
 

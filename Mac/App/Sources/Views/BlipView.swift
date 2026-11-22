@@ -13,7 +13,7 @@ struct BlipView: View {
             HStack {
                 Text(receiver.state).font(.system(size: 13, weight: .semibold))
                 Spacer()
-                Button("Refresh") { Task { await receiver.refresh() } }.controlSize(.small)
+                Button("Refresh") { Task { await receiver.refreshConnection() } }.controlSize(.small)
             }
             HStack {
                 Button("Send…") { receiver.chooseFilesToSend() }

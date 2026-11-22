@@ -2,12 +2,13 @@ import Foundation
 
 @MainActor final class BlipMacClient {
     struct Unavailable: Error {}
+    private static let core = CoreBridge(environment: BlipMacPaths.environment)
     private var process: Process?
     private var input: FileHandle?
     private var output: FileHandle?
 
     static func request(_ action: String, _ payload: JSON) async throws -> JSON {
-        let reply = try await CoreBridge.shared.call(action: "blip.native." + action,
+        let reply = try await core.call(action: "blip.native." + action,
             request: ["payload": payload], timeout: 30)
         guard let result = reply as? JSON else { throw invalidReply }
         return result
@@ -18,7 +19,8 @@ import Foundation
             stop()
             let child = Process()
             let requests = Pipe(), replies = Pipe()
-            child.executableURL = CoreBridge.shared.executable
+            child.executableURL = Self.core.executable
+            child.environment = BlipMacPaths.environment
             child.arguments = ["--blip-mac-poll"]
             child.standardInput = requests
             child.standardOutput = replies
