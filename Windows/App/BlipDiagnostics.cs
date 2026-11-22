@@ -41,6 +41,20 @@ public sealed partial class MainWindow
             blipSnapshot.Status.Authenticated = false; Render(); await Task.Delay(150); Stable(); await Capture(directory, "blip-desktop-signedout.png");
             blipSnapshot.Status.Authenticated = true;
             blipSnapshot.Status.UserId="33333333-3333-4333-8333-333333333333";blipSnapshot.Status.DeviceId="44444444-4444-4444-8444-444444444444";
+            Render();
+            recentRecipients = blipSnapshot.Devices.Take(2).Select(Recent).ToList();
+            RenderRecipientRows();
+            var recentRows = recipientRows?.Children.OfType<Grid>().ToArray();
+            if (recentRows is not { Length: 3 } ||
+                recentRows[0].Children.OfType<TextBlock>().SingleOrDefault()?.Text != "Studio tester" ||
+                recentRows.Skip(1).Any(row => row.Margin.Left <= 0 ||
+                    row.Children.OfType<StackPanel>().Single().Children.OfType<Button>()
+                        .Select(button => Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(button).Split(' ')[0])
+                        .SequenceEqual(new[] { "Paste", "Rename", "Remove" }) == false))
+                throw new IOException("Recent devices must appear under their contact with Paste, Rename and Remove controls.");
+            await Capture(directory, "blip-recent-recipients.png");
+            recentRecipients.Clear();
+            RenderRecipientRows();
             var senderChoices=ChooseLinkSenders();await Task.Delay(200);if(activeDialog==null)throw new IOException("Sender permissions did not open");await Capture(directory,"blip-sender-permissions.png",activeDialog);activeDialog.Hide();await senderChoices;
             var outbox=Path.Combine(directory,"generated-outbox");
             var clipboardLink=await BlipClipboard.PrepareTextAsync("https://example.test/clipboard",outbox);
@@ -57,10 +71,10 @@ public sealed partial class MainWindow
                     list.Items.Count != blipSnapshot.Devices.Count || list.SelectedIndex != -1 ||
                     list.Items.OfType<ListViewItem>().Any(item => item.Content is not Grid deviceRow ||
                         deviceRow.Children.OfType<Button>().Count() != 2 ||
-                        deviceRow.Children.OfType<Button>().First().IsEnabled != (paths?.Count > 0) ||
+                        !deviceRow.Children.OfType<Button>().First().IsEnabled ||
                         !deviceRow.Children.OfType<Button>().Last().IsEnabled) ||
                     !string.IsNullOrEmpty(activeDialog.PrimaryButtonText))
-                    throw new IOException("The recipient list must send on click whenever a payload is ready");
+                    throw new IOException("The recipient list must always let the user choose a device");
                 activeDialog.UpdateLayout();
                 await Task.Delay(180);
                 Stable();

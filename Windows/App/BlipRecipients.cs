@@ -24,9 +24,12 @@ public sealed partial class MainWindow
                 return DeviceType(label) ? "Device" : label;
             }
         }
-        private static bool DeviceType(string name) =>
-            name is "Desktop" or "Laptop" or "Tablet" or "Phone" ||
-            (name.Split(' ', 2) is [var kind, var count] && (kind is "Desktop" or "Laptop" or "Tablet" or "Phone") && int.TryParse(count, out _));
+        private static bool DeviceType(string name)
+        {
+            var parts = name.Split(' ', 2);
+            return (parts[0] is "Desktop" or "Laptop" or "Tablet" or "Phone") &&
+                (parts.Length == 1 || int.TryParse(parts[1], out _));
+        }
     }
     private List<RecentRecipient> recentRecipients = new();
     private List<BlipDevice> directoryRecipients = new();
