@@ -41,6 +41,7 @@ struct BlipTransfer: Identifiable, Codable {
     let link_files: [String]?
     let link_only: Bool?
     var dismissed: Bool? = nil
+    var updated_at: Int64? = nil
     var progress: Int64? = nil
     var total_bytes: Int64? = nil
     var item_names: [String]? = nil

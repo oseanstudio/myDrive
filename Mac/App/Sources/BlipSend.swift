@@ -78,6 +78,12 @@ struct BlipSendPayload {
 
     private func pickFilesForRecipient() {
         guard let peer = chooseRecipient(description: "Click a device to choose what to send.") else { return }
+        chooseFiles(to: peer)
+    }
+
+    func chooseFiles(to peer: BlipPeer) {
+        guard connected, !sending else { return }
+        let owner = recipientOwner
         let picker = NSOpenPanel()
         picker.title = "Send with Blip"
         picker.message = "Send to \(recipientLabel(peer))"
@@ -86,7 +92,7 @@ struct BlipSendPayload {
         picker.canChooseDirectories = true
         picker.allowsMultipleSelection = true
         picker.treatsFilePackagesAsDirectories = true
-        guard picker.runModal() == .OK, !picker.urls.isEmpty else { return }
+        guard picker.runModal() == .OK, !picker.urls.isEmpty, recipientOwner == owner else { return }
         send(.forFiles(picker.urls), to: peer)
     }
 
@@ -95,6 +101,11 @@ struct BlipSendPayload {
             let payload = try BlipSendPayload.clipboard(.general, outbox: outboxDirectory)
             sendPrepared(payload)
         }
+        catch { reportSend(error.localizedDescription) }
+    }
+
+    func pasteAndSend(to peer: BlipPeer) {
+        do { send(try .clipboard(.general, outbox: outboxDirectory), to: peer) }
         catch { reportSend(error.localizedDescription) }
     }
 

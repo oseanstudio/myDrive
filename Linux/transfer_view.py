@@ -54,6 +54,17 @@ class TransferView:
         self.delivery = None
         self.error = ""
         self.connecting_to_send = False
+        self.recipient_owner = ""
+        self.recent_recipients = []
+        self.directory_recipients = []
+        self.searched_query = ""
+        self.search_status = ""
+        self.searching = False
+        self.recipient_entry = Gtk.Entry(placeholder_text="Find people & devices", max_length=254, hexpand=True)
+        self.recipient_entry.set_tooltip_text("Find people & devices")
+        self.recipient_entry.connect("changed", lambda *_: self.render_recipient_rows())
+        self.recipient_entry.connect("activate", lambda *_: self.search_recipients())
+        self.recipient_rows = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         self.downloads = GLib.get_user_special_dir(GLib.UserDirectory.DIRECTORY_DOWNLOAD) or str(Path.home() / "Downloads")
         self.render()
 
@@ -199,6 +210,11 @@ class TransferView:
         self.app.work("blip", "Refresh Blip", poll, arrived, quiet=quiet, on_error=failed)
 
     def render(self):
+        focused = self.recipient_entry.is_focus()
+        if self.recipient_entry.get_parent() is not None:
+            self.recipient_entry.get_parent().remove(self.recipient_entry)
+        if self.recipient_rows.get_parent() is self.page:
+            self.page.remove(self.recipient_rows)
         clear(self.page)
         identity = self.owner(self.snapshot)
         self.page.append(row("Blip", "Ready" if identity and not self.error else "Connection needed",
@@ -219,6 +235,25 @@ class TransferView:
                              ("Sender permissions…", self.permissions),
                              ("Received files", lambda: self.app.open_path(self.blip.inbox))]))
         self.page.append(actions)
+        if self.recipient_owner != identity:
+            self.recipient_owner = identity
+            self.recent_recipients = []
+            self.directory_recipients = []
+            self.searched_query = self.search_status = ""
+            self.recipient_entry.set_text("")
+            if identity and not self.app.fixture:
+                self.update_recents("list", identity)
+        search = Gtk.Box(spacing=4)
+        search.append(self.recipient_entry)
+        find = Gtk.Button(icon_name="system-search-symbolic", tooltip_text="Search Blip for a person")
+        find.connect("clicked", lambda *_: self.search_recipients())
+        search.append(find)
+        search.set_sensitive(bool(identity))
+        self.page.append(search)
+        self.page.append(self.recipient_rows)
+        self.render_recipient_rows()
+        if focused and identity:
+            self.recipient_entry.grab_focus()
         if waiting := self.snapshot.get("relays"):
             self.page.append(label(f"{waiting} waiting for relay or delivery"))
         names = self.names(self.snapshot.get("devices", []), self.catalog(identity))
@@ -234,6 +269,106 @@ class TransferView:
         if self.delivery:
             name = names.get(self.delivery.get("peer", "").lower(), "Previous device")
             self.page.append(row(name, "Received", button("View files", lambda: self.show_received(self.delivery))))
+
+    def update_recents(self, action, identity, peer=None, title=None, target=None):
+        if not identity or self.app.fixture:
+            return
+        names = self.recipients()
+        transfers = sorted(self.snapshot.get("transfers", []), key=lambda t: t.get("updated_at", 0), reverse=True)
+        prior = dict.fromkeys(t["peer"].lower() for t in transfers
+                              if t.get("direction") == "Outgoing" and t.get("completed") and not t.get("has_error")
+                              and not packet(t) and str(t.get("peer", "")).lower() in names)
+        seed = [{"peer": key, "label": names[key]} for key in list(prior)[:24]]
+        payload = {"owner": identity, "seed": seed, "recipient": {"peer": peer, "label": title}, "target": target}
+        def loaded(result):
+            if identity == self.recipient_owner:
+                self.recent_recipients = result
+                self.render_recipient_rows()
+        self.app.work("blip-recipients", "", lambda: core("blip.recents." + action, payload=payload),
+                      loaded, quiet=True, queue=True, on_error=self.app.announce)
+
+    def search_recipients(self):
+        term = self.recipient_entry.get_text().strip()
+        owner = self.owner(self.snapshot)
+        if not owner or not term or self.searching:
+            return
+        self.searching = True
+        self.searched_query = term
+        self.directory_recipients = []
+        self.search_status = "Searching Blip…"
+        self.render_recipient_rows()
+        def finish(devices, status):
+            self.searching = False
+            if owner == self.recipient_owner:
+                self.directory_recipients = devices
+                self.search_status = status
+                self.render_recipient_rows()
+        self.app.work("blip-recipients", "", lambda: self.blip.request("search", term),
+                      lambda result: finish(result.get("devices", []), ""), quiet=True, queue=True,
+                      on_error=lambda error: finish([], error))
+
+    def render_recipient_rows(self):
+        clear(self.recipient_rows)
+        owner = self.recipient_owner
+        if not owner:
+            return
+        known = self.recipients()
+        query = self.recipient_entry.get_text().strip()
+        if query:
+            term = query.casefold()
+            matched = {peer: name for peer, name in known.items() if term in name.casefold()}
+            for device in self.snapshot.get("devices", []):
+                peer = str(device.get("peer", "")).lower()
+                if peer in known and term in str(device.get("contact", "")).casefold():
+                    matched[peer] = known[peer]
+            searched = query == self.searched_query
+            if searched:
+                for peer, name in self.names(self.directory_recipients, self.catalog(owner)).items():
+                    if peer != owner:
+                        matched.setdefault(peer, name)
+            for peer, name in sorted(matched.items(), key=lambda item: item[1].casefold())[:30]:
+                self.add_recipient_row(owner, name, peer)
+            if searched and self.search_status:
+                self.recipient_rows.append(label(self.search_status))
+            elif not matched:
+                self.recipient_rows.append(label("No matching Blip devices." if searched else "Press Enter to search Blip."))
+            return
+        if not self.recent_recipients:
+            return
+        self.recipient_rows.append(label("Recent recipients", "heading"))
+        groups = defaultdict(list)
+        for entry in self.recent_recipients:
+            groups[entry["peer"].partition(":")[0]].append(entry)
+        for account, entries in groups.items():
+            if len(entries) > 1 and not owner.startswith(account + ":"):
+                person = next((d.get("user_name") or d.get("contact") for d in self.snapshot.get("devices", [])
+                               if str(d.get("peer", "")).lower().startswith(account + ":")
+                               and (d.get("user_name") or d.get("contact"))), None)
+                if person:
+                    self.add_recipient_row(owner, person, remove=account)
+            for entry in entries:
+                peer = entry["peer"]
+                self.add_recipient_row(owner, known.get(peer, entry["label"]), peer if peer in known else None, peer)
+
+    def add_recipient_row(self, owner, name, peer=None, remove=None):
+        controls = Gtk.Box(spacing=4)
+        if peer:
+            select = button(name, lambda: self.choose_files(peer=peer, owner=owner))
+            select.set_child(label(name))
+            select.set_tooltip_text("Send files to " + name)
+            select.set_hexpand(True)
+            controls.append(select)
+            controls.append(menu([("Send folder…", lambda: self.choose_files(folder=True, peer=peer, owner=owner)),
+                                  ("Paste and send", lambda: self.paste(peer, owner))]))
+        else:
+            name_label = label(name)
+            name_label.set_hexpand(True)
+            controls.append(name_label)
+        if remove:
+            cross = Gtk.Button(icon_name="window-close-symbolic", tooltip_text="Remove " + name + " from recent recipients")
+            cross.connect("clicked", lambda *_: self.update_recents("remove", owner, target=remove))
+            controls.append(cross)
+        self.recipient_rows.append(controls)
 
     def accept(self, transfer):
         self.app.work("blip", "Receive transfer", lambda: self.blip.request("accept", transfer["transfer_id"]),
@@ -412,12 +547,17 @@ class TransferView:
         background = self.app.preferences.get("blip_background", True)
         self.app.work("blip", "Connect to Blip", lambda: self.blip.monitor(background), connected, on_error=failed)
 
-    def choose_files(self, folder=False):
+    def choose_files(self, folder=False, peer=None, owner=None):
         action = Gtk.FileChooserAction.SELECT_FOLDER if folder else Gtk.FileChooserAction.OPEN
         def picked(peer):
+            expected_owner = owner or self.owner(self.snapshot)
             self.app.files("Choose a folder" if folder else "Choose files", action,
-                           lambda paths: self.send(peer, paths), multiple=not folder)
-        self.with_send_connection(lambda: self.choose_recipient(self.recipients(), picked))
+                           lambda paths: self.send(peer, paths, expected_owner), multiple=not folder)
+        if peer is not None:
+            if owner == self.owner(self.snapshot):
+                picked(peer)
+        else:
+            self.with_send_connection(lambda: self.choose_recipient(self.recipients(), picked))
 
     def send_dropped(self, paths, cancelled=lambda: None):
         self.with_send_connection(
@@ -427,9 +567,11 @@ class TransferView:
             cancelled,
         )
 
-    def send(self, peer, paths):
+    def send(self, peer, paths, expected_owner=None, cancelled=lambda: None):
         sender = self.owner(self.snapshot)
-        if not sender or peer not in self.recipients():
+        current = {**self.names(self.directory_recipients, self.catalog(sender)), **self.recipients()}
+        if not sender or (expected_owner is not None and sender != expected_owner) or peer not in current:
+            cancelled()
             self.app.announce("Refresh Blip and choose the device again.")
             return
         def dispatch():
@@ -449,9 +591,12 @@ class TransferView:
                     self.next_relay_discovery = 0
                     return result
             return self.blip.send(peer, paths)
-        self.app.work("blip", "Send with Blip", dispatch, lambda _: self.refresh())
+        def sent(_):
+            self.update_recents("remember", sender, peer=peer, title=current[peer])
+            self.refresh()
+        self.app.work("blip", "Send with Blip", dispatch, sent)
 
-    def paste(self):
+    def paste(self, peer=None, owner=None):
         def got_text(clipboard, result):
             try:
                 text = clipboard.read_text_finish(result)
@@ -482,7 +627,10 @@ class TransferView:
                 for path in paths:
                     Path(path).unlink(missing_ok=True)
                 folder.rmdir()
-            self.send_dropped(paths, cleanup)
+            if peer:
+                self.send(peer, paths, owner, cleanup)
+            else:
+                self.send_dropped(paths, cleanup)
         self.app.window.get_clipboard().read_text_async(None, got_text)
 
     def permissions(self):

@@ -9,6 +9,12 @@ enum BlipReceiverError: LocalizedError {
 
 extension Notification.Name { static let myDriveIncomingBlip = Notification.Name("io.mydrive.blip.incoming") }
 
+struct BlipRecentRecipient: Codable, Identifiable {
+    let peer: String
+    let label: String
+    var id: String { peer }
+}
+
 /// Uses the same-user local socket served by the headless helper or an existing Blip session.
 @MainActor final class BlipReceiver: ObservableObject {
     @Published var state = "Connecting to Blip…"
@@ -23,6 +29,10 @@ extension Notification.Name { static let myDriveIncomingBlip = Notification.Name
     @Published private(set) var sendMessage: String?
     @Published private(set) var relayWaiting = 0
     @Published private(set) var receiving = Set<String>()
+    @Published private(set) var recentRecipients: [BlipRecentRecipient] = []
+    @Published private(set) var directoryRecipients: [BlipPeer] = []
+    private var recentOwner = ""
+    private var recentUpdates: Task<Void, Never>?
     private let root: URL
     private var task: Task<Void, Never>?
     private var session = ""
@@ -54,12 +64,13 @@ extension Notification.Name { static let myDriveIncomingBlip = Notification.Name
         }
     }
     var connected: Bool { !selfPeer.isEmpty }
+    var recipientOwner: String { selfPeer }
     var outboxDirectory: URL { root.appendingPathComponent("outbox", isDirectory: true) }
 
     func reportSend(_ message: String) { sendMessage = message }
 
     func send(_ payload: BlipSendPayload, to peer: BlipPeer) {
-        guard !sending, connected, recipients.contains(where: { $0.peer == peer.peer }),
+        guard !sending, connected, (recipients + directoryRecipients).contains(where: { $0.peer == peer.peer }),
               let socket = BlipLocalRPC.socketURL() else {
             payload.discard()
             reportSend("This device is unavailable. Refresh Transfers before sending.")
@@ -82,10 +93,65 @@ extension Notification.Name { static let myDriveIncomingBlip = Notification.Name
                     }.value
                     sendMessage = nil
                 }
+                await updateRecents("remember", owner: sender, peer: peer)
             } catch {
                 reportSend("Blip could not confirm the send. Refresh Transfers before retrying.")
             }
             await refresh()
+        }
+    }
+
+    func findRecipients(_ query: String) async throws {
+        let owner = selfPeer
+        guard !owner.isEmpty, let socket = BlipLocalRPC.socketURL() else { throw BlipRPCError.rejected }
+        directoryRecipients = []
+        let result = try await Task.detached(priority: .utility) {
+            try BlipLocalRPC.search(query, owner: owner, socket: socket)
+        }.value
+        guard selfPeer == owner else { throw BlipRPCError.rejected }
+        directoryRecipients = result
+    }
+
+    func removeRecent(_ target: String) {
+        let owner = selfPeer
+        Task { await updateRecents("remove", owner: owner, target: target) }
+    }
+
+    private func updateRecents(_ action: String, owner: String, peer: BlipPeer? = nil, target: String? = nil) async {
+        let previous = recentUpdates
+        let update = Task {
+            await previous?.value
+            await changeRecents(action, owner: owner, peer: peer, target: target)
+        }
+        recentUpdates = update
+        await update.value
+    }
+
+    private func changeRecents(_ action: String, owner: String, peer: BlipPeer?, target: String?) async {
+        guard BlipPolicy.exactPeer(owner) else { return }
+        let labels = Dictionary(recipients.map { ($0.peer.lowercased(), recipientLabel($0)) },
+                                uniquingKeysWith: { first, _ in first })
+        var seen = Set<String>()
+        let previous = transfers.filter {
+            $0.direction == "Outgoing" && $0.confirmed && labels[$0.peer.lowercased()] != nil &&
+                $0.item_names?.first?.hasPrefix("mydrive-relay-v1.") != true
+        }.sorted { ($0.updated_at ?? 0) > ($1.updated_at ?? 0) }
+        let seed: [JSON] = previous.compactMap { transfer in
+            let peer = transfer.peer.lowercased()
+            guard seen.insert(peer).inserted, let label = labels[peer] else { return nil }
+            return ["peer": peer, "label": label]
+        }
+        var payload: JSON = ["owner": owner, "seed": Array(seed.prefix(24))]
+        if let peer { payload["recipient"] = ["peer": peer.peer, "label": recipientLabel(peer)] }
+        if let target { payload["target"] = target }
+        do {
+            let result = try await CoreBridge.shared.call(action: "blip.recents." + action,
+                request: ["data_dir": Paths.dataDir.path, "payload": payload])
+            guard selfPeer == owner, recentOwner == owner else { return }
+            recentRecipients = try JSONDecoder().decode([BlipRecentRecipient].self,
+                from: JSONSerialization.data(withJSONObject: result ?? []))
+        } catch {
+            if selfPeer == owner { reportSend(error.localizedDescription) }
         }
     }
 
@@ -342,6 +408,12 @@ extension Notification.Name { static let myDriveIncomingBlip = Notification.Name
             selfPeer = identity
             connectedPeers = Set(incomingPeers.filter { $0.history != true }.map(\.peer))
             peers=try contacts?.merge(account:account,selfPeer:identity,peers:incomingPeers,transfers:transfers,approved:policy.account.lowercased()==account.lowercased() ? policy.peers.union(policy.files) : []) ?? incomingPeers
+            if recentOwner != identity {
+                recentOwner = identity
+                recentRecipients = []
+                directoryRecipients = []
+                await updateRecents("list", owner: identity)
+            }
             guard let claims else { throw BlipReceiverError.message("Receive history is unavailable. Automatic actions are disabled.") }
             if session != identity {
                 for transfer in transfers where transfer.confirmed { try claims.claim(identity+":skip:"+transfer.id) }

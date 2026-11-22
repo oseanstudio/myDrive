@@ -191,6 +191,8 @@ class Blip:
         "native_engine_unsupported": "This Blip engine does not match the supported release.",
         "native_connection_unavailable": "The Blip background receiver is unavailable.",
         "sign_in_required": "Sign in to Blip to send or receive files.",
+        "search_unavailable": "Blip search is unavailable. Try again in a moment.",
+        "invalid_search": "Enter a name or email address.",
         "accept_not_waiting": "This transfer is no longer waiting. Refresh to check its status.",
         "registration_failed": "Blip could not confirm sign-in. Check the email or code and try again.",
         "invalid_sign_in_input": "Check the Blip email address or sign-in code.",
@@ -266,7 +268,7 @@ class Blip:
         self.arguments = True
 
     def command(self, action, *options):
-        mode = ["--desktop"] if self.desktop and action in {"poll", "send", "accept"} else []
+        mode = ["--desktop"] if self.desktop and action in {"poll", "send", "accept", "search"} else []
         return [self.executable, "--blip-engine", action, "--profile", str(self.profile), *mode, *options]
 
     def invoke(self, action, *options, input_text=""):
@@ -291,6 +293,8 @@ class Blip:
         if command == "send":
             peer, request_id, *paths = values
             return self.invoke(command, "--peer", peer, "--id", request_id, "--execute", "--", *paths)
+        if command == "search":
+            return self.invoke(command, input_text=values[0] + "\n")
         return self.invoke(command)
 
     def monitor(self, background=True, setup=False):

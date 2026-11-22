@@ -126,6 +126,73 @@ pub(super) struct Snapshot {
     pub registration_failed: bool,
 }
 
+pub(super) fn search_result(
+    payload: &[u8],
+    id: &str,
+    query: &str,
+) -> Result<Option<(u64, Vec<(String, String)>)>> {
+    let envelope = Proto::parse(payload)?;
+    let state = envelope.message(2)?;
+    for entry in state.messages(800) {
+        let entry = entry?;
+        if entry.text(1) != id {
+            continue;
+        }
+        let result = entry.message(2)?;
+        if result.text(1) != query {
+            return Ok(None);
+        }
+        let mut peers = Vec::new();
+        for entry in result.messages(3).chain(result.messages(4)) {
+            let peer = entry?;
+            let user = peer.text(1);
+            let device = peer.text(2);
+            if uuid(user) && (device.is_empty() || uuid(device)) {
+                peers.push((user.to_lowercase(), device.to_lowercase()));
+            }
+        }
+        return Ok(Some((result.number(2), peers)));
+    }
+    Ok(None)
+}
+
+pub(super) fn matches_result(peer: &str, results: &[(String, String)]) -> bool {
+    peer_id(peer).is_some_and(|(user, device)| {
+        results.iter().any(|(u, d)| {
+            u.eq_ignore_ascii_case(user) && (d.is_empty() || d.eq_ignore_ascii_case(device))
+        })
+    })
+}
+
+#[cfg(test)]
+#[test]
+fn lookup_uses_only_the_current_query_and_matching_people_or_devices() {
+    use super::rpc::{field, number, string};
+    let person = "6c434111-4674-453a-a194-15d3cba26547";
+    let other = "19931140-4a2e-48c5-a362-190fb2bee500";
+    let device = "eced1da8-2269-44ae-9a56-a3681ab924a2";
+    let body = [
+        string(1, "fixture"),
+        number(2, 3),
+        field(3, &string(1, person)),
+        field(4, &[string(1, other), string(2, device)].concat()),
+    ]
+    .concat();
+    let state = field(800, &[string(1, "id"), field(2, &body)].concat());
+    let response = field(2, &state);
+    assert!(search_result(&response, "id", "previous")
+        .unwrap()
+        .is_none());
+    assert!(search_result(&response, "other", "fixture")
+        .unwrap()
+        .is_none());
+    let (status, matches) = search_result(&response, "id", "fixture").unwrap().unwrap();
+    assert_eq!(status, 3);
+    assert!(matches_result(&format!("{person}:{device}"), &matches));
+    assert!(matches_result(&format!("{other}:{device}"), &matches));
+    assert!(!matches_result(&format!("{other}:{other}"), &matches));
+}
+
 impl Snapshot {
     pub(super) fn read(socket: &Path, desktop: bool, inbox: &Path) -> Result<Self> {
         Self::decode(
@@ -253,6 +320,7 @@ impl Snapshot {
             }
             transfers.push(json!({
                 "transfer_id": id, "peer": peer, "direction": direction, "status": status,
+                "updated_at": transfer.message(1300)?.number(1),
                 "completed": completed, "has_error": has_error, "dismissed": dismissed,
                 "progress": i64::try_from(transfer.number(1100)).unwrap_or_default(),
                 "total_bytes": contents.total, "item_names": contents.names,

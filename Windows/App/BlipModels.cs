@@ -45,6 +45,7 @@ public sealed class BlipDevice
 }
 public sealed class BlipTransfer
 {
+    [JsonPropertyName("updated_at")] public long UpdatedAt { get; set; }
     [JsonPropertyName("transfer_id")] public string Id { get; set; } = "";
     [JsonPropertyName("peer")] public string Peer { get; set; } = "";
     [JsonPropertyName("direction")] public string Direction { get; set; } = "";

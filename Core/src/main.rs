@@ -1,4 +1,5 @@
 mod automation;
+mod blip_recents;
 mod client;
 mod desktop_update;
 mod model;
@@ -54,6 +55,9 @@ struct Request {
     payload: Value,
 }
 fn execute(r: Request) -> Result<Value, String> {
+    if let Some(action) = r.action.strip_prefix("blip.recents.") {
+        return blip_recents::run(action, Path::new(&r.data_dir), &r.payload);
+    }
     if let Some(action) = r.action.strip_prefix("relay.") {
         return relay::run(action, &r.payload, Path::new(&r.data_dir));
     }

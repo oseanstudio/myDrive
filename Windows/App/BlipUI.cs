@@ -167,6 +167,7 @@ public sealed partial class MainWindow
         }
         if(signedIn)actions.Children.Add(QuickButton("Senders…",()=>_=ChooseLinkSenders()));
         actions.Children.Add(QuickButton("Received files", OpenBlipDownloads)); page.Children.Add(actions);
+        RenderBlipRecipients();
         if (!blip.RuntimeAvailable && !diagnosticMode) page.Children.Add(Card(Text("The myDrive Blip helper is missing. Reinstall myDrive.", 12)));
         string failure = blipFailure.Length > 0 ? blipFailure : blip.LastError;
         if (blipRelayWaiting > 0) page.Children.Add(Text($"{blipRelayWaiting} waiting for relay or delivery", 11));
@@ -428,6 +429,11 @@ public sealed partial class MainWindow
         }
         await ShowDialog(dialog);
         if (clickedPeer is not { } peer || diagnosticMode) return;
+        await DispatchBlipSend(peer, paths, localPeer, sendingStarted);
+    }
+
+    private async Task DispatchBlipSend(BlipDevice peer, List<string> paths, string localPeer, Action? sendingStarted = null)
+    {
         if (blipSnapshot?.Status.Authenticated != true ||
             !string.Equals(localPeer, blipSnapshot.Status.UserId + ":" + blipSnapshot.Status.DeviceId, StringComparison.OrdinalIgnoreCase))
         {
@@ -440,6 +446,7 @@ public sealed partial class MainWindow
                 string id = await blip.SendAsync(peer.Peer, paths, token);
                 blipSentNames[id] = paths.Count == 1 ? Path.GetFileName(paths[0]) : paths.Count + " files";
             }
+            await UpdateRecentRecipients("remember", localPeer, peer);
             await RefreshBlip();
         });
         Render();

@@ -49,7 +49,7 @@ class MyDrive(Gtk.Application):
         self.activity = read_settings("activity.json", [])
         self.snapshot = {}
         self.lanes = {key: ThreadPoolExecutor(max_workers=1)
-                      for key in ("sync", "blip", "storage", "smb-health", "updates", "settings")}
+                      for key in ("sync", "blip", "blip-recipients", "storage", "smb-health", "updates", "settings")}
         self.pending = {key: 0 for key in self.lanes}
         self.window = None
         self.browse = None
@@ -383,8 +383,8 @@ class MyDrive(Gtk.Application):
         self.status.set_tooltip_text(message or "")
         self.status.set_visible(bool(message))
 
-    def work(self, lane, title, operation, complete, *, quiet=False, on_error=None):
-        if self.stopping or (quiet and self.pending[lane]):
+    def work(self, lane, title, operation, complete, *, quiet=False, queue=False, on_error=None):
+        if self.stopping or (quiet and not queue and self.pending[lane]):
             return
         self.pending[lane] += 1
         if not quiet:
@@ -953,14 +953,42 @@ class MyDrive(Gtk.Application):
                         "devices": [{"peer": "00000000-0000-4000-8000-000000000001:00000000-0000-4000-8000-000000000003",
                                      "name": "Fixture laptop", "name_known": True}]}
 
+            def request(self, action, query):
+                assert (action, query) == ("search", "Remote person")
+                return {"devices": [{"peer": "00000000-0000-4000-8000-000000000004:00000000-0000-4000-8000-000000000005",
+                                     "user_name": query, "name": "Remote desktop", "name_known": True}]}
+
         def verify_cold_send():
-            assert list(self.transfer_view.recipients().values()) == ["Fixture laptop"]
+            view = self.transfer_view
+            assert list(view.recipients().values()) == ["Fixture laptop"]
             size = self.window.get_default_size()
             assert size == initial_size and size[0] >= 344 and size[1] >= 420, (initial_size, size)
             print("Linux GTK fixed popup, cold Blip connection and one-click recipient passed", flush=True)
+            peer = next(iter(view.recipients()))
+            view.recent_recipients = [{"peer": peer, "label": "Fixture laptop"}]
+            view.render_recipient_rows()
+            recipient = view.recipient_rows.get_last_child()
+            calls = []
+            view.choose_files = lambda **options: calls.append(options)
+            view.update_recents = lambda *args, **kwargs: calls.append((args, kwargs))
+            recipient.get_first_child().emit("clicked")
+            recipient.get_last_child().emit("clicked")
+            assert calls == [{"peer": peer, "owner": view.recipient_owner},
+                             (("remove", view.recipient_owner), {"target": peer})]
+            view.recipient_entry.set_text("Remote person")
+            view.recipient_entry.emit("activate")
+            GLib.timeout_add(25, verify_directory)
+
+        def verify_directory():
+            if self.pending["blip-recipients"]:
+                return GLib.SOURCE_CONTINUE
+            result = self.transfer_view.recipient_rows.get_first_child().get_first_child()
+            assert result.get_child().get_label() == "Remote person · Remote desktop"
+            print("Linux GTK directory lookup, direct recipient selection and remove button passed", flush=True)
             self.stack.set_visible_child_name("Sync")
             warning.emit("clicked")
             GLib.timeout_add(25, verify_attention)
+            return GLib.SOURCE_REMOVE
 
         def verify():
             target = recipients.get_row_at_index(3)

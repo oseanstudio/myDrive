@@ -37,6 +37,7 @@ use windows_sys::Win32::System::Threading::GetCurrentProcess;
 const SERVER: &str = "https://prod.blip.net";
 const PLATFORM: &str = if cfg!(windows) { "Windows" } else { "Linux" };
 const PROFILE_MARKER: &str = "mydrive-profile.json";
+const RECIPIENT_SEARCH: &str = "6971d326-6e6d-4915-aed7-581eafa9b26d";
 
 struct Arguments {
     command: String,
@@ -154,6 +155,56 @@ impl Session {
         let name = format!("type.googleapis.com/event.{event}");
         let any = [string(1, &name), field(2, &payload)].concat();
         rpc::call(&self.socket, "/rpc.Service/Dispatch", &field(1, &any)).map(|_| ())
+    }
+
+    fn search(&self, owner: &Value) -> Result<Value> {
+        let mut input = String::new();
+        io::stdin()
+            .take(1026)
+            .read_to_string(&mut input)
+            .map_err(|_| "invalid_search")?;
+        let query = input.trim();
+        if !state::safe_text(query, 254) || query.len() > 1024 {
+            return Err("invalid_search");
+        }
+        self.dispatch("AbandonSearch", string(1, RECIPIENT_SEARCH))?;
+        self.dispatch(
+            "Search",
+            [string(1, RECIPIENT_SEARCH), string(2, query)].concat(),
+        )?;
+        let deadline = Instant::now() + Duration::from_secs(7);
+        while Instant::now() < deadline {
+            let payload = rpc::call(&self.socket, "/rpc.Service/GetState", &[])?;
+            if let Some((status, peers)) = state::search_result(&payload, RECIPIENT_SEARCH, query)?
+            {
+                if status == 2 {
+                    return Err("search_unavailable");
+                }
+                // Empty/offline results are valid. Retain the native selection so
+                // an exact result is still available when the file picker closes.
+                if status == 3 {
+                    let snapshot = Snapshot::decode(&payload, self.desktop, &self.inbox)?;
+                    if snapshot.status["user_id"] != owner["user_id"]
+                        || snapshot.status["device_id"] != owner["device_id"]
+                    {
+                        return Err("sign_in_required");
+                    }
+                    let devices: Vec<_> = snapshot
+                        .devices
+                        .into_iter()
+                        .filter(|device| {
+                            device["history"] == false
+                                && device["peer"]
+                                    .as_str()
+                                    .is_some_and(|peer| state::matches_result(peer, &peers))
+                        })
+                        .collect();
+                    return Ok(json!({"ok": true, "devices": devices}));
+                }
+            }
+            thread::sleep(Duration::from_millis(300));
+        }
+        Err("search_unavailable")
     }
 
     fn start(&self, library: &Path) -> Result<Option<host::Host>> {
@@ -380,14 +431,18 @@ impl Session {
 
     fn send(&self, args: &Arguments, snapshot: Snapshot) -> Result<Value> {
         let peer = args.peer.as_deref().ok_or("invalid_peer")?;
-        let (user, device) = state::peer_id(peer).ok_or("invalid_peer")?;
+        let exact = snapshot
+            .devices
+            .iter()
+            .find_map(|item| {
+                let exact = item["peer"].as_str()?;
+                (item["history"] == false && exact.eq_ignore_ascii_case(peer)).then_some(exact)
+            })
+            .ok_or("invalid_peer_or_selection")?;
+        let (user, device) = state::peer_id(exact).ok_or("invalid_peer")?;
         if !args.execute
             || args.files.is_empty()
             || (snapshot.status["user_id"] == user && snapshot.status["device_id"] == device)
-            || !snapshot
-                .devices
-                .iter()
-                .any(|item| item["peer"] == peer && item["history"] == false)
         {
             return Err("invalid_peer_or_selection");
         }
@@ -673,9 +728,14 @@ fn command(args: &Arguments) -> Result<Value> {
         "transfers" => json!({"ok": true, "transfers": snapshot.transfers}),
         "send" if authenticated => session.send(args, snapshot)?,
         "accept" if authenticated => session.accept(args, snapshot)?,
+        "search" if authenticated => session.search(&snapshot.status)?,
+        "search-clear" if authenticated => {
+            session.dispatch("AbandonSearch", string(1, RECIPIENT_SEARCH))?;
+            json!({"ok": true})
+        }
         "login" => session.registration(false, snapshot)?,
         "verify" => session.registration(true, snapshot)?,
-        "send" | "accept" => return Err("sign_in_required"),
+        "send" | "accept" | "search" | "search-clear" => return Err("sign_in_required"),
         _ => return Err("invalid_command"),
     };
     Ok(result)

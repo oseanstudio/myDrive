@@ -67,7 +67,7 @@ public sealed class BlipService : IAsyncDisposable
         };
         info.ArgumentList.Add(fixture ? Path.Combine(bundle, "cli.mjs") : "--blip-engine"); info.ArgumentList.Add(command);
         info.ArgumentList.Add("--profile"); info.ArgumentList.Add(profile);
-        if (attachedSocket != null && command is "status" or "devices" or "transfers" or "poll" or "send" or "accept")
+        if (attachedSocket != null && command is "status" or "devices" or "transfers" or "poll" or "send" or "accept" or "search")
         {
             if (fixture) { info.ArgumentList.Add("--socket"); info.ArgumentList.Add(attachedSocket); }
             else info.ArgumentList.Add("--desktop");
@@ -143,6 +143,8 @@ public sealed class BlipService : IAsyncDisposable
         "host_already_running" => "This Blip profile is already running.",
         "receive_policy_unconfirmed" => "Blip could not verify the receiving settings for this profile.",
         "sign_in_required" => "Sign in to Blip first.",
+        "search_unavailable" => "Blip search is unavailable. Try again in a moment.",
+        "invalid_search" => "Enter a name or email address.",
         _ => "Blip could not confirm the request. Refresh before trying again."
     };
     public async Task StartAsync(CancellationToken token = default)
@@ -331,6 +333,12 @@ public sealed class BlipService : IAsyncDisposable
     public static void ValidatePeer(string peer)
     {
         var parts = peer.Split(':'); if (parts.Length != 2 || !parts.All(p => Guid.TryParseExact(p, "D", out _))) throw new IOException("Select an exact Blip device before sending.");
+    }
+    public async Task<List<BlipDevice>> SearchAsync(string query, CancellationToken token = default)
+    {
+        RequireRunning();
+        var result = await CommandAsync("search", input: query + "\n", token: token);
+        return result.GetProperty("devices").Deserialize<List<BlipDevice>>() ?? new();
     }
     public async Task<string> SendAsync(string peer, IReadOnlyList<string> files, CancellationToken token = default, string? requestId = null)
     {

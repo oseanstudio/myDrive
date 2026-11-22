@@ -259,7 +259,8 @@ enum BlipLocalRPC {
             guard let data=entry.bytes(2) else {continue};let transfer=try BlipProto(data),id=transfer.string(100)
             guard UUID(uuidString:id) != nil else {continue}
             let peer=try BlipProto(transfer.bytes(200) ?? Data()), peerID=peer.string(1)+":"+peer.string(2)
-            let incoming=transfer.number(700)==1, completed=transfer.number(800)==8, dismissed=transfer.number(1000) != 0
+            let direction = [1:"Incoming", 2:"Outgoing"][Int(exactly: transfer.number(700)) ?? 0] ?? "UnknownDirection"
+            let incoming=direction=="Incoming", completed=transfer.number(800)==8, dismissed=transfer.number(1000) != 0
             let error=transfer.values[600] != nil || transfer.values[601] != nil
             var files:[String]=[],received:[JSON]=[],linkOnly=false,itemNames:[String]=[],total:UInt64=0
             if incoming && !error, let archive=transfer.bytes(400) {
@@ -290,7 +291,12 @@ enum BlipLocalRPC {
                 linkOnly = !dismissed && valid && !roots.isEmpty && roots.count<=16
                 if completed && !dismissed {files=roots.compactMap{locations[$0].flatMap(decodedPath)}}
             }
-            transfers.append(["transfer_id":id,"peer":peerID,"direction":incoming ? "Incoming":"Outgoing","status":names[Int(exactly:transfer.number(800)) ?? -1] ?? "UnknownStatus","completed":completed,"has_error":error,"link_files":files,"link_only":linkOnly,"dismissed":dismissed,"progress":Int64(exactly:transfer.number(1100)) ?? 0,"total_bytes":Int64(exactly:total) ?? 0,"item_names":itemNames,"received_items":received])
+            if direction == "Outgoing", let archive = transfer.bytes(400) {
+                itemNames = try BlipProto(archive).messages(1).lazy.map { $0.string(1) }
+                    .filter { !$0.contains("/") && !$0.contains("\\") }.prefix(3).map { String($0.prefix(160)) }
+            }
+            let updated = try BlipProto(transfer.bytes(1300) ?? Data()).number(1)
+            transfers.append(["transfer_id":id,"peer":peerID,"direction":direction,"updated_at":updated,"status":names[Int(exactly:transfer.number(800)) ?? -1] ?? "UnknownStatus","completed":completed,"has_error":error,"link_files":files,"link_only":linkOnly,"dismissed":dismissed,"progress":Int64(exactly:transfer.number(1100)) ?? 0,"total_bytes":Int64(exactly:total) ?? 0,"item_names":itemNames,"received_items":received])
             if incoming,UUID(uuidString:peer.string(1)) != nil,UUID(uuidString:peer.string(2)) != nil,!peers.contains(where:{$0["peer"] as? String == peerID}) {
                 let contact=contacts[peer.string(1)] ?? "";peers.append(["peer":peerID,"name":"Previous device","contact":contact,"user_name":userNames[peer.string(1)] ?? contact,"history":true,"name_known":false])
             }
@@ -304,6 +310,46 @@ enum BlipLocalRPC {
     static func dispatch(_ name: String, _ body: Data, socket: URL) throws {
         let event = BlipProto.string(1, "type.googleapis.com/event." + name) + BlipProto.field(2, body)
         _ = try call(socket: socket, method: "/rpc.Service/Dispatch", body: BlipProto.field(1, event))
+    }
+
+    static func search(_ query: String, owner: String, socket: URL) throws -> [BlipPeer] {
+        let key = "6971d326-6e6d-4915-aed7-581eafa9b26d"
+        guard (1...254).contains(query.unicodeScalars.count),
+              query.rangeOfCharacter(from: .controlCharacters) == nil else {
+            throw BlipReceiverError.message("Enter a name or email address.")
+        }
+        let id = BlipProto.string(1, key)
+        try dispatch("AbandonSearch", id, socket: socket)
+        try dispatch("Search", id + BlipProto.string(2, query), socket: socket)
+        let deadline = ProcessInfo.processInfo.systemUptime + 7
+        while ProcessInfo.processInfo.systemUptime < deadline {
+            let response = try call(socket: socket, method: "/rpc.Service/GetState", body: Data())
+            let envelope = try BlipProto(response)
+            let state = try BlipProto(envelope.bytes(2) ?? Data())
+            if let entry = try state.messages(800).first(where: { $0.string(1) == key }),
+               let body = entry.bytes(2) {
+                let result = try BlipProto(body)
+                if result.string(1) == query && result.number(2) == 2 { break }
+                if result.string(1) == query && result.number(2) == 3 {
+                    let snapshot = try Self.snapshot(response)
+                    let status = snapshot.dict("status")
+                    guard status.bool("authenticated"), status.str("user_id") + ":" + status.str("device_id") == owner
+                    else { throw BlipRPCError.rejected }
+                    let matches = try result.messages(3) + result.messages(4)
+                    let users = Set(matches.filter { $0.string(2).isEmpty }.map { $0.string(1).lowercased() })
+                    let peers = Set(matches.map { ($0.string(1) + ":" + $0.string(2)).lowercased() }.filter(BlipPolicy.exactPeer))
+                    let devices = snapshot.array("devices").filter { device in
+                        let peer = device.str("peer").lowercased()
+                        let user = peer.split(separator: ":").first.map(String.init) ?? ""
+                        return !device.bool("history") && peer != owner.lowercased() &&
+                            (users.contains(user) || peers.contains(peer))
+                    }
+                    return try JSONDecoder().decode([BlipPeer].self, from: JSONSerialization.data(withJSONObject: devices))
+                }
+            }
+            Thread.sleep(forTimeInterval: 0.3)
+        }
+        throw BlipReceiverError.message("Blip search is unavailable. Try again in a moment.")
     }
 
     static func prepareManagedProfile() throws {

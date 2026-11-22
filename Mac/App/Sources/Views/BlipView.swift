@@ -3,6 +3,10 @@ import SwiftUI
 struct BlipView: View {
     @ObservedObject var receiver: BlipReceiver
     @State var senders = false
+    @State private var query = ""
+    @State private var submittedQuery = ""
+    @State private var searchStatus = ""
+    @State private var searching = false
 
     var body: some View {
         LazyVStack(alignment: .leading, spacing: 8) {
@@ -22,6 +26,7 @@ struct BlipView: View {
                 .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
                 .accessibilityLabel("Blip options")
             }.controlSize(.small)
+            if receiver.connected { recipientPanel }
             if receiver.canSetUpBlip {
                 Button("Set up Blip…", action: receiver.setUpBlip).controlSize(.small)
             }
@@ -45,7 +50,108 @@ struct BlipView: View {
             DisclosureGroup("Sender permissions", isExpanded: $senders) {
                 BlipSenderPermissionsView(receiver: receiver)
             }.font(.system(size: 12))
+        }.onChange(of: receiver.recipientOwner) {
+            query = ""
+            submittedQuery = ""
+            searchStatus = ""
         }
+    }
+
+    private var recipientPanel: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 4) {
+                TextField("Find people & devices", text: $query)
+                    .accessibilityLabel("Find people & devices")
+                    .onSubmit(search)
+                Button(action: search) { Image(systemName: "magnifyingglass") }
+                    .accessibilityLabel("Search Blip for a person")
+                    .help("Search Blip for a person")
+                    .disabled(searching || query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }.controlSize(.small)
+            let term = query.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !term.isEmpty {
+                let known = receiver.recipients.filter {
+                    [$0.contactName, $0.contact, $0.name, $0.displayName].compactMap { $0 }
+                        .contains { $0.localizedStandardContains(term) }
+                }
+                let searched = term == submittedQuery
+                let matches = unique(known + (searched ? receiver.directoryRecipients : []))
+                ForEach(matches.prefix(30)) { peer in
+                    recipientRow(receiver.recipientLabel(peer), peer: peer)
+                }
+                if searched && !searchStatus.isEmpty {
+                    Text(searchStatus).font(.caption).foregroundStyle(.secondary)
+                } else if matches.isEmpty {
+                    Text(searched ? "No matching Blip devices." : "Press Return to search Blip.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            } else if !receiver.recentRecipients.isEmpty {
+                Text("Recent recipients").font(.caption).fontWeight(.semibold)
+                let groups = Dictionary(grouping: receiver.recentRecipients) { accountPart($0.peer) }
+                var seen = Set<String>()
+                let order = receiver.recentRecipients.map { accountPart($0.peer) }.filter { seen.insert($0).inserted }
+                ForEach(order, id: \.self) { account in
+                    let entries = groups[account] ?? []
+                    if entries.count > 1 && account.caseInsensitiveCompare(receiver.account) != .orderedSame,
+                       let name = receiver.recipients.first(where: { accountPart($0.peer) == account })?.contactName,
+                       !name.isEmpty {
+                        recipientRow(name, peer: nil, removing: account)
+                    }
+                    ForEach(entries) { entry in
+                        let device = receiver.recipients.first { $0.peer.caseInsensitiveCompare(entry.peer) == .orderedSame }
+                        recipientRow(device.map(receiver.recipientLabel) ?? entry.label, peer: device, removing: entry.peer)
+                    }
+                }
+            }
+        }
+    }
+
+    private func search() {
+        let term = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !searching, !term.isEmpty else { return }
+        let owner = receiver.recipientOwner
+        submittedQuery = term
+        searching = true
+        searchStatus = "Searching Blip…"
+        Task {
+            defer { searching = false }
+            do {
+                try await receiver.findRecipients(term)
+                if receiver.recipientOwner == owner { searchStatus = "" }
+            } catch {
+                if receiver.recipientOwner == owner { searchStatus = error.localizedDescription }
+            }
+        }
+    }
+
+    private func unique(_ peers: [BlipPeer]) -> [BlipPeer] {
+        var seen = Set<String>()
+        return peers.filter { seen.insert($0.peer.lowercased()).inserted }
+            .sorted { receiver.recipientLabel($0).localizedStandardCompare(receiver.recipientLabel($1)) == .orderedAscending }
+    }
+
+    private func accountPart(_ peer: String) -> String {
+        peer.split(separator: ":").first.map { $0.lowercased() } ?? ""
+    }
+
+    private func recipientRow(_ name: String, peer: BlipPeer?, removing: String? = nil) -> some View {
+        HStack(spacing: 4) {
+            if let peer {
+                Button { receiver.chooseFiles(to: peer) } label: {
+                    Text(name).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
+                }.accessibilityLabel("Send files to " + name)
+                    .help(name)
+                    .disabled(receiver.sending || receiver.preparingSend)
+                    .contextMenu { Button("Paste and send") { receiver.pasteAndSend(to: peer) } }
+            } else {
+                Text(name).lineLimit(1).help(name).frame(maxWidth: .infinity, alignment: .leading)
+            }
+            if let removing {
+                Button { receiver.removeRecent(removing) } label: { Image(systemName: "xmark") }
+                    .accessibilityLabel("Remove " + name + " from recent recipients")
+                    .help("Remove from recent recipients")
+            }
+        }.controlSize(.small).font(.system(size: 12))
     }
 
     private func liveTransfer(_ transfer: BlipTransfer) -> some View {
