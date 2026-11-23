@@ -86,8 +86,9 @@ struct BlipSendPayload {
     }
 
     private func pickFilesForRecipient() {
-        guard let peer = chooseRecipient(description: nil) else { return }
-        chooseFiles(to: peer)
+        guard let choice = chooseRecipient(description: nil) else { return }
+        if choice.paste { pasteAndSend(to: choice.peer) }
+        else { chooseFiles(to: choice.peer) }
     }
 
     func chooseFiles(to peer: BlipPeer) {
@@ -127,11 +128,16 @@ struct BlipSendPayload {
     }
 
     private func chooseRecipientAndSend(_ payload: BlipSendPayload) {
-        guard let peer = chooseRecipient(description: payload.description) else {
+        guard let choice = chooseRecipient(description: payload.description) else {
             payload.discard()
             return
         }
-        send(payload, to: peer)
+        if choice.paste {
+            payload.discard()
+            pasteAndSend(to: choice.peer)
+        } else {
+            send(payload, to: choice.peer)
+        }
     }
 
     private func canChooseRecipient() -> Bool {
@@ -142,19 +148,20 @@ struct BlipSendPayload {
         return true
     }
 
-    private func chooseRecipient(description: String?) -> BlipPeer? {
+    private func chooseRecipient(description: String?) -> (peer: BlipPeer, paste: Bool)? {
         guard canChooseRecipient() else { return nil }
         var choices = recipients
-        let owner = account
+        let owner = recipientOwner
         let picker = BlipRecipientPicker(labels: choices.map { recipientLabel($0) }, description: description,
             rename: { index in
-                guard self.account == owner, let updated = self.rename(choices[index]) else { return nil }
+                guard self.recipientOwner == owner, let updated = self.rename(choices[index]) else { return nil }
                 choices[index] = updated
                 return self.recipientLabel(updated)
             })
         picker.window.appearance = AppDelegate.appearance(for: PrefStore.shared.preferences.appearance)
-        guard let selected = picker.run(), choices.indices.contains(selected) else { return nil }
-        return choices[selected]
+        guard let selected = picker.run(), recipientOwner == owner, choices.indices.contains(selected.row)
+        else { return nil }
+        return (choices[selected.row], selected.paste)
     }
 }
 
@@ -176,7 +183,7 @@ struct BlipSendPayload {
     let scroll = NSScrollView()
     let cancelButton = NSButton(title: "Cancel", target: nil, action: nil)
     private var labels: [String]
-    private var chosenRow: Int?
+    private var choice: (row: Int, paste: Bool)?
     private let rename: ((Int) -> String?)?
 
     init(labels: [String], description: String?, rename: ((Int) -> String?)? = nil) {
@@ -247,12 +254,12 @@ struct BlipSendPayload {
         table.reloadData()
     }
 
-    func run() -> Int? {
-        chosenRow = nil
+    func run() -> (row: Int, paste: Bool)? {
+        choice = nil
         window.initialFirstResponder = table
         window.center()
         defer { window.orderOut(nil) }
-        return NSApp.runModal(for: window) == .OK ? chosenRow : nil
+        return NSApp.runModal(for: window) == .OK ? choice : nil
     }
 
     @objc private func cancel(_ sender: Any?) { NSApp.stopModal(withCode: .cancel) }
@@ -280,6 +287,14 @@ struct BlipSendPayload {
         send.setAccessibilityLabel("Send to " + label)
         send.translatesAutoresizingMaskIntoConstraints = false
         cell.addSubview(send)
+        let paste = NSButton(title: "", target: self, action: #selector(pasteToDevice(_:)))
+        paste.image = NSImage(systemSymbolName: "clipboard", accessibilityDescription: nil)
+        paste.isBordered = false
+        paste.tag = row
+        paste.toolTip = "Paste and send to " + label
+        paste.setAccessibilityLabel("Paste and send to " + label)
+        paste.translatesAutoresizingMaskIntoConstraints = false
+        cell.addSubview(paste)
         let edit = NSButton(title: "", target: self, action: #selector(renameDevice(_:)))
         edit.image = NSImage(systemSymbolName: "pencil", accessibilityDescription: nil)
         edit.isBordered = false
@@ -290,9 +305,13 @@ struct BlipSendPayload {
         cell.addSubview(edit)
         NSLayoutConstraint.activate([
             send.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 5),
-            send.trailingAnchor.constraint(equalTo: edit.leadingAnchor, constant: -4),
+            send.trailingAnchor.constraint(equalTo: paste.leadingAnchor, constant: -4),
             send.topAnchor.constraint(equalTo: cell.topAnchor),
             send.bottomAnchor.constraint(equalTo: cell.bottomAnchor),
+            paste.trailingAnchor.constraint(equalTo: edit.leadingAnchor, constant: -2),
+            paste.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+            paste.widthAnchor.constraint(equalToConstant: 24),
+            paste.heightAnchor.constraint(equalToConstant: 24),
             edit.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -5),
             edit.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
             edit.widthAnchor.constraint(equalToConstant: 24),
@@ -305,6 +324,10 @@ struct BlipSendPayload {
         activate(sender.tag)
     }
 
+    @objc private func pasteToDevice(_ sender: NSButton) {
+        activate(sender.tag, paste: true)
+    }
+
     @objc private func renameDevice(_ sender: NSButton) {
         let row = sender.tag
         guard labels.indices.contains(row), let updated = rename?(row) else { return }
@@ -312,9 +335,9 @@ struct BlipSendPayload {
         table.reloadData(forRowIndexes: IndexSet(integer: row), columnIndexes: IndexSet(integer: 0))
     }
 
-    private func activate(_ row: Int) {
-        guard chosenRow == nil, labels.indices.contains(row) else { return }
-        chosenRow = row
+    private func activate(_ row: Int, paste: Bool = false) {
+        guard choice == nil, labels.indices.contains(row) else { return }
+        choice = (row, paste)
         NSApp.stopModal(withCode: .OK)
     }
 }

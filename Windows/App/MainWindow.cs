@@ -34,7 +34,7 @@ public sealed partial class MainWindow : Window
     private CancellationTokenSource? operation;
     private TrayIcon? tray;
     private bool busy,quitting,monitoring,storageReady;
-    private string currentView="connections",currentPath="";
+    private string currentView="transfers",currentPath="";
     private Bookmark? currentBookmark;
     private ListView? filesList;
     private List<RemoteFile> currentFiles=new();
@@ -46,7 +46,7 @@ public sealed partial class MainWindow : Window
     private int nativePickerDepth;
     private readonly PopupInput popupInput;
     private readonly Grid quickHeader=new(){Padding=new Thickness(10,6,10,6),ColumnSpacing=4};
-    private readonly DropDownButton quickViews=new(){Content="Sync",FontSize=12,Padding=new Thickness(7,2,7,2),MinHeight=28,Height=28,MinWidth=0};
+    private readonly DropDownButton quickViews=new(){Content=SendViewName,FontSize=12,Padding=new Thickness(7,2,7,2),MinHeight=28,Height=28,MinWidth=0};
     private Border? statusFooter;
     private StackPanel? branding;
     internal static ElementTheme RequestedAppearance => Preferences.Current.Theme switch
@@ -85,10 +85,10 @@ public sealed partial class MainWindow : Window
         root.RowDefinitions.Add(new(){Height=GridLength.Auto});root.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});root.RowDefinitions.Add(new(){Height=GridLength.Auto});
         branding=new StackPanel{Orientation=Orientation.Horizontal,Spacing=12,Margin=new Thickness(20,22,12,22)};
         branding.Children.Add(new Image{Source=new Microsoft.UI.Xaml.Media.Imaging.BitmapImage(new Uri(Path.Combine(AppContext.BaseDirectory,"Assets","myDrive.png"))),Width=38,Height=38});branding.Children.Add(Text("myDrive",22,true));navigation.PaneHeader=branding;
-        navigation.MenuItems.Add(new NavigationViewItem{Content=StorageViewName,Icon=new SymbolIcon(Symbol.World),Tag="connections"});
-        navigation.MenuItems.Add(new NavigationViewItem{Content="Sync",Icon=new SymbolIcon(Symbol.Switch),Tag="sync"});
-        navigation.MenuItems.Add(new NavigationViewItem{Content="Activity",Icon=new SymbolIcon(Symbol.Sync),Tag="activity"});
         navigation.MenuItems.Add(new NavigationViewItem{Content=SendViewName,Icon=new SymbolIcon(Symbol.Send),Tag="transfers"});
+        navigation.MenuItems.Add(new NavigationViewItem{Content="Sync",Icon=new SymbolIcon(Symbol.Switch),Tag="sync"});
+        navigation.MenuItems.Add(new NavigationViewItem{Content=StorageViewName,Icon=new SymbolIcon(Symbol.World),Tag="connections"});
+        navigation.MenuItems.Add(new NavigationViewItem{Content="Activity",Icon=new SymbolIcon(Symbol.Sync),Tag="activity"});
         navigation.PaneFooter=Text($"  myDrive {DisplayVersion}",12);
         var content=new Grid();content.RowDefinitions.Add(new(){Height=GridLength.Auto});content.RowDefinitions.Add(new(){Height=GridLength.Auto});content.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});
         content.Children.Add(notice);Grid.SetRow(updateOffer,1);content.Children.Add(updateOffer);
@@ -96,7 +96,7 @@ public sealed partial class MainWindow : Window
         quickSyncPane.RowDefinitions.Add(new(){Height=GridLength.Auto});
         quickSyncPane.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});
         Grid.SetRow(quickSyncPane,2);content.Children.Add(quickSyncPane);navigation.Content=content;
-        navigation.SelectionChanged+=(sender,e)=>{if(busy)return;currentView=e.IsSettingsSelected?"settings":(e.SelectedItem as NavigationViewItem)?.Tag?.ToString()??"connections";Render();if(!diagnosticMode&&currentView=="sync"&&Environment.TickCount64-lastSyncRefresh>=10_000)_=RefreshSyncthing();if(currentView=="transfers")_=RefreshBlip();};
+        navigation.SelectionChanged+=(sender,e)=>{if(busy)return;currentView=e.IsSettingsSelected?"settings":(e.SelectedItem as NavigationViewItem)?.Tag?.ToString()??"transfers";Render();if(!diagnosticMode&&currentView=="sync"&&Environment.TickCount64-lastSyncRefresh>=10_000)_=RefreshSyncthing();if(currentView=="transfers")_=RefreshBlip();};
         Grid.SetRow(navigation,1);root.Children.Add(navigation);
         BuildQuickHeader();root.Children.Add(quickHeader);
         var footer=new Grid{Padding=new Thickness(24,10,24,10),ColumnSpacing=10};footer.ColumnDefinitions.Add(new(){Width=GridLength.Auto});footer.ColumnDefinitions.Add(new(){Width=new GridLength(1,GridUnitType.Star)});footer.ColumnDefinitions.Add(new(){Width=GridLength.Auto});footer.Children.Add(ring);Grid.SetColumn(status,1);footer.Children.Add(status);Grid.SetColumn(cancel,2);footer.Children.Add(cancel);cancel.Click+=(_,_)=>operation?.Cancel();
@@ -111,12 +111,17 @@ public sealed partial class MainWindow : Window
         Activated+=(_,e)=>{if(e.WindowActivationState==WindowActivationState.Deactivated)DispatcherQueue.TryEnqueue(()=>{if(!diagnosticMode&&!PopupInput.OurForeground()&&tray?.PointerInside()!=true&&!popupInput.TrackingPress&&!LeftMousePressed())DismissQuickPopup();});};
         healthTimer.Tick+=async(_,_)=>await MonitorSmb();
         if(!diagnosticMode)NetworkChange.NetworkAddressChanged+=OnSmbNetworkChanged;
-        navigation.SelectedItem=navigation.MenuItems[1];
+        navigation.SelectedItem=navigation.MenuItems[0];
         SetMode(compact);
         if(!diagnosticMode){_=Initialize();StartSyncthingRefresh();StartBlipRefresh();StartUpdateChecks();}
     }
-    private void ToggleQuickMenu(){if(compact&&AppWindow.IsVisible){AppWindow.Hide();return;}SetMode(true);}
-    public void OpenQuickMenu()=>SetMode(true);
+    private void ToggleQuickMenu(){if(compact&&AppWindow.IsVisible){AppWindow.Hide();return;}OpenQuickMenu();}
+    public void OpenQuickMenu()
+    {
+        if (!AppWindow.IsVisible && !busy && modalDepth == 0 && currentView != "transfers")
+            NavigateQuick("transfers");
+        SetMode(true);
+    }
     public void OpenTransfers(){currentView="transfers";SetMode(true);}
     private void SetMode(bool small,bool activate=true)
     {

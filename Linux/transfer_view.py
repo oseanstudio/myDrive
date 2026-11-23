@@ -569,13 +569,17 @@ class TransferView:
         content.append(self.app.scrolled_list(box, height=min(len(entries), 6) * 36 + 2))
         finished = False
 
-        def activate(peer):
+        def activate(peer, paste=False):
             nonlocal finished
             if finished:
                 return
             finished = True
             dialog.close()
-            selected(peer)
+            if paste:
+                cancelled()
+                self.paste(peer, owner)
+            else:
+                selected(peer)
 
         def close(_):
             nonlocal finished
@@ -590,9 +594,15 @@ class TransferView:
             send = button(name, lambda peer=peer: activate(peer))
             send.set_child(label(name))
             send.set_hexpand(True)
-            edit = self.rename_button(name, lambda peer=peer, name=name, send=send: self.rename_device(
-                owner, peer, name, dialog, lambda updated: send.set_child(label(updated))))
+            paste = Gtk.Button(icon_name="edit-paste-symbolic", tooltip_text="Paste and send to " + name)
+            paste.connect("clicked", lambda _, peer=peer: activate(peer, paste=True))
+            def update_name(updated, send=send, paste=paste):
+                send.set_child(label(updated))
+                paste.set_tooltip_text("Paste and send to " + updated)
+            edit = self.rename_button(name, lambda peer=peer, name=name, updated=update_name: self.rename_device(
+                owner, peer, name, dialog, updated))
             controls.append(send)
+            controls.append(paste)
             controls.append(edit)
             item = Gtk.ListBoxRow(activatable=False, selectable=False, child=controls)
             box.append(item)

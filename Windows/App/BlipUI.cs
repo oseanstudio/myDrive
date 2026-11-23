@@ -434,26 +434,34 @@ public sealed partial class MainWindow
         var dialog = new ContentDialog { XamlRoot = root.XamlRoot, Title = "Send with Blip", Content = content,
             CloseButtonText = "Cancel" };
         BlipDevice? clickedPeer = null;
+        bool pasteClipboard = false;
+        void SelectDevice(BlipDevice device, bool paste)
+        {
+            if (clickedPeer != null || nativePickerDepth > 0) return;
+            clickedPeer = device;
+            pasteClipboard = paste;
+            dialog.Hide();
+        }
         foreach (var device in devices)
         {
             var title = QuickText(BlipDeviceCaption(device), 13);
-            var send = QuickButton("", () =>
-            {
-                if (clickedPeer != null || nativePickerDepth > 0) return;
-                clickedPeer = device;
-                dialog.Hide();
-            });
+            var send = QuickButton("", () => SelectDevice(device, paste: false));
             send.Content = title;
             send.HorizontalAlignment = HorizontalAlignment.Stretch;
             send.HorizontalContentAlignment = HorizontalAlignment.Left;
             send.Tag = device;
-            var rename = QuickIcon("\uE70F", "Rename " + device.DisplayName, () =>
-                EditRecipientName(dialog, content, localPeer, device, title, send));
+            var paste = QuickIcon("\uE77F", "Paste and send to " + title.Text,
+                () => SelectDevice(device, paste: true));
+            var rename = QuickIcon("\uE70F", "Rename " + BlipDeviceName(device), () =>
+                EditRecipientName(dialog, content, localPeer, device, title, send, paste));
             var row = new Grid { ColumnSpacing = 4 };
             row.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
             row.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
+            row.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
             row.Children.Add(send);
-            Grid.SetColumn(rename, 1);
+            Grid.SetColumn(paste, 1);
+            row.Children.Add(paste);
+            Grid.SetColumn(rename, 2);
             row.Children.Add(rename);
             AutomationProperties.SetName(send, "Send to " + title.Text);
             ToolTipService.SetToolTip(send, title.Text);
@@ -485,6 +493,7 @@ public sealed partial class MainWindow
         }
         await ShowDialog(dialog);
         if (clickedPeer is not { } peer || diagnosticMode) return;
+        if (pasteClipboard) { await SendToBlipRecipient(localPeer.ToLowerInvariant(), peer, paste: true); return; }
         if (paths.Count == 0) { await SendToBlipRecipient(localPeer.ToLowerInvariant(), peer); return; }
         await DispatchBlipSend(peer, paths, localPeer, sendingStarted);
     }
@@ -510,7 +519,7 @@ public sealed partial class MainWindow
     }
 
     private void EditRecipientName(ContentDialog dialog, StackPanel recipients, string owner,
-                                   BlipDevice device, TextBlock name, Button send)
+                                   BlipDevice device, TextBlock name, Button send, Button paste)
     {
         var input = new TextBox { Header = "Device name", Text = recentRecipients.Find(r =>
             r.peer.Equals(device.Peer, StringComparison.OrdinalIgnoreCase))?.nickname ?? device.Nickname,
@@ -532,6 +541,8 @@ public sealed partial class MainWindow
             name.Text = BlipDeviceCaption(device);
             AutomationProperties.SetName(send, "Send to " + name.Text);
             ToolTipService.SetToolTip(send, name.Text);
+            AutomationProperties.SetName(paste, "Paste and send to " + name.Text);
+            ToolTipService.SetToolTip(paste, "Paste and send to " + name.Text);
             dialog.Content = recipients;
         }, true));
         controls.Children.Add(QuickButton("Back", () => dialog.Content = recipients));

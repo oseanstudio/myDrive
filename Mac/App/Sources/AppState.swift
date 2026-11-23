@@ -100,7 +100,7 @@ enum DialogKind: Identifiable {
 
 @MainActor
 final class AppState: ObservableObject {
-    @Published var view: PopupViewKind = .sync
+    @Published var view: PopupViewKind = .transfers
     @Published var bookmarks: [Bookmark] = [] {
         didSet {
             SmbMonitor.shared.bookmarks = bookmarks

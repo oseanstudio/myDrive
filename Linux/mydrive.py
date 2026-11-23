@@ -79,6 +79,8 @@ class MyDrive(Gtk.Application):
     def do_activate(self):
         if self.window:
             was_visible = self.window.get_visible()
+            if not was_visible and not self.file_picker_depth:
+                self.view_picker.set_selected(0)
             self.window.present()
             if was_visible:
                 self.check_for_updates()
@@ -98,7 +100,8 @@ class MyDrive(Gtk.Application):
         self.apply_appearance()
         titles = ["Send", "Sync", "SMB Drives", "Activity", "Settings"]
         view = Gtk.DropDown.new_from_strings(titles)
-        view.set_selected(titles.index("Sync"))
+        self.view_picker = view
+        view.set_selected(0)
         header_content = Gtk.Box(spacing=7)
         header_content.append(label(f"myDrive {VERSION}", "heading"))
         header_content.append(view)
@@ -168,7 +171,7 @@ class MyDrive(Gtk.Application):
         if self.fixture:
             assert header.get_decoration_layout() == ":close" and controls.get_last_child() == expand
             assert expand.get_icon_name() == "view-fullscreen-symbolic" and content.get_last_child() == self.stack
-            assert view.get_model().get_item(0).get_string() == "Send"
+            assert view.get_model().get_item(0).get_string() == self.stack.get_visible_child_name() == "Send"
             self.run_fixture()
             return
         self.tray = Tray(self.window, ROOT / f"{APP_ID}.png")
@@ -194,7 +197,7 @@ class MyDrive(Gtk.Application):
         if not paths:
             self.announce("Choose an available file or folder.")
             return
-        self.stack.set_visible_child_name("Send")
+        self.view_picker.set_selected(0)
         self.transfer_view.send_dropped(paths)
 
     def do_shutdown(self):
@@ -1136,6 +1139,17 @@ class MyDrive(Gtk.Application):
             assert calls == [{"peer": peer, "owner": view.recipient_owner},
                              ("paste", peer, view.recipient_owner),
                              ("rename", view.recipient_owner, peer, "Fixture laptop", "Fixture laptop", False)]
+            abandoned = []
+            paste_picker = view.choose_recipient({peer: "Fixture laptop"}, chosen.append,
+                                                  lambda: abandoned.append(True))
+            actions = paste_picker.get_row_at_index(0).get_child()
+            paste_action = actions.get_first_child().get_next_sibling()
+            assert paste_action.get_icon_name() == "edit-paste-symbolic"
+            assert actions.get_last_child().get_icon_name() == "document-edit-symbolic"
+            paste_action.emit("clicked")
+            paste_action.emit("clicked")
+            assert abandoned == [True] and chosen == ["3"]
+            assert calls[3:] == [("paste", peer, view.recipient_owner)]
             view.recipient_entry.set_text("Remote person")
             view.recipient_entry.emit("activate")
             GLib.timeout_add(25, verify_directory)
@@ -1155,6 +1169,7 @@ class MyDrive(Gtk.Application):
             target = recipients.get_row_at_index(3)
             send = target.get_child().get_first_child()
             edit = target.get_child().get_last_child()
+            assert edit.get_prev_sibling().get_icon_name() == "edit-paste-symbolic"
             assert not chosen and not target.get_activatable()
             edit.emit("clicked")
             assert not chosen

@@ -26,6 +26,9 @@ enum Diagnostics {
                     throw BlipReceiverError.message("A folder error did not offer its new-location picker")
                 }
                 let state=AppState(),receiver=BlipReceiver(root:directory.appendingPathComponent("blip-fixture"))
+                guard state.view == .transfers else {
+                    throw BlipReceiverError.message("The app must open to Send by default.")
+                }
                 let peer="11111111-1111-4111-8111-111111111111:22222222-2222-4222-8222-222222222222"
                 receiver.state="Ready in the background"
                 receiver.peers=[BlipPeer(peer:peer,name:"A long studio laptop name for overflow checking",name_known:true)]
@@ -86,6 +89,12 @@ enum Diagnostics {
                       picker.table.tableColumns[0].width <= picker.scroll.contentSize.width + 1,
                       picker.scroll.frame.height < CGFloat(labels.count) * picker.table.rowHeight else {
                     throw BlipReceiverError.message("The recipient list did not start unselected and scrollable")
+                }
+                let firstRow = picker.tableView(picker.table, viewFor: picker.table.tableColumns[0], row: 0)
+                let actions = firstRow?.subviews.compactMap { $0 as? NSButton } ?? []
+                guard actions.count == 3, actions[1].toolTip == "Paste and send to Studio desktop",
+                      actions[2].toolTip == "Rename Studio desktop" else {
+                    throw BlipReceiverError.message("The recipient row must have Paste beside Rename.")
                 }
                 picker.table.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
                 if let content = picker.window.contentView,
@@ -404,6 +413,7 @@ enum Diagnostics {
     @MainActor
     private static func layoutCheck(directory: URL, captures: inout [String]) -> JSON {
         let state = AppState()
+        state.view = .sync
         state.snapshot = fixtureSnapshot(folderCount: 1)
         state.snapshotError = nil
         state.mounts = [fixtureMount(name: "Dropbox", available: true)]
@@ -414,6 +424,7 @@ enum Diagnostics {
         let single = PopupRootView().environmentObject(state)
             .environment(\.colorScheme, .light)
         let manyState = AppState()
+        manyState.view = .sync
         manyState.snapshot = fixtureSnapshot(folderCount: 11)
         manyState.snapshotError = nil
         manyState.mounts = [fixtureMount(name: "Dropbox", available: true),

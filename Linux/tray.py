@@ -66,5 +66,5 @@ class Tray:
         if self.window.get_visible() and method == "Activate":
             self.window.set_visible(False)
         else:
-            self.window.present()
+            self.window.get_application().activate()
         invocation.return_value(None)

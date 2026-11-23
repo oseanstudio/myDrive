@@ -85,7 +85,10 @@ public sealed partial class MainWindow
                 if (activeDialog?.Content is not StackPanel form || form.Children.OfType<ListView>().SingleOrDefault() is not { } list ||
                     list.Items.Count != blipSnapshot.Devices.Count || list.SelectedIndex != -1 ||
                     list.Items.OfType<ListViewItem>().Any(item => item.Content is not Grid deviceRow ||
-                        deviceRow.Children.OfType<Button>().Count() != 2 ||
+                        deviceRow.Children.OfType<Button>().Count() != 3 ||
+                        !deviceRow.Children.OfType<Button>().Any(button =>
+                            Grid.GetColumn(button) == 1 && button.IsEnabled &&
+                            Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(button).StartsWith("Paste and send to ")) ||
                         !deviceRow.Children.OfType<Button>().First().IsEnabled ||
                         !deviceRow.Children.OfType<Button>().Last().IsEnabled) ||
                     !string.IsNullOrEmpty(activeDialog.PrimaryButtonText))

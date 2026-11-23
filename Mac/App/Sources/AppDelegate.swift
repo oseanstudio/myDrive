@@ -202,9 +202,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         let menu = NSMenu()
         let titles: [(String, Selector?)] = [
             ("Open myDrive \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "")", #selector(menuOpen(_:))),
+            (PopupViewKind.transfers.label, #selector(menuTransfers(_:))),
             ("Sync", #selector(menuSync(_:))),
             (PopupViewKind.connections.label, #selector(menuConnections(_:))),
-            (PopupViewKind.transfers.label, #selector(menuTransfers(_:))),
             ("Activity", #selector(menuActivity(_:))),
             ("Settings", #selector(menuSettings(_:))),
             ("Open full window", #selector(menuExpand(_:))),
@@ -248,6 +248,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         if let target { appState.view = target }
         guard let button = statusItem?.button else { return }
         if popover.isShown { return }
+        if target == nil, appState.busy == nil, appState.dialog == nil, fullWindow?.isVisible != true {
+            appState.view = .transfers
+        }
         // An accessory app is not active by default; without activation the
         // transient popover closes immediately after showing.
         NSApp.activate(ignoringOtherApps: true)
