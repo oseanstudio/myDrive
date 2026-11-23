@@ -6,7 +6,7 @@ struct SyncInfoView: View {
 
     var body: some View {
         LazyVStack(alignment: .leading, spacing: 6) {
-            SyncDetailsHeader(title: app.syncInfo?.errors == true ? "Folder errors" : "Pending files",
+            SyncDetailsHeader(title: app.syncInfo?.title ?? "Folder details",
                               refreshing: app.busy != nil || app.syncInfoLoading,
                               back: app.closeSyncInfo, refresh: app.refreshSyncInfo)
             Text(app.syncInfo?.label ?? "")
@@ -25,10 +25,30 @@ struct SyncInfoView: View {
                 Text(failure).font(.system(size: 12)).foregroundStyle(.secondary)
             } else if app.syncInfo?.errors == true {
                 ErrorsDialog()
+            } else if app.syncInfo?.action == "device_progress" {
+                if app.syncDeviceProgress.isEmpty { Text("This folder has no other devices.").font(.system(size: 12)) }
+                ForEach(app.syncDeviceProgress.indices, id: \.self) { index in
+                    let device = app.syncDeviceProgress[index]
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(device.optStr("name") ?? "Device").font(.system(size: 12, weight: .semibold))
+                        Text(progressCaption(device)).font(.system(size: 11)).foregroundStyle(.secondary)
+                    }
+                }
             } else {
                 PendingDialog()
             }
         }
+    }
+
+    private func progressCaption(_ device: JSON) -> String {
+        var parts = [device.str("state")]
+        if let bytes = device["remaining_bytes"] as? NSNumber {
+            parts.append(Format.bytes(bytes.int64Value) + " remaining")
+        }
+        if let percent = device["percent"] as? NSNumber {
+            parts.append(percent.doubleValue.formatted(.number.precision(.fractionLength(0...1))) + "%")
+        }
+        return parts.joined(separator: " · ")
     }
 }
 

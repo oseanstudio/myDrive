@@ -202,6 +202,24 @@ public sealed partial class MainWindow
         }
         if(syncInfoLoading){page.Children.Add(Text("Loading…",12));return;}
         if(syncInfoFailure.Length>0){page.Children.Add(Text(syncInfoFailure,12));return;}
+        if (syncInfoAction == "device_progress")
+        {
+            var peers = syncInfoData is {} progress ? Items(progress, "devices") : Array.Empty<JsonElement>();
+            foreach (var peer in peers)
+            {
+                var detail = S(peer, "state");
+                if (peer.TryGetProperty("remaining_bytes", out var bytes) && bytes.TryGetInt64(out var remaining))
+                    detail += " · " + Bytes(remaining) + " remaining";
+                if (peer.TryGetProperty("percent", out var ratio) && ratio.TryGetDouble(out var percent))
+                    detail += $" · {percent:0.#}%";
+                var row = new StackPanel { Spacing = 2 };
+                row.Children.Add(QuickText(S(peer, "name", "Device"), 12, true));
+                row.Children.Add(Text(detail, 11));
+                page.Children.Add(QuickRow(row));
+            }
+            if (!peers.Any()) page.Children.Add(Text("This folder has no other devices.", 12));
+            return;
+        }
         var count=0;
         void Row(string path,string detail,string advice="")
         {

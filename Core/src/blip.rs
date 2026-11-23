@@ -6,6 +6,7 @@ mod host;
 mod host;
 #[cfg(target_os = "macos")]
 pub(crate) mod mac;
+pub(crate) mod activity;
 mod rpc;
 mod state;
 
@@ -483,16 +484,34 @@ impl Session {
         ]
         .concat();
         let mut content = base;
+        let mut paths = Vec::with_capacity(args.files.len());
         for path in &args.files {
             let path = fs::canonicalize(path).map_err(|_| "file_unavailable")?;
             if !path.is_file() && !path.is_dir() {
                 return Err("file_unavailable");
             }
             content.extend(string(2, &crate::syncthing::friendly_path(&path)));
+            paths.push(path);
         }
-        self.dispatch("TransferCreateRequested", route.clone())?;
-        self.dispatch("TransferAddContentRequested", content)?;
-        self.dispatch("TransferInviteRequested", route)?;
+        let owner = activity::owner(&snapshot);
+        let data = crate::automation::user_data().ok().filter(|_| !paths.iter().any(|path|
+            path.components().any(|part| part.as_os_str().to_string_lossy().starts_with("mydrive-relay-v1."))));
+        if let Some(data) = &data {
+            if activity::record(data, &owner, exact, &id, &paths, false) == Err("transfer_id_exists") {
+                return Err("transfer_id_exists");
+            }
+        }
+        let dispatch = self.dispatch("TransferCreateRequested", route.clone())
+            .and_then(|()| self.dispatch("TransferAddContentRequested", content))
+            .and_then(|()| self.dispatch("TransferInviteRequested", route));
+        if let Some(data) = &data {
+            let (status, error) = match dispatch {
+                Ok(()) => ("Waiting for recipient", None),
+                Err(error) => ("Send not confirmed", Some(error_message(error))),
+            };
+            let _ = activity::result(data, &owner, &id, status, error);
+        }
+        dispatch?;
         Ok(
             json!({"ok": true, "phase": "dispatch_requested", "transfer_id": id, "completed": false}),
         )
@@ -763,7 +782,11 @@ fn command(args: &Arguments) -> Result<Value> {
         }
         _ => {}
     }
-    client_command(&session, args, None, None)
+    let expected = match args.command.as_str() {
+        "activity" | "retry" => Some(input_value(None, 128, "sign_in_required")?),
+        _ => None,
+    };
+    client_command(&session, args, None, expected.as_deref().map(str::trim))
 }
 
 fn client_command(
@@ -791,6 +814,8 @@ fn client_command(
         "devices" => json!({"ok": true, "devices": snapshot.devices}),
         "transfers" => json!({"ok": true, "transfers": snapshot.transfers}),
         "send" if authenticated => session.send(args, snapshot)?,
+        "activity" if authenticated => activity::list(&snapshot)?,
+        "retry" if authenticated => activity::retry(session, args, snapshot)?,
         "accept" if authenticated => session.accept(args, snapshot)?,
         "search" if authenticated => session.search(&snapshot.status, input)?,
         "search-clear" if authenticated => {
@@ -799,7 +824,7 @@ fn client_command(
         }
         "login" => session.registration(false, snapshot, input)?,
         "verify" => session.registration(true, snapshot, input)?,
-        "send" | "accept" | "search" | "search-clear" => return Err("sign_in_required"),
+        "send" | "accept" | "search" | "search-clear" | "activity" | "retry" => return Err("sign_in_required"),
         _ => return Err("invalid_command"),
     };
     Ok(result)
@@ -934,7 +959,6 @@ pub(crate) fn poll(profile: PathBuf, desktop: bool) -> std::result::Result<Value
         .map_err(|_| "The local Blip connection is unavailable.".into())
 }
 
-#[cfg(any(windows, target_os = "macos"))]
 pub(crate) fn error_message(error: &str) -> &'static str {
     match error {
         "native_engine_missing" => {
@@ -947,6 +971,8 @@ pub(crate) fn error_message(error: &str) -> &'static str {
             "Sign in to the official Blip app once to reuse this computer's account."
         }
         "sign_in_required" => "The Blip device is signed out.",
+        "activity_unavailable" => "myDrive could not read saved Send activity.",
+        "activity_retry_unavailable" => "This transfer can no longer be retried safely. Choose the files again to start a new send.",
         "native_connection_unavailable" => "The local Blip connection is unavailable.",
         "invalid_native_response" => "Blip returned a response myDrive could not read.",
         "native_response_too_large" => "Blip’s local response was too large to read.",

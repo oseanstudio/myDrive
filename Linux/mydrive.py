@@ -7,7 +7,7 @@ import shutil
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from time import monotonic
 
@@ -15,6 +15,7 @@ import gi
 gi.require_version("Gtk", "4.0")
 from gi.repository import Gdk, Gio, GLib, Gtk
 
+from file_manager import install_actions
 from services import DATA, ROOT, Blip, Sync, core, read_settings, save_settings
 from smb_sharing import add_private_share
 from storage_view import StorageView
@@ -40,13 +41,19 @@ def folders_needing_attention(snapshot):
 
 class MyDrive(Gtk.Application):
     def __init__(self, fixture=False):
-        super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.NON_UNIQUE if fixture else 0)
+        flags = Gio.ApplicationFlags.HANDLES_OPEN
+        if fixture:
+            flags |= Gio.ApplicationFlags.NON_UNIQUE
+        super().__init__(application_id=APP_ID, flags=flags)
         self.fixture = fixture
         self.sync = Sync()
         self.blip = Blip()
         self.preferences = read_settings("preferences.json", {})
         self.sync.config_path = self.preferences.get("syncthing_config", "")
         self.activity = read_settings("activity.json", [])
+        self.send_activity = []
+        self.send_activity_owner = ""
+        self.send_activity_error = ""
         self.snapshot = {}
         self.lanes = {key: ThreadPoolExecutor(max_workers=1)
                       for key in ("sync", "blip", "blip-recipients", "storage", "smb-health", "updates", "settings")}
@@ -145,6 +152,8 @@ class MyDrive(Gtk.Application):
                 self.storage_view.check_now("view")
             if title == "Settings" and not self.fixture:
                 self.change_startup("startup.status")
+            if title == "Activity" and not self.fixture:
+                self.refresh_send_activity()
         view.connect("notify::selected", show_view)
         self.storage_view = StorageView(self, self.pages["SMB Drives"])
         if not self.fixture:
@@ -176,6 +185,18 @@ class MyDrive(Gtk.Application):
         GLib.timeout_add_seconds(8, self.tick_sync)
         GLib.timeout_add_seconds(2, self.tick_blip)
 
+    def do_open(self, files, _count, _hint):
+        self.activate()
+        if self.fixture or not 0 < len(files) <= 256:
+            return
+        paths = list(dict.fromkeys(file.get_path() for file in files if file.is_native()))
+        paths = [path for path in paths if path and (Path(path).is_file() or Path(path).is_dir())]
+        if not paths:
+            self.announce("Choose an available file or folder.")
+            return
+        self.stack.set_visible_child_name("Send")
+        self.transfer_view.send_dropped(paths)
+
     def do_shutdown(self):
         self.stopping = True
         if not self.fixture:
@@ -194,10 +215,15 @@ class MyDrive(Gtk.Application):
         return not self.stopping
 
     def refresh_background_sync(self, force=False):
-        if self.browse or self.pending["sync"]:
+        if self.pending["sync"]:
             return
         visible = self.main_window_visible() and self.stack.get_visible_child_name() == "Sync"
-        if force or monotonic() - self.last_sync_refresh >= (8 if visible else 120):
+        now = datetime.now().timestamp()
+        due = any(0 < (folder.get("paused_until") or 0) <= now
+                  for folder in self.snapshot.get("folders", []))
+        if self.browse and not due:
+            return
+        if force or monotonic() - self.last_sync_refresh >= (8 if visible or due else 120):
             self.refresh_sync(quiet=True)
 
     def tick_blip(self):
@@ -556,8 +582,8 @@ class MyDrive(Gtk.Application):
         clear(page)
         version = self.snapshot.get("version", "")
         page.append(row("Syncthing", version, button("Refresh", self.refresh_sync)))
-        if error:
-            page.append(Gtk.Label(label=error, xalign=0, wrap=True, max_width_chars=42))
+        if warning := error or self.snapshot.get("scheduled_pause_error"):
+            page.append(Gtk.Label(label=warning, xalign=0, wrap=True, max_width_chars=42))
         folders = self.snapshot.get("folders", [])
         attention_count = len(folders_needing_attention(self.snapshot))
         if attention_count and not error:
@@ -573,12 +599,16 @@ class MyDrive(Gtk.Application):
             name = folder.get("label") or identifier
             status = folder.get("status") or {}
             state = "Paused" if folder.get("paused") else (status.get("state") or "Unavailable").capitalize()
+            if folder.get("paused") and folder.get("paused_until"):
+                state = "Paused until " + datetime.fromtimestamp(folder["paused_until"]).strftime("%b %d %H:%M")
             need = status.get("needFiles", 0)
             peers = [devices[key].get("name") or key for key in folder.get("device_ids", []) if key in devices]
             detail = " · ".join([state] + ([f"{need} pending"] if need else []) + peers)
             actions = menu([
                 ("Pause" if not folder.get("paused") else "Resume",
                  lambda f=folder: self.sync_action(f, "pause", paused=not f.get("paused"))),
+                ("Pause until…", lambda f=folder: self.choose_sync_pause(f)),
+                ("Device progress", lambda f=folder: self.show_device_progress(f)),
                 ("Rescan", lambda f=folder: self.sync_action(f, "scan")),
                 ("Pending files", lambda f=folder: self.sync_details(f, "need")),
                 ("Show errors", lambda f=folder: self.sync_details(f, "errors")),
@@ -602,6 +632,57 @@ class MyDrive(Gtk.Application):
     def sync_action(self, folder, action, **fields):
         self.work("sync", action.capitalize(), lambda: self.sync.request(action, folder_id=folder["id"], **fields),
                   lambda _: self.refresh_sync(quiet=True))
+
+    def choose_sync_pause(self, folder):
+        start = datetime.now() + timedelta(hours=1)
+        calendar = Gtk.Calendar()
+        calendar.select_day(GLib.DateTime.new_now_local().add_hours(1))
+        hour = Gtk.SpinButton.new_with_range(0, 23, 1)
+        minute = Gtk.SpinButton.new_with_range(0, 59, 1)
+        hour.set_value(start.hour)
+        minute.set_value(start.minute)
+        clock = Gtk.Box(spacing=6)
+        for control in [label("Hour"), hour, label("Minute"), minute]:
+            clock.append(control)
+
+        def schedule():
+            date = calendar.get_date()
+            resume = datetime(date.get_year(), date.get_month(), date.get_day_of_month(),
+                              hour.get_value_as_int(), minute.get_value_as_int())
+            until = int(resume.timestamp())
+            if datetime.fromtimestamp(until) != resume:
+                raise ValueError("Choose another time. The clock skips that time.")
+            self.sync_action(folder, "pause_until", until=until, expected_path=folder.get("path", ""))
+
+        self.dialog("Pause until", "Pause", [calendar, clock], schedule)
+
+    def show_device_progress(self, folder):
+        identifier = folder["id"]
+        self.sync_issue_folder = identifier
+        page = self.sync_issues_header("Device progress", self.leave_sync_attention,
+                                       lambda: self.show_device_progress(folder))
+        page.append(label("Loading…"))
+
+        def loaded(result=None, error=None):
+            if self.sync_issue_folder != identifier:
+                return
+            self.sync_issues_header("Device progress", self.leave_sync_attention,
+                                    lambda: self.show_device_progress(folder))
+            if error:
+                page.append(label(error))
+                return
+            devices = result.get("devices", [])
+            if not devices:
+                page.append(label("This folder has no other devices."))
+            for device in devices:
+                parts = [device.get("state", "Progress unavailable")]
+                if (remaining := device.get("remaining_bytes")) is not None:
+                    parts.append(GLib.format_size(remaining) + " remaining")
+                if (percent := device.get("percent")) is not None:
+                    parts.append(f"{percent:.1f}%")
+                page.append(row(device.get("name", "Device"), " · ".join(parts)))
+        self.work("sync", "Read device progress", lambda: self.sync.request("device_progress", folder_id=identifier),
+                  loaded, quiet=True, on_error=lambda error: loaded(error=error))
 
     def stop_folder(self, folder):
         self.confirm("Stop syncing folder?", "Files and saved versions stay on your devices.", "Stop syncing",
@@ -838,10 +919,42 @@ class MyDrive(Gtk.Application):
     def render_activity(self):
         page = self.pages["Activity"]
         clear(page)
+        owner = self.transfer_view.owner(self.transfer_view.snapshot)
+        if owner:
+            page.append(row("Send activity", "", button("Refresh", self.refresh_send_activity)))
+            if owner == self.send_activity_owner:
+                if self.send_activity_error:
+                    page.append(label(self.send_activity_error))
+                for entry in self.send_activity:
+                    title = f"{entry.get('kind', 'File')} · {entry.get('name', '')}"
+                    detail = " · ".join(filter(None, (entry.get("recipient"), entry.get("status"), entry.get("detail"))))
+                    actions = [button("Retry", lambda id=entry["id"]: self.refresh_send_activity(id))] if entry.get("can_retry") else []
+                    page.append(row(title, detail, *actions))
+                if not self.send_activity and not self.send_activity_error:
+                    page.append(label("No sends recorded yet."))
         if not self.activity:
-            page.append(label("No activity yet."))
+            return
         for item in self.activity:
             page.append(row(item["name"], f"{item['time']} · {'Done' if item['success'] else 'Needs attention'}"))
+
+    def refresh_send_activity(self, retry=None):
+        owner = self.transfer_view.owner(self.transfer_view.snapshot)
+        if not owner:
+            self.render_activity()
+            return
+        def load():
+            if retry:
+                self.blip.request("retry", owner, retry)
+            return self.blip.request("activity", owner)
+        def finish(result=None, error=""):
+            if owner != self.transfer_view.owner(self.transfer_view.snapshot):
+                return
+            self.send_activity_owner = owner
+            self.send_activity = result.get("entries", []) if result else []
+            self.send_activity_error = error
+            self.render_activity()
+        self.work("blip", "Read Send activity", load, finish, quiet=True, queue=True,
+                  on_error=lambda error: finish(error=error))
 
     def render_settings(self):
         page = self.pages["Settings"]
@@ -875,11 +988,21 @@ class MyDrive(Gtk.Application):
         automatic.connect("notify::active", toggle_automatic)
         page.append(row("Install updates automatically", "", automatic))
         page.append(button("Check for updates", lambda: self.check_for_updates(show_result=True)))
+        if os.environ.get("APPIMAGE"):
+            page.append(button("Add file manager actions", self.add_file_manager_actions))
         page.append(row("Advanced", "", menu([
             ("Syncthing settings…", lambda: self.files("Choose Syncthing config.xml", Gtk.FileChooserAction.OPEN,
                                                       lambda files: self.set_config(files[0]))),
             ("Open app data folder", lambda: self.open_path(DATA)),
         ])))
+
+    def add_file_manager_actions(self):
+        target = Path(GLib.get_user_data_dir())
+        try:
+            install_actions(os.environ.get("APPIMAGE", ""), target)
+            self.announce("Send with myDrive is available in Files → Scripts and in Dolphin’s context menu.")
+        except (OSError, ValueError) as error:
+            self.announce(str(error))
 
     def change_startup(self, action):
         def loaded(state):
@@ -1045,4 +1168,6 @@ if __name__ == "__main__":
         print(VERSION)
         sys.exit(0)
     fixture = sys.argv[1:] == ["--smoke-test"]
-    sys.exit(MyDrive(fixture).run([sys.argv[0], *([] if fixture else sys.argv[1:])]))
+    selection = sys.argv[2:] if sys.argv[1:2] == ["--send-files"] else []
+    paths = [os.path.abspath(path) for path in selection]
+    sys.exit(MyDrive(fixture).run([sys.argv[0], *paths]))

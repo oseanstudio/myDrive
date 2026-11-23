@@ -259,7 +259,8 @@ public sealed partial class MainWindow : Window
     private void RenderActivity()
     {
         Heading("Activity","Connection checks and file transfers, kept on this computer.");
-        if(activity.Count==0){page.Children.Add(Card(Text("Your activity will appear here when you connect or transfer a file.",16)));return;}
+        RenderSendActivity();
+        if(activity.Count==0)return;
         foreach(var entry in activity.Take(100)){var content=new StackPanel{Spacing=6};content.Children.Add(Text((entry.Success?"✓  ":"!  ")+entry.Operation,16,true));content.Children.Add(Text(entry.Connection+"  ·  "+entry.Time.LocalDateTime.ToString("MMM d  HH:mm:ss"),12));if(!entry.Success)content.Children.Add(Text(entry.Detail));page.Children.Add(Card(content));}
     }
     private void RenderSettings()

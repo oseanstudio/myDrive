@@ -30,7 +30,14 @@ public sealed partial class MainWindow
         syncTimer.Tick+=async(_,_)=>{
             var visible=currentView=="sync" && AppWindow.IsVisible &&
                 AppWindow.Presenter is not OverlappedPresenter { State: OverlappedPresenterState.Minimized };
-            var interval=visible ? 20_000 : 120_000;
+            var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            var due = syncSnapshot is { } snapshot && Items(snapshot, "folders")
+                .Any(folder =>
+                {
+                    var until = N(folder, "paused_until");
+                    return until > 0 && until <= now;
+                });
+            var interval=visible || due ? 20_000 : 120_000;
             if(!diagnosticMode&&!busy&&modalDepth==0&&Environment.TickCount64-lastSyncRefresh>=interval)
                 await RefreshSyncthing();
         };syncTimer.Start();
@@ -66,20 +73,54 @@ public sealed partial class MainWindow
         if(!compact)share.Children.Add(Text("A new share may need acceptance on the other device. Existing files are kept when you pause or exclude them.",12));page.Children.Add(Card(share));
         var tools=new StackPanel{Orientation=Orientation.Horizontal,Spacing=8};tools.Children.Add(Button("Refresh",()=>_=RefreshSyncthing()));tools.Children.Add(Button("Open Syncthing",OpenSyncthing));tools.Children.Add(Button("SMB share…",()=>_=OpenSmbShare()));page.Children.Add(tools);
         if(syncFailure.Length>0)page.Children.Add(Text("Last refresh failed: "+syncFailure,12));
+        if (S(snapshot, "scheduled_pause_error") is { Length: > 0 } pauseError)
+            page.Children.Add(Text(pauseError, 12));
         var folders=Items(snapshot,"folders").ToList();page.Children.Add(Text($"Synced folders · {folders.Count}",18,true));
         foreach(var folder in folders)
         {
             var id=S(folder,"id");var label=S(folder,"label",id);var card=new StackPanel{Spacing=8};card.Children.Add(Text(label,16,true));var location=Text(S(folder,"path"),12);location.TextTrimming=TextTrimming.CharacterEllipsis;location.MaxLines=2;card.Children.Add(location);
             var paused=B(folder,"paused");var state=folder.TryGetProperty("status",out var statusData)?S(statusData,"state","Unknown"):S(folder,"error","Unavailable");
-            var members=folder.TryGetProperty("device_ids",out var ids)?ids.EnumerateArray().Select(v=>v.GetString()).ToHashSet():new HashSet<string?>();var online=peers.Any(p=>p.Connected&&members.Contains(p.Id));card.Children.Add(Text(paused?"Paused":state=="idle"?(online?"Local files up to date":"Available offline · waiting for a device"):state=="syncing"?"Syncing changes…":state.Contains("scan")?"Checking for changes…":state,13,true));
+            var members=folder.TryGetProperty("device_ids",out var ids)?ids.EnumerateArray().Select(v=>v.GetString()).ToHashSet():new HashSet<string?>();var online=peers.Any(p=>p.Connected&&members.Contains(p.Id));card.Children.Add(Text(paused?PausedFolderLabel(folder):state=="idle"?(online?"Local files up to date":"Available offline · waiting for a device"):state=="syncing"?"Syncing changes…":state.Contains("scan")?"Checking for changes…":state,13,true));
             if(folder.TryGetProperty("status",out statusData)){card.Children.Add(Text($"{N(statusData,"localFiles"):N0} files on this computer · {Bytes(N(statusData,"localBytes"))}"+(N(statusData,"needFiles")>0?$"\n{N(statusData,"needFiles"):N0} files / {Bytes(N(statusData,"needBytes"))} remaining":""),12));if(N(statusData,"pullErrors")>0)card.Children.Add(Text($"{N(statusData,"pullErrors")} file errors need attention",12,true));}
             var actions=new StackPanel{Orientation=Orientation.Horizontal,Spacing=7};actions.Children.Add(Button("Choose files",()=>_=OpenSyncFolder(id,label,""),true));actions.Children.Add(Button(paused?"Resume":"Pause",()=>_=PauseSyncFolder(id,!paused,label)));
             var more=new Button{Content="···"};var flyout=new MenuFlyout();void Menu(string text,Action action){var item=new MenuFlyoutItem{Text=text};item.Click+=(_,_)=>action();flyout.Items.Add(item);}
+            Menu("Device progress",()=>_=ShowSyncInfo(id,"device_progress","Device progress"));
+            Menu("Pause until…",()=>_=ChooseSyncPause(folder));
             Menu("Rescan",()=>_=SyncAction("scan",new{folder_id=id},"Rescan "+label));Menu("Show errors",()=>_=ShowSyncInfo(id,"errors","Folder errors"));Menu("Pending files",()=>_=ShowSyncInfo(id,"need","Pending files"));Menu("Saved versions",()=>_=ShowSyncVersions(id,label));Menu("Protect version history",()=>_=SyncAction("protect",new{folder_id=id},"Protect history for "+label));Menu("Open local folder",()=>OpenPath(S(folder,"path")));flyout.Items.Add(new MenuFlyoutSeparator());Menu("Stop syncing folder…",()=>_=StopSyncFolder(id,label,S(folder,"path")));more.Flyout=flyout;actions.Children.Add(more);card.Children.Add(actions);page.Children.Add(Card(card));
         }
         var deviceCard=new StackPanel{Spacing=8};deviceCard.Children.Add(Text("Your devices",18,true));foreach(var peer in peers)deviceCard.Children.Add(Text((peer.Connected?"●  ":"○  ")+peer.Name+(peer.Connected?" · Connected":" · Offline"),13));deviceCard.Children.Add(Text("Syncthing "+S(snapshot,"version")+" · Status refreshes while this view is open",12));page.Children.Add(Card(deviceCard));
         if(compact)page.Children.Add(new Expander{Header="Sharing options",Content=skipBuild,HorizontalAlignment=HorizontalAlignment.Stretch});
     }
+    private static string PausedFolderLabel(JsonElement folder)
+    {
+        var until = N(folder, "paused_until");
+        return until is > 0 and <= 253402300799
+            ? "Paused until " + DateTimeOffset.FromUnixTimeSeconds(until).LocalDateTime.ToString("g")
+            : "Paused";
+    }
+
+    private async Task ChooseSyncPause(JsonElement folder)
+    {
+        if (busy || modalDepth > 0) return;
+        var start = DateTimeOffset.Now.AddHours(1);
+        var date = new CalendarDatePicker { Header = "Resume date", Date = start };
+        var time = new TimePicker { Header = "Resume time", Time = start.TimeOfDay };
+        var form = new StackPanel { Spacing = 7 };
+        form.Children.Add(date);
+        form.Children.Add(time);
+        var dialog = new ContentDialog { XamlRoot = root.XamlRoot, Title = "Pause until",
+            Content = form, PrimaryButtonText = "Pause", CloseButtonText = "Cancel" };
+        if (await ShowDialog(dialog) != ContentDialogResult.Primary || date.Date is not { } selected) return;
+        var resume = selected.LocalDateTime.Date.Add(time.Time);
+        if (TimeZoneInfo.Local.IsInvalidTime(resume))
+        {
+            Info("Choose another time", "That time is skipped when the clock changes.");
+            return;
+        }
+        await SyncAction("pause_until", new { folder_id = S(folder, "id"), expected_path = S(folder, "path"),
+            until = new DateTimeOffset(resume).ToUnixTimeSeconds() }, "Schedule sync pause");
+    }
+
     private async Task ShareFolder(string folder,string device,bool skipBuild)
     {
         if(busy)return;

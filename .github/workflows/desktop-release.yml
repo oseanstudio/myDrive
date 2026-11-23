@@ -120,6 +120,12 @@ jobs:
           }
           $app = Get-Item -LiteralPath (Join-Path $directory 'myDrive.exe')
           if ($app.VersionInfo.ProductVersion.Split('+')[0] -ne $version) { throw 'Installed version differs from the build.' }
+          foreach ($fileClass in @('*', 'Directory')) {
+            $verb = Get-Item -LiteralPath "HKCU:\Software\Classes\$fileClass\shell\myDrive.Send\command"
+            if ($verb.GetValue('') -ne ('"{0}" --send-files "%1"' -f $app.FullName)) {
+              throw "The Explorer action for $fileClass did not register the installed app."
+            }
+          }
           $viewportReport = Join-Path $env:RUNNER_TEMP 'mydrive-sync-viewport.json'
           $viewportProcess = Start-Process -FilePath $app.FullName -ArgumentList "--diagnose-sync-viewport `"$viewportReport`"" -WindowStyle Hidden -PassThru
           if (!$viewportProcess.WaitForExit(30000)) { $viewportProcess.Kill(); throw 'The Sync viewport check timed out.' }

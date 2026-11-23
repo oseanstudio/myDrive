@@ -296,15 +296,17 @@ fn stage(data: &Path, req: Stage) -> Result<Value> {
     let staging = tempfile::tempdir_in(&root).map_err(io)?;
     let envelope = staging.path().join(packet.name("data"));
     fs::create_dir(&envelope).map_err(io)?;
-    for path in req.paths {
-        let source = checked(&path)?;
+    let mut originals = Vec::with_capacity(req.paths.len());
+    for path in &req.paths {
+        let source = checked(path)?;
         let name = path
             .file_name()
             .ok_or("Choose a file or folder, rather than a drive root.")?;
-        if envelope.starts_with(&path) || envelope.starts_with(&source) {
+        if envelope.starts_with(path) || envelope.starts_with(&source) {
             return Err("Cannot relay the myDrive outbox or a parent folder.".into());
         }
         copy(&source, &envelope.join(name), 0)?;
+        originals.push(source);
     }
     let final_root = root.join(&packet.job);
     let alternatives = req
@@ -320,7 +322,7 @@ fn stage(data: &Path, req: Stage) -> Result<Value> {
     put(
         &staging.path().join("job.json"),
         &Job {
-            target: req.target,
+            target: req.target.clone(),
             relay: req.relay,
             envelope: final_root.join(packet.name("data")),
             phase: "probe".into(),
@@ -331,6 +333,7 @@ fn stage(data: &Path, req: Stage) -> Result<Value> {
         },
     )?;
     fs::rename(staging.path(), final_root).map_err(io)?;
+    let _ = crate::blip::activity::record(data, &req.own, &req.target, &packet.job, &originals, true);
     Ok(json!({"id": packet.job}))
 }
 
@@ -578,7 +581,7 @@ fn receive(
     Ok(None)
 }
 
-fn advance(req: &Snapshot, root: &Path) -> Result<Option<Action>> {
+fn advance(req: &Snapshot, root: &Path, data: &Path) -> Result<Option<Action>> {
     for dir in fs::read_dir(root).map_err(io)? {
         let dir = dir.map_err(io)?;
         if !dir.file_name().to_str().is_some_and(uuid) {
@@ -651,6 +654,10 @@ fn advance(req: &Snapshot, root: &Path) -> Result<Option<Action>> {
                 if owned && envelope.exists() {
                     checked(&envelope)?;
                     fs::remove_dir_all(&envelope).map_err(io)?;
+                }
+                if job.phase != "forward" {
+                    let status = if job.phase == "handoff" { "Handed to relay" } else { "Delivered" };
+                    let _ = crate::blip::activity::result(data, &req.own, &packet.job, status, None);
                 }
                 fs::remove_file(record).map_err(io)?;
                 let _ = fs::remove_dir(dir.path().join(packet.name("probe")));
@@ -975,7 +982,7 @@ pub fn run(action: &str, payload: &Value, data: &Path) -> Result<Value> {
             let action = if action.is_some() {
                 action
             } else {
-                advance(&req, &root)?
+                advance(&req, &root, data)?
             };
             let waiting = fs::read_dir(&root)
                 .map_err(io)?

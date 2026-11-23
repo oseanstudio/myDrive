@@ -91,6 +91,23 @@ public sealed partial class MainWindow
         if (selected != null) await selected();
     }
 
+    public async Task SendFromFileManager(string[] selection)
+    {
+        if (selection.Length is 0 or > 256) return;
+        var paths = await Task.Run(() => selection
+            .Where(path => !string.IsNullOrEmpty(path) && Path.IsPathFullyQualified(path) &&
+                           (File.Exists(path) || Directory.Exists(path)))
+            .Distinct(StringComparer.OrdinalIgnoreCase).ToList());
+        OpenQuickMenu();
+        if (paths.Count == 0) { Info("Send with myDrive", "Choose an available file or folder."); return; }
+        if (busy || modalDepth > 0) { Info("Send with myDrive", "Finish the current action, then try again."); return; }
+        for (int attempt = 0; attempt < 40 && blipSnapshot?.Status.Authenticated != true &&
+             Volatile.Read(ref blipRefreshing) != 0; attempt++)
+            await Task.Delay(100);
+        if (quitting || busy || modalDepth > 0) return;
+        await SendDroppedFiles(paths);
+    }
+
     private async Task SendDroppedFiles(List<string> paths)
     {
         currentView = "transfers";

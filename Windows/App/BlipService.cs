@@ -67,7 +67,7 @@ public sealed class BlipService : IAsyncDisposable
         };
         info.ArgumentList.Add(fixture ? Path.Combine(bundle, "cli.mjs") : "--blip-engine"); info.ArgumentList.Add(command);
         info.ArgumentList.Add("--profile"); info.ArgumentList.Add(profile);
-        if (attachedSocket != null && command is "status" or "devices" or "transfers" or "poll" or "send" or "accept" or "search")
+        if (attachedSocket != null && command is "status" or "devices" or "transfers" or "poll" or "send" or "accept" or "search" or "activity" or "retry")
         {
             if (fixture) { info.ArgumentList.Add("--socket"); info.ArgumentList.Add(attachedSocket); }
             else info.ArgumentList.Add("--desktop");
@@ -143,6 +143,8 @@ public sealed class BlipService : IAsyncDisposable
         "host_already_running" => "This Blip profile is already running.",
         "receive_policy_unconfirmed" => "Blip could not verify the receiving settings for this profile.",
         "sign_in_required" => "Sign in to Blip first.",
+        "activity_unavailable" => "myDrive could not read saved Send activity.",
+        "activity_retry_unavailable" => "This transfer can no longer be retried safely. Select the files again to send them.",
         "search_unavailable" => "Blip search is unavailable. Try again in a moment.",
         "invalid_search" => "Enter a name or email address.",
         _ => "Blip could not confirm the request. Refresh before trying again."
@@ -354,6 +356,12 @@ public sealed class BlipService : IAsyncDisposable
         var response = await CommandAsync("send", args, token: token);
         return response.GetProperty("transfer_id").GetString() ?? throw new IOException("Blip did not provide a transfer identifier. Refresh before retrying.");
     }
+    public Task<JsonElement> ActivityAsync(string owner, CancellationToken token = default) =>
+        CommandAsync("activity", input: owner, token: token);
+
+    public Task<JsonElement> RetryAsync(string owner, string id, CancellationToken token = default) =>
+        CommandAsync("retry", new[] { "--id", id, "--execute" }, owner, token);
+
     public async Task AcceptAsync(string id, CancellationToken token = default)
     {
         RequireRunning(); if (!Guid.TryParseExact(id, "D", out _)) throw new IOException("Select a pending incoming transfer.");

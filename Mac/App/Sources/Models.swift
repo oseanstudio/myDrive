@@ -106,6 +106,7 @@ struct SyncthingFolder: Identifiable {
     let path: String
     let type: String
     let paused: Bool
+    let pausedUntil: Date?
     let deviceCount: Int
     let deviceIDs: [String]
     let status: FolderStatus
@@ -158,10 +159,12 @@ struct Snapshot {
     let folders: [SyncthingFolder]
     let devices: [SyncthingDevice]
     let systemErrors: [String]
+    let scheduledPauseError: String?
 
     init(from raw: Any) {
         let dict = raw as? JSON ?? [:]
         version = dict.str("version")
+        scheduledPauseError = dict.optStr("scheduled_pause_error")
         folders = dict.array("folders").map { raw in
             let f = raw as? JSON ?? [:]
             let status = f.dict("status")
@@ -171,6 +174,8 @@ struct Snapshot {
                 path: f.str("path"),
                 type: f.str("type"),
                 paused: f.bool("paused"),
+                pausedUntil: f["paused_until"] == nil || f.int64("paused_until") <= 0
+                    ? nil : Date(timeIntervalSince1970: TimeInterval(f.int64("paused_until"))),
                 deviceCount: Int(f.int64("device_count")),
                 deviceIDs: f.array("device_ids").compactMap { $0 as? String },
                 status: FolderStatus(

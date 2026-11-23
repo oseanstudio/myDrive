@@ -97,7 +97,7 @@ public sealed partial class MainWindow
     }
     private static string QuickFolderState(JsonElement folder,List<Peer> peers)
     {
-        if(B(folder,"paused"))return "Paused";
+        if(B(folder,"paused"))return PausedFolderLabel(folder);
         if(HasFolderError(folder))return "Needs attention";
         var stats=FolderStats(folder);var state=S(stats,"state","Unknown");
         if(N(stats,"needFiles")>0)return $"{N(stats,"needFiles"):N0} files pending";
@@ -115,6 +115,8 @@ public sealed partial class MainWindow
         if(sharing.Items.Count>0){menu.Items.Add(sharing);menu.Items.Add(new MenuFlyoutSeparator());}
         MenuAction(menu,"Choose files",()=>_=OpenSyncFolder(id,label,""));
         MenuAction(menu,"Open local folder",()=>OpenPath(S(folder,"path")));
+        MenuAction(menu,"Device progress",()=>_=ShowSyncInfo(id,"device_progress","Device progress"));
+        MenuAction(menu,"Pause until…",()=>_=ChooseSyncPause(folder));
         MenuAction(menu,"Pending files",()=>_=ShowSyncInfo(id,"need","Pending files"));
         MenuAction(menu,"Saved versions",()=>_=ShowSyncVersions(id,label));
         menu.Items.Add(new MenuFlyoutSeparator());
@@ -166,6 +168,8 @@ public sealed partial class MainWindow
         var errors=active.Count(HasFolderError);var need=active.Sum(f=>N(FolderStats(f),"needFiles"));var paused=folders.Count-active.Count;
         var title=syncFailure.Length>0?"Status unavailable":errors>0?FolderAttentionTitle(errors):folders.Count>0&&active.Count==0?"Sync paused":need>0?CountLabel(need,"file")+" pending":peers.All(p=>!p.Connected)?"Working offline":active.Any(f=>S(FolderStats(f),"state").Contains("scan"))?"Checking changes…":active.Any(f=>S(FolderStats(f),"state")=="syncing")?"Syncing changes…":"Local files up to date";
         var detail=CountLabel(folders.Count,"folder")+" · "+CountLabel(peers.Count(p=>p.Connected),"device")+" online"+(paused>0?$" · {paused} paused":"");
+        if (syncSnapshot is { } status && S(status, "scheduled_pause_error").Length > 0)
+            detail += " · Check scheduled pauses";
         return (title,detail);
     }
     private bool RefreshQuickSyncControls()

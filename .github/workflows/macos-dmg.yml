@@ -71,8 +71,9 @@ jobs:
           "$RUNNER_TEMP/blip-host-test" "$RUNNER_TEMP/blip-vendor/$framework" "$fixture" "$MYDRIVE_BUILD_DIR/myDrive.app/Contents/Resources/mydrive-core"
       - name: Verify distributable
         run: |
+          plist="$MYDRIVE_BUILD_DIR/myDrive.app/Contents/Info.plist"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :NSServices:0:NSMessage' "$plist")" = sendWithMyDrive
           if [[ -n "$MYDRIVE_VERSION" ]]; then
-            plist="$MYDRIVE_BUILD_DIR/myDrive.app/Contents/Info.plist"
             test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$plist")" = "$MYDRIVE_VERSION"
             test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$plist")" = "$MYDRIVE_VERSION"
           fi

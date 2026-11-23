@@ -58,7 +58,9 @@ struct StorageBrowseState {
 struct SyncInfoState {
     let folderId: String
     let label: String
-    let errors: Bool
+    let action: String
+    let title: String
+    var errors: Bool { action == "errors" }
 }
 
 struct VersionGroup: Identifiable {
@@ -124,6 +126,7 @@ final class AppState: ObservableObject {
     @Published var syncBrowse: SyncBrowseState?
     @Published var storageBrowse: StorageBrowseState?
     @Published var syncInfo: SyncInfoState?
+    @Published var syncDeviceProgress: [JSON] = []
     @Published private(set) var syncAttentionReport: JSON = [:]
     @Published private(set) var syncAttentionLoading = false
     @Published private(set) var syncAttentionFailure: String?
@@ -393,7 +396,9 @@ final class AppState: ObservableObject {
     func refreshIfStale() async {
         let age = Date().timeIntervalSince(lastSnapshotAt)
         let visibleSync = (popoverVisible || updateWindowIsVisible()) && view == .sync
-        let budget = visibleSync ? 20.0 : 120.0
+        let now = Date()
+        let due = snapshot?.folders.contains { ($0.pausedUntil ?? .distantFuture) <= now } ?? false
+        let budget = visibleSync || due ? 20.0 : 120.0
         if (snapshot == nil && snapshotError == nil) || age > budget {
             // Status and events refresh concurrently; awaiting them in order
             // stacked every request's latency onto opening the popup.
@@ -586,6 +591,29 @@ final class AppState: ObservableObject {
         }
     }
 
+    func chooseSyncPause(_ folder: SyncthingFolder) {
+        guard busy == nil else { return }
+        let picker = NSDatePicker(frame: NSRect(x: 0, y: 0, width: 270, height: 25))
+        picker.datePickerStyle = .textFieldAndStepper
+        picker.datePickerElements = [.yearMonthDay, .hourMinute]
+        picker.dateValue = Date().addingTimeInterval(3600)
+        picker.minDate = Date()
+        picker.maxDate = Date().addingTimeInterval(31 * 86400)
+        let prompt = NSAlert()
+        prompt.messageText = "Pause until"
+        prompt.accessoryView = picker
+        prompt.addButton(withTitle: "Pause")
+        prompt.addButton(withTitle: "Cancel")
+        guard prompt.runModal() == .alertFirstButtonReturn else { return }
+        perform("Schedule sync pause") {
+            _ = try await self.syncthing.call("pause_until", payload: [
+                "folder_id": folder.id, "expected_path": folder.path,
+                "until": Int64(picker.dateValue.timeIntervalSince1970)
+            ])
+            await self.refreshSnapshot()
+        }
+    }
+
     func stopFolder(_ folder: SyncthingFolder) {
         guard busy == nil else { return }
         let alert = NSAlert()
@@ -756,18 +784,22 @@ final class AppState: ObservableObject {
     }
 
     func openPending(_ folder: SyncthingFolder) {
-        openSyncInfo(folder, errors: false)
+        openSyncInfo(folder, action: "need", title: "Pending files")
     }
 
     func openErrors(_ folder: SyncthingFolder) {
-        openSyncInfo(folder, errors: true)
+        openSyncInfo(folder, action: "errors", title: "Folder errors")
     }
 
-    private func openSyncInfo(_ folder: SyncthingFolder, errors: Bool) {
+    func openDeviceProgress(_ folder: SyncthingFolder) {
+        openSyncInfo(folder, action: "device_progress", title: "Device progress")
+    }
+
+    private func openSyncInfo(_ folder: SyncthingFolder, action: String, title: String) {
         guard busy == nil else { return }
         syncInfoBack = view == .syncAttention ? .syncAttention : .sync
-        syncInfo = SyncInfoState(folderId: folder.id, label: folder.displayName, errors: errors)
-        errorItems = []; pendingItems = []
+        syncInfo = SyncInfoState(folderId: folder.id, label: folder.displayName, action: action, title: title)
+        errorItems = []; pendingItems = []; syncDeviceProgress = []
         dialog = nil; view = .syncInfo
         refreshSyncInfo()
     }
@@ -776,12 +808,15 @@ final class AppState: ObservableObject {
         guard busy == nil, let info = syncInfo else { return }
         syncInfoLoading = true
         syncInfoFailure = nil
-        perform(info.errors ? "Load folder errors" : "Load pending files") {
+        perform("Load " + info.title.lowercased()) {
             defer { self.syncInfoLoading = false }
             do {
-                let raw = try await self.syncthing.call(info.errors ? "errors" : "need",
+                let raw = try await self.syncthing.call(info.action,
                     payload: ["folder_id": info.folderId], timeout: 25)
                 if info.errors { self.errorItems = IssueItem.rows(from: raw) }
+                else if info.action == "device_progress" {
+                    self.syncDeviceProgress = (raw as? JSON ?? [:]).array("devices").compactMap { $0 as? JSON }
+                }
                 else {
                     let dict = raw as? JSON ?? [:]
                     self.pendingItems = ["progress", "queued", "rest"].flatMap { dict.array($0).map(IssueItem.init(from:)) }

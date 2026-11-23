@@ -8,6 +8,10 @@ struct SyncView: View {
     var body: some View {
         LazyVStack(spacing: 4) {
             statusHeader
+            if let error = app.snapshot?.scheduledPauseError {
+                Text(error).font(.system(size: 11)).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
             if !app.attention.isEmpty {
                 ForEach(app.attention) { item in
                     AttentionCard(item: item)
@@ -228,6 +232,8 @@ struct FolderRow: View {
                 }
                 Button("Choose files") { app.openFolderFiles(folder) }
                 Button("Open local folder") { app.openLocalFolder(folder.path) }
+                Button("Device progress") { app.openDeviceProgress(folder) }
+                Button("Pause until…") { app.chooseSyncPause(folder) }
                 Button("Pending files") { app.openPending(folder) }
                 Button("Saved versions") { app.openVersions(folder) }
                 Divider()
@@ -250,7 +256,9 @@ struct FolderRow: View {
     }
 
     private var captionText: String {
-        if folder.paused { return "Paused" }
+        if folder.paused {
+            return folder.pausedUntil.map { "Paused until " + $0.formatted(date: .abbreviated, time: .shortened) } ?? "Paused"
+        }
         if folder.hasError { return "Needs attention" }
         if folder.status.needFiles > 0 {
             return folder.status.needFiles == 1 ? "1 file pending" : "\(folder.status.needFiles) files pending"

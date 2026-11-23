@@ -30,7 +30,7 @@ mv "$appdir/usr/bin/SMB-ThirdPartyNotices.txt" "$appdir/usr/share/doc/mydrive/"
 node Core/third-party-notices.mjs Core/Cargo.toml "$appdir/usr/share/doc/mydrive/ThirdPartyNotices.txt"
 install -m644 Linux/packaging/AppImage-Runtime.txt "$appdir/usr/share/doc/mydrive/AppImage-Runtime.txt"
 install -Dm755 Linux/packaging/AppRun.sh "$appdir/AppRun"
-install -m644 Linux/{mydrive,services,blip_cli,storage_view,smb_sharing,transfer_view,tray,ui_widgets}.py "$appdir/usr/lib/mydrive/"
+install -m644 Linux/{mydrive,services,blip_cli,file_manager,storage_view,smb_sharing,transfer_view,tray,ui_widgets}.py "$appdir/usr/lib/mydrive/"
 if [[ -n "${MYDRIVE_VERSION:-}" ]]; then
     printf '%s\n' "$MYDRIVE_VERSION" > "$appdir/usr/lib/mydrive/version.txt"
 fi
@@ -62,6 +62,32 @@ if ! MYDRIVE_BLIP_LIBRARY="$build/libblip-jni.so" XDG_RUNTIME_DIR="$fixture" \
     exit 1
 fi
 timeout 30s dbus-run-session -- xvfb-run -a "$output" --smoke-test
+/usr/bin/python3 -B - "$appdir/usr/lib/mydrive" "$build" <<'PY'
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+sys.path.insert(0, sys.argv[1])
+from file_manager import install_actions
+
+build = Path(sys.argv[2])
+launcher = build / "myDrive with spaces & 100%.AppImage"
+launcher.write_text('#!/bin/sh\nprintf "%s\\n" "$@"\n')
+launcher.chmod(0o700)
+profile = build / "file-manager-check"
+install_actions(launcher, profile)
+files = profile / "nautilus/scripts/Send with myDrive"
+dolphin = profile / "kio/servicemenus/net.oseanstudio.myDrive.Send.desktop"
+assert os.access(files, os.X_OK) and os.access(dolphin, os.X_OK)
+assert '--send-files %F' in dolphin.read_text()
+assert '100%%.AppImage' in dolphin.read_text()
+selection = [str(build / "File & name.txt"), str(build / "Sub folder")]
+invoked = subprocess.check_output([files, *selection], text=True, env={
+    **os.environ, "NAUTILUS_SCRIPT_CURRENT_URI": build.as_uri(),
+})
+assert invoked.splitlines() == ["--send-files", *selection]
+PY
 mkdir "$build/notice-check"
 (cd "$build/notice-check" && "$output" --appimage-extract 'usr/share/doc/mydrive/*' >/dev/null)
 test -s "$build/notice-check/squashfs-root/usr/share/doc/mydrive/ThirdPartyNotices.txt"

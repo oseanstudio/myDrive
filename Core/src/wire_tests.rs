@@ -253,6 +253,84 @@ fn syncthing_events_poll_is_bounded_and_returns_cursor() {
 }
 
 #[test]
+fn syncthing_reports_folder_progress_without_querying_offline_or_paused_peers() {
+    let response = |target, body: &str| Exchange {
+        method: "GET",
+        target,
+        status: 200,
+        body: body.into(),
+        expect_body: None,
+        expected_header: Some("x-api-key: test-key"),
+    };
+    let (host, worker) = server(vec![
+        response("/rest/config/folders/studio?", r#"{"id":"studio","devices":[{"deviceID":"LOCAL"},{"deviceID":"ONLINE"},{"deviceID":"OFFLINE"},{"deviceID":"PAUSED"}]}"#),
+        response("/rest/system/status?", r#"{"myID":"LOCAL"}"#),
+        response("/rest/config/devices?", r#"[{"deviceID":"ONLINE","name":"Studio laptop"},{"deviceID":"PAUSED","paused":true}]"#),
+        response("/rest/system/connections?", r#"{"connections":{"ONLINE":{"connected":true},"PAUSED":{"connected":true}}}"#),
+        response("/rest/db/completion?folder=studio&device=ONLINE", r#"{"completion":75.5,"needBytes":512,"needItems":2,"needDeletes":0,"remoteState":"valid"}"#),
+    ]);
+    let api = crate::syncthing::Api::new(&crate::syncthing::Connection {
+        endpoint: host,
+        api_key: "test-key".into(),
+        certificate_pem: String::new(),
+    }).unwrap();
+    let result = api.execute("device_progress", &serde_json::json!({"folder_id":"studio"}), std::path::Path::new("")).unwrap();
+    let rows = result["devices"].as_array().unwrap();
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows[0]["name"], "Studio laptop");
+    assert_eq!(rows[0]["state"], "Syncing");
+    assert_eq!(rows[0]["remaining_bytes"], 512);
+    assert_eq!(rows[0]["percent"], 75.5);
+    assert_eq!(rows[1]["state"], "Offline");
+    assert!(rows[1]["percent"].is_null());
+    assert_eq!(rows[2]["state"], "Paused");
+    worker.join().unwrap();
+}
+
+#[test]
+fn syncthing_snapshot_resumes_an_expired_pause_after_restart() {
+    let data = tempfile::tempdir().unwrap();
+    let folder = serde_json::json!({"id":"studio","path":"/studio","paused":true,"devices":[]});
+    std::fs::write(data.path().join("sync-pauses.json"), r#"[{"device":"LOCAL","folder":"studio","path":"/studio","until":1}]"#).unwrap();
+    let response = |target, body: String| Exchange {
+        method: "GET",
+        target,
+        status: 200,
+        body,
+        expect_body: None,
+        expected_header: Some("x-api-key: test-key"),
+    };
+    let (host, worker) = server(vec![
+        response("/rest/system/version?", r#"{"version":"v2.0.0"}"#.into()),
+        response("/rest/system/status?", r#"{"myID":"LOCAL"}"#.into()),
+        response("/rest/config/folders?", serde_json::json!([folder]).to_string()),
+        response("/rest/config/folders/studio?", folder.to_string()),
+        Exchange {
+            method: "PATCH",
+            target: "/rest/config/folders/studio?",
+            status: 200,
+            body: "{}".into(),
+            expect_body: Some(br#"{"paused":false}"#.to_vec()),
+            expected_header: Some("x-api-key: test-key"),
+        },
+        response("/rest/config/devices?", "[]".into()),
+        response("/rest/system/connections?", "{}".into()),
+        response("/rest/system/error?", "{}".into()),
+        response("/rest/db/status?folder=studio", r#"{"state":"idle"}"#.into()),
+    ]);
+    let api = crate::syncthing::Api::new(&crate::syncthing::Connection {
+        endpoint: host,
+        api_key: "test-key".into(),
+        certificate_pem: String::new(),
+    }).unwrap();
+    let snapshot = api.execute("snapshot", &serde_json::json!({}), data.path()).unwrap();
+    assert_eq!(snapshot["folders"][0]["paused"], false);
+    assert!(snapshot["folders"][0]["paused_until"].is_null());
+    assert_eq!(std::fs::read_to_string(data.path().join("sync-pauses.json")).unwrap(), "[]");
+    worker.join().unwrap();
+}
+
+#[test]
 fn syncthing_attention_previews_the_real_error_with_a_suggested_fix() {
     let (host, worker) = server(vec![Exchange {
         method: "GET",

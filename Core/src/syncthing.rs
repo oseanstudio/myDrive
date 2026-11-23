@@ -5,6 +5,8 @@ use serde_json::{json, Value};
 use std::{fs, io::Read, path::Path, time::Duration};
 use url::Url;
 
+mod schedule;
+
 #[derive(Clone, Deserialize, Serialize, Default)]
 pub struct Connection {
     pub endpoint: String,
@@ -208,10 +210,11 @@ impl Api {
         Ok(Value::Object(report))
     }
 
-    pub fn snapshot(&self) -> Result<Value, String> {
+    fn snapshot_with_schedule(&self, data_dir: &Path) -> Result<Value, String> {
         let version = self.get(&["rest", "system", "version"], &[])?;
         let system = self.get(&["rest", "system", "status"], &[])?;
-        let folders = self.get(&["rest", "config", "folders"], &[])?;
+        let mut folders = self.get(&["rest", "config", "folders"], &[])?;
+        let scheduled = schedule::reconcile(self, data_dir, &system, &mut folders);
         let configured = self.get(&["rest", "config", "devices"], &[])?;
         let connections = self
             .get(&["rest", "system", "connections"], &[])
@@ -246,6 +249,9 @@ impl Api {
                                     "fsWatcherEnabled",
                                 ],
                             );
+                            if let Some(until) = folder["paused_until"].as_i64() {
+                                result["paused_until"] = json!(until);
+                            }
                             result["device_count"] =
                                 json!(folder["devices"].as_array().map_or(0, Vec::len));
                             result["device_ids"] = json!(folder["devices"]
@@ -334,8 +340,56 @@ impl Api {
             })
             .collect::<Vec<_>>();
         Ok(
-            json!({"version":version["version"],"os":version["os"],"uptime":system["uptime"],"folders":results,"devices":devices,"traffic":pick(&connections["total"],&["at","inBytesTotal","outBytesTotal"]),"errors":errors["errors"]}),
+            json!({"version":version["version"],"os":version["os"],"uptime":system["uptime"],"folders":results,"devices":devices,"traffic":pick(&connections["total"],&["at","inBytesTotal","outBytesTotal"]),"errors":errors["errors"],"scheduled_pause_error":scheduled.err()}),
         )
+    }
+
+    fn device_progress(&self, id: &str) -> Result<Value, String> {
+        let folder = self.folder(id)?;
+        let local = self.get(&["rest", "system", "status"], &[])?;
+        let devices = self.get(&["rest", "config", "devices"], &[])?;
+        let connections = self.get(&["rest", "system", "connections"], &[])?;
+        let members = folder["devices"].as_array().ok_or("Unexpected folder device list.")?;
+        let mut rows = Vec::new();
+        for group in members.chunks(4) {
+            std::thread::scope(|scope| {
+                let workers = group.iter().filter_map(|device| {
+                    let peer = device["deviceID"].as_str()?;
+                    if local["myID"].as_str() == Some(peer) { return None; }
+                    let configured = devices.as_array().and_then(|ds| ds.iter().find(|d| d["deviceID"] == peer));
+                    let name = configured.and_then(|d| d["name"].as_str()).filter(|s| !s.trim().is_empty())
+                        .map(str::to_owned).unwrap_or_else(|| peer.chars().take(7).collect());
+                    let stopped = configured.is_some_and(|d| d["paused"] == true) || folder["paused"] == true;
+                    let online = connections["connections"][peer]["connected"] == true;
+                    Some(scope.spawn(move || {
+                        let mut row = json!({"device_id": peer, "name": name});
+                        let state = if stopped { "Paused" } else if !online { "Offline" } else {
+                            match self.get(&["rest", "db", "completion"], &[("folder", id), ("device", peer)]) {
+                                Ok(result) => match result["remoteState"].as_str() {
+                                    Some("paused") => "Paused",
+                                    Some("notSharing") => "Waiting for acceptance",
+                                    Some("unknown") => "Progress unavailable",
+                                    _ => {
+                                        row["remaining_bytes"] = result["needBytes"].clone();
+                                        row["remaining_items"] = result["needItems"].clone();
+                                        row["remaining_deletes"] = result["needDeletes"].clone();
+                                        row["percent"] = result["completion"].clone();
+                                        if result["needBytes"] == 0 && result["needItems"] == 0 && result["needDeletes"] == 0 {
+                                            "Up to date"
+                                        } else if result["completion"].as_f64().is_some() { "Syncing" } else { "Progress unavailable" }
+                                    }
+                                },
+                                Err(error) => { row["error"] = json!(error); "Progress unavailable" }
+                            }
+                        };
+                        row["state"] = json!(state);
+                        row
+                    }))
+                }).collect::<Vec<_>>();
+                rows.extend(workers.into_iter().filter_map(|worker| worker.join().ok()));
+            });
+        }
+        Ok(json!({"devices":rows}))
     }
     pub fn browse(&self, id: &str, path: &str) -> Result<Value, String> {
         let folder = self.folder(id)?;
@@ -461,7 +515,8 @@ impl Api {
         let id = data["folder_id"].as_str().unwrap_or("");
         match action {
             "share.preview" | "share" => self.share(data, action == "share", data_dir),
-            "snapshot" => self.snapshot(),
+            "snapshot" => self.snapshot_with_schedule(data_dir),
+            "device_progress" => self.device_progress(id),
             "attention" => self.folder_attention(data),
             "relocate" => self.relocate(id, data),
             "browse" => self.browse(id, data["path"].as_str().unwrap_or("")),
@@ -469,17 +524,7 @@ impl Api {
                 self.folder(id)?;
                 Ok(json!({"ignore":self.ignores(id)?}))
             }
-            "pause" => {
-                self.folder(id)?;
-                let paused = data["paused"].as_bool().ok_or("Pause state is missing.")?;
-                self.call(
-                    "PATCH",
-                    &["rest", "config", "folders", id],
-                    &[],
-                    Some(&json!({"paused":paused})),
-                )?;
-                Ok(json!({"paused":paused}))
-            }
+            "pause" | "pause_until" => schedule::change(self, data_dir, id, action, data),
             "stop" => {
                 let folder = self.folder(id)?;
                 let path = folder["path"]

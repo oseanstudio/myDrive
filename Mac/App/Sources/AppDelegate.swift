@@ -51,6 +51,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             }
             .store(in: &cancellables)
         updateStatusTooltip()
+        NSApp.servicesProvider = self
+        NSUpdateDynamicServices()
+    }
+
+    @objc(sendWithMyDrive:userData:error:)
+    func sendWithMyDrive(_ pasteboard: NSPasteboard, userData: String?,
+                         error: AutoreleasingUnsafeMutablePointer<NSString?>?) {
+        var urls = pasteboard.readObjects(forClasses: [NSURL.self],
+                                     options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
+        if urls.isEmpty {
+            let paths = pasteboard.propertyList(forType: .init("NSFilenamesPboardType")) as? [String] ?? []
+            urls = paths.filter { $0.hasPrefix("/") }.map { URL(fileURLWithPath: $0) }
+        }
+        guard !urls.isEmpty, urls.count <= 256 else {
+            error?.pointee = "Choose up to 256 files or folders to send with myDrive."
+            return
+        }
+        var seen = Set<URL>()
+        let selection = urls.map(\.standardizedFileURL).filter { url in
+            url.isFileURL && url.path.hasPrefix("/") && seen.insert(url).inserted &&
+                FileManager.default.fileExists(atPath: url.path)
+        }
+        guard !selection.isEmpty else {
+            error?.pointee = "Choose an available file or folder to send with myDrive."
+            return
+        }
+        Task { @MainActor in
+            showPopover(view: .transfers)
+            appState.blip.sendDropped(selection)
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
