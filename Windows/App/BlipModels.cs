@@ -23,19 +23,32 @@ public sealed class BlipDevice
     [JsonPropertyName("name_known")] public bool NameKnown { get; set; }
     [JsonPropertyName("user_name")] public string UserName { get; set; }="";
     [JsonPropertyName("nickname")] public string Nickname { get; set; }="";
-    [JsonIgnore] public bool HasDeviceName => NameKnown || !string.IsNullOrWhiteSpace(Nickname);
+    [JsonIgnore] public string SelectionName { get; set; } = "";
+    [JsonIgnore] public bool HasRegisteredName => NameKnown && !IsPlaceholder(Name);
+    [JsonIgnore] public bool HasDeviceName => HasRegisteredName || !string.IsNullOrWhiteSpace(Nickname);
     [JsonIgnore] public string ContactName => string.IsNullOrWhiteSpace(UserName) ? Contact : UserName;
     [JsonIgnore] public string BaseLabel
     {
         get
         {
             if (!string.IsNullOrWhiteSpace(Nickname)) return Nickname;
-            if (NameKnown) return Name;
+            if (HasRegisteredName) return Name;
             var kind = Kind.Length > 0 ? Kind : Name;
             return FallbackName(Peer, kind is "Desktop" or "Laptop" or "Phone" or "Tablet" ? kind : "Device");
         }
     }
-    [JsonIgnore] public string DisplayName => BaseLabel;
+    [JsonIgnore] public string DisplayName => SelectionName.Length > 0 ? SelectionName : BaseLabel;
+    public string DisambiguatedName(string name) => BlipDevice.FallbackName(Peer, name);
+
+    private static bool IsPlaceholder(string name)
+    {
+        var text = name.Trim().ToLowerInvariant();
+        if (text.Length == 0 || text is "previous device" or "unnamed" or "mac" or "windows" or "linux" ||
+            text.StartsWith("mydrive on ", StringComparison.Ordinal)) return true;
+        var parts = text.Split(' ', 2);
+        return (parts[0] is "device" or "desktop" or "laptop" or "phone" or "tablet") &&
+            (parts.Length == 1 || parts[1].Length > 0 && parts[1].All(char.IsAsciiDigit));
+    }
     public static string FallbackName(string peer, string kind = "Device")
     {
         var parts = peer.Split(':', 2);

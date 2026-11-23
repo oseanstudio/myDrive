@@ -83,12 +83,22 @@ class TransferView:
             kind = "Device"
         return f"{kind} {peer[-6:].upper()}" if exact_peer(peer) else "Previous device"
 
-    def device_name(self, device, catalog):
+    def base_device_name(self, device, catalog):
         peer = device["peer"].lower()
         recent = next((r for r in self.recent_recipients if r["peer"] == peer), None)
         return ((recent or {}).get("nickname") or catalog.get(peer, {}).get("name")
                 or (device.get("name") if device.get("name_known") else None)
                 or self.fallback_name(peer, device.get("kind")))
+
+    def device_name(self, device, catalog):
+        name = self.base_device_name(device, catalog)
+        peer = device["peer"].lower()
+        account = peer.partition(":")[0] + ":"
+        devices = self.snapshot.get("devices", []) + self.directory_recipients
+        duplicate = any(other["peer"].lower() != peer and other["peer"].lower().startswith(account)
+                        and self.base_device_name(other, catalog).casefold() == name.casefold()
+                        for other in devices if exact_peer(other.get("peer")))
+        return name + " " + peer[-6:].upper() if duplicate else name
 
     def names(self, devices, catalog):
         names = {}

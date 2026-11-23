@@ -49,13 +49,24 @@ public sealed partial class MainWindow
     private static RecentRecipient Recent(BlipDevice device) => new(device.Peer, device.ToString(),
         device.ContactName, device.HasDeviceName ? device.DisplayName : null);
 
-    private string BlipDeviceName(BlipDevice device)
+    private string BlipBaseDeviceName(BlipDevice device)
     {
         var recent = recentOwner == BlipOwner ? recentRecipients.Find(r =>
             r.peer.Equals(device.Peer, StringComparison.OrdinalIgnoreCase)) : null;
         var known = blipSnapshot?.Devices.Find(d => d.Peer.Equals(device.Peer, StringComparison.OrdinalIgnoreCase));
-        return FirstName(recent?.nickname, known?.Nickname, device.HasDeviceName ? device.DisplayName : null,
-            known?.DisplayName, device.DisplayName);
+        return FirstName(recent?.nickname, known?.Nickname, known?.HasRegisteredName == true ? known.Name : null,
+            device.HasDeviceName ? device.BaseLabel : null, known?.BaseLabel, device.BaseLabel);
+    }
+
+    private string BlipDeviceName(BlipDevice device)
+    {
+        var name = BlipBaseDeviceName(device);
+        var account = device.Peer.Split(':')[0] + ":";
+        bool duplicate = (blipSnapshot?.Devices ?? []).Concat(directoryRecipients).Any(other =>
+            !other.Peer.Equals(device.Peer, StringComparison.OrdinalIgnoreCase) &&
+            other.Peer.StartsWith(account, StringComparison.OrdinalIgnoreCase) &&
+            BlipBaseDeviceName(other).Equals(name, StringComparison.OrdinalIgnoreCase));
+        return duplicate ? device.DisambiguatedName(name) : name;
     }
 
     private string BlipDeviceCaption(BlipDevice device)

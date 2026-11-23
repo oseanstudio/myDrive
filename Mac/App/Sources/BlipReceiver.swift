@@ -613,13 +613,23 @@ struct BlipQueuedSend: Codable, Identifiable {
     }
     func isTrusted(_ peer: BlipPeer) -> Bool { policy.account.lowercased()==account.lowercased() && policy.peers.contains(peer.peer.lowercased()) }
     func isFileTrusted(_ peer:BlipPeer)->Bool {policy.account.lowercased()==account.lowercased() && policy.files.contains(peer.peer.lowercased())}
-    func deviceName(_ peer:BlipPeer)->String {
+    private func baseDeviceName(_ peer: BlipPeer) -> String {
         let match = peers.first { $0.peer.caseInsensitiveCompare(peer.peer) == .orderedSame }
         let recent = recentRecipients.first { $0.peer.caseInsensitiveCompare(peer.peer) == .orderedSame }
         if let nickname = recent?.nickname, !nickname.isEmpty { return nickname }
         if let nickname = match?.nickname, !nickname.isEmpty { return nickname }
         if let match, match.hasDeviceName { return match.displayName }
         return peer.hasDeviceName ? peer.displayName : match?.displayName ?? peer.displayName
+    }
+    func deviceName(_ peer: BlipPeer) -> String {
+        let name = baseDeviceName(peer)
+        let account = peer.peer.split(separator: ":").first?.lowercased()
+        let duplicate = (peers + directoryRecipients).contains {
+            $0.peer.caseInsensitiveCompare(peer.peer) != .orderedSame &&
+            $0.peer.split(separator: ":").first?.lowercased() == account &&
+            baseDeviceName($0).caseInsensitiveCompare(name) == .orderedSame
+        }
+        return duplicate ? BlipPeer.fallbackName(peer.peer, kind: name) : name
     }
     func recipientLabel(_ peer: BlipPeer) -> String {
         let label = deviceName(peer)

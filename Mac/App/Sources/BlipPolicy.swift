@@ -12,11 +12,19 @@ struct BlipPeer: Identifiable, Codable {
     var kind: String? = nil
     var user_name: String? = nil
     var nickname: String? = nil
-    var hasDeviceName: Bool { name_known == true || nickname?.isEmpty == false }
+    var hasRegisteredName: Bool {
+        let text = name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if name_known != true || ["", "previous device", "unnamed", "mac", "windows", "linux"].contains(text)
+            || text.hasPrefix("mydrive on ") { return false }
+        let parts = text.split(separator: " ", maxSplits: 1)
+        return !(["device", "desktop", "laptop", "phone", "tablet"].contains(String(parts[0]))
+            && (parts.count == 1 || Int(parts[1]) != nil))
+    }
+    var hasDeviceName: Bool { hasRegisteredName || nickname?.isEmpty == false }
     var contactName: String? { user_name.flatMap { $0.isEmpty ? nil : $0 } ?? contact }
     var displayName: String {
         if let nickname, !nickname.isEmpty { return nickname }
-        if name_known == true { return name }
+        if hasRegisteredName { return name }
         let type = kind.flatMap { $0.isEmpty ? nil : $0 } ?? name
         let label = ["Phone", "Tablet", "Laptop", "Desktop"].contains(type) ? type : "Device"
         return Self.fallbackName(peer, kind: label)
@@ -105,7 +113,7 @@ final class BlipContactStore {
             let old=known[peer.peer.lowercased()]
             var updated = peer
             updated.nickname = old?.nickname
-            if let old, old.name_known == true, peer.name_known != true {
+            if let old, old.hasRegisteredName, !peer.hasRegisteredName {
                 updated.name = old.name
                 updated.name_known = true
             }

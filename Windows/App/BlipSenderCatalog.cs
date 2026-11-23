@@ -21,7 +21,7 @@ public sealed class BlipSenderCatalog
         foreach(var device in devices.Where(d=>BlipTrustPolicy.ExactPeer(d.Peer))) {
             if (peers.TryGetValue(device.Peer, out var saved)) {
                 device.Nickname = saved.Nickname;
-                if (saved.NameKnown && !device.NameKnown) { device.Name = saved.Name; device.NameKnown = true; }
+                if (saved.HasRegisteredName && !device.HasRegisteredName) { device.Name = saved.Name; device.NameKnown = true; }
                 if (string.IsNullOrWhiteSpace(device.Contact)) device.Contact = saved.Contact;
                 if (string.IsNullOrWhiteSpace(device.UserName)) device.UserName = saved.UserName;
                 if (string.IsNullOrWhiteSpace(device.Kind)) device.Kind = saved.Kind;
@@ -32,6 +32,10 @@ public sealed class BlipSenderCatalog
             if(!peers.ContainsKey(peer))peers[peer]=new(){Peer=peer,Name="Previous device",History=true};
         peers.Remove(self);
         var result=peers.Values.OrderBy(d=>d.Name,StringComparer.CurrentCultureIgnoreCase).ToList();
+        foreach (var device in result) device.SelectionName = "";
+        foreach (var group in result.GroupBy(d => d.Peer.Split(':')[0] + ":" + d.BaseLabel,
+                     StringComparer.OrdinalIgnoreCase).Where(group => group.Count() > 1))
+            foreach (var device in group) device.SelectionName = device.DisambiguatedName(device.BaseLabel);
         accounts[account]=result;
         string after=JsonSerializer.Serialize(accounts);
         if(before!=after){Directory.CreateDirectory(Path.GetDirectoryName(file)!);File.WriteAllText(file+".tmp",after);File.Move(file+".tmp",file,true);}

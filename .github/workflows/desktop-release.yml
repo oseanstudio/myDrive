@@ -58,6 +58,8 @@ jobs:
         run: node tests/source-safety.mjs .
       - name: Test the Windows Syncthing connection cache
         run: dotnet run --project tests/service-cache/ServiceCache.csproj -- --test
+      - name: Test Blip device names and trust
+        run: dotnet run --project tests/BlipTrustChecks/BlipTrustChecks.csproj
       - name: Test Blip polling without starting an extra helper
         shell: pwsh
         run: |
