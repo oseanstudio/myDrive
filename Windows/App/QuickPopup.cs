@@ -2,6 +2,7 @@ using Microsoft.UI;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Media;
 using System.Text.Json;
 using Windows.Storage.Pickers;
@@ -43,7 +44,7 @@ public sealed partial class MainWindow
         identity.Children.Add(QuickText("myDrive", 13, true));
         identity.Children.Add(new TextBlock { Text = DisplayVersion, FontSize = 10, Opacity = .73, VerticalAlignment = VerticalAlignment.Center });
         quickHeader.Children.Add(identity);
-        var views=new MenuFlyout();
+        var views=new MenuFlyout { Placement = FlyoutPlacementMode.BottomEdgeAlignedRight };
         foreach(var view in new[]{(SendViewName,"transfers"),("Sync","sync"),(StorageViewName,"connections"),("Activity","activity"),("Settings","settings")})
             MenuAction(views,view.Item1,()=>NavigateQuick(view.Item2));
         views.Items.Add(new MenuFlyoutSeparator());
