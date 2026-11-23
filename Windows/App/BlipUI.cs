@@ -17,6 +17,9 @@ public sealed partial class MainWindow
     private int blipRefreshing;
     private volatile bool blipViewVisible;
     private long nextDesktopBlipAttempt;
+    private long nextBlipNamePublish;
+    private string blipNamingOwner = "";
+    private readonly HashSet<string> cancellingBlipSends = new();
     private readonly BlipNoticeTracker blipNotices=new();
     private BlipSenderCatalog? blipSenderCatalog;
     private BlipSenderCatalog SenderCatalog=>System.Threading.LazyInitializer.EnsureInitialized(ref blipSenderCatalog,()=>new(Path.Combine(CoreBridge.DataDir,"Blip","sender-catalog.json")));
@@ -66,6 +69,20 @@ public sealed partial class MainWindow
                 using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
                 var freshSnapshot=await blip.PollAsync(timeout.Token).ConfigureAwait(false);
                 blipFailure="";
+                var owner = freshSnapshot.Status.UserId + ":" + freshSnapshot.Status.DeviceId;
+                if (blipNamingOwner != owner) { blipNamingOwner = owner; nextBlipNamePublish = 0; }
+                if (freshSnapshot.Status.Authenticated && freshSnapshot.Status.CurrentDeviceNamed != true &&
+                    Environment.TickCount64 >= nextBlipNamePublish)
+                {
+                    nextBlipNamePublish = Environment.TickCount64 + 300_000;
+                    using var nameTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(4));
+                    try
+                    {
+                        await blip.PublishNameAsync(owner, nameTimeout.Token).ConfigureAwait(false);
+                        if (freshSnapshot.Status.CurrentDeviceNamed is null) nextBlipNamePublish = long.MaxValue;
+                    }
+                    catch (Exception error) when (error is IOException or OperationCanceledException or System.Text.Json.JsonException) { }
+                }
                 try { await UpdateRelay(freshSnapshot, timeout.Token).ConfigureAwait(false); }
                 catch (Exception) { blipFailure = "A relay action needs attention. Stored files are kept."; }
                 freshSnapshot = freshSnapshot with { Transfers = freshSnapshot.Transfers
@@ -114,7 +131,7 @@ public sealed partial class MainWindow
                 var snapshot = blipSnapshot;
                 string signature = System.Text.Json.JsonSerializer.Serialize(new {
                     running = BlipRunning, blipFailure, status = snapshot?.Status, devices = snapshot?.Devices,
-                    transfers = snapshot?.Transfers.Where(t => t.IsLive), blipRelayWaiting,
+                    transfers = snapshot?.Transfers.Where(t => t.IsLive), blipRelayWaiting, blipRelayQueued,
                 });
                 DispatcherQueue.TryEnqueue(() =>
                 {
@@ -126,7 +143,7 @@ public sealed partial class MainWindow
     private void UpdateIncomingBlip(BlipTransfer transfer,bool announce) {
         if(quitting)return;
         blipIncomingWindow??=new BlipIncomingWindow(t=>_=ReceiveFromBlipNotice(t),()=>{currentView="transfers";SetMode(true);_=ChooseLinkSenders();},()=>tray?.Anchor()??AppWindow.Position);
-        string name=blipSnapshot?.Devices.FirstOrDefault(d=>d.Peer.Equals(transfer.Peer,StringComparison.OrdinalIgnoreCase))?.ToString()??"Previous sender";
+        string name=BlipPeerCaption(transfer.Peer);
         blipIncomingWindow.Update(transfer,name,blipAutoAccepted.ContainsKey(transfer.Id),announce);
     }
     private async Task ReceiveFromBlipNotice(BlipTransfer transfer) {
@@ -167,6 +184,11 @@ public sealed partial class MainWindow
         }
         if(signedIn)actions.Children.Add(QuickButton("Senders…",()=>_=ChooseLinkSenders()));
         actions.Children.Add(QuickButton("Received files", OpenBlipDownloads)); page.Children.Add(actions);
+        AddLiveBlipTransfers("Outgoing");
+        if (signedIn)
+            foreach (var queued in blipRelayQueued)
+                page.Children.Add(BlipTransferRow(new BlipTransfer { Id = queued.id, Peer = queued.peer,
+                    ItemNames = [queued.label], Direction = "Outgoing", Status = "QueuedForRelay" }, queuedRelay: true));
         RenderBlipRecipients();
         if (!blip.RuntimeAvailable && !diagnosticMode) page.Children.Add(Card(Text("The myDrive Blip helper is missing. Reinstall myDrive.", 12)));
         string failure = blipFailure.Length > 0 ? blipFailure : blip.LastError;
@@ -176,7 +198,12 @@ public sealed partial class MainWindow
         if (running && BlipDesktop && !signedIn) page.Children.Add(Text("Sign in in the Blip desktop app, then refresh here.", 12));
         if (running && !signedIn && !BlipDesktop) page.Children.Add(Text("Use your Blip account to connect this computer as a separate device. Sign-in starts only when you choose Connect Blip.", 12));
         if (running && signedIn && !BlipDesktop && blipSnapshot?.Status.ReceivePolicyVerified != true) page.Children.Add(Text("Wait for receiving settings to verify before sending files to this computer.", 12));
-        var transfers = blipSnapshot?.Transfers.Where(transfer => transfer.IsLive).ToList();
+        AddLiveBlipTransfers("Incoming");
+    }
+
+    private void AddLiveBlipTransfers(string direction)
+    {
+        var transfers = blipSnapshot?.Transfers.Where(t => t.IsLive && t.Direction == direction).ToList();
         if (transfers is { Count: > 0 })
         {
             // ListView virtualizes rows and keeps the compact window at the existing fixed size.
@@ -185,13 +212,19 @@ public sealed partial class MainWindow
             page.Children.Add(list);
         }
     }
-    private UIElement BlipTransferRow(BlipTransfer transfer)
+    private UIElement BlipTransferRow(BlipTransfer transfer, bool queuedRelay = false)
     {
         var row = new Grid { ColumnSpacing = 6, MinHeight = 44, Padding = new Thickness(0, 3, 0, 3) };
         row.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) }); row.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
-        string peer = blipSnapshot?.Devices.FirstOrDefault(d => d.Peer.Equals(transfer.Peer, StringComparison.OrdinalIgnoreCase))?.ToString() ?? "Previous device";
-        string title = blipSentNames.GetValueOrDefault(transfer.Id, (transfer.Direction == "Incoming" ? "From " : "To ") + peer);
-        var detail = new StackPanel { Spacing = 2 }; detail.Children.Add(QuickText(title, 13, true)); detail.Children.Add(QuickText(transfer.ProgressLabel + (BlipRunning ? "" : " · last known"), 12)); row.Children.Add(detail);
+        string peer = BlipPeerCaption(transfer.Peer);
+        bool outgoing = transfer.Direction == "Outgoing";
+        string title = outgoing ? blipSentNames.GetValueOrDefault(transfer.Id,
+            transfer.ItemNames.FirstOrDefault() ?? "Outgoing transfer") : peer;
+        var detail = new StackPanel { Spacing = 2 };
+        detail.Children.Add(QuickText(title, 13, true));
+        detail.Children.Add(QuickText((outgoing ? peer + " · " : "") + (queuedRelay ? "Queued for relay" : transfer.ProgressLabel) +
+            (BlipRunning ? "" : " · last known"), 12));
+        row.Children.Add(detail);
         ToolTipService.SetToolTip(row, title + "\n" + transfer.Id + "\n" + transfer.Peer); AutomationProperties.SetName(row, title + ", " + transfer.StateLabel);
         if (transfer.AwaitingAcceptance && blipAutoAccepted.ContainsKey(transfer.Id))
         {
@@ -201,7 +234,42 @@ public sealed partial class MainWindow
         {
             var accept = QuickButton("Receive", () => _ = AcceptBlip(transfer)); accept.IsEnabled = BlipRunning && blipSnapshot?.Status.Authenticated == true && (BlipDesktop || blipSnapshot.Status.ReceivePolicyVerified) && !busy; Grid.SetColumn(accept, 1); row.Children.Add(accept);
         }
+        else if (outgoing)
+        {
+            bool cancelling = cancellingBlipSends.Contains(transfer.Id);
+            var stop = QuickButton(cancelling ? "Cancelling…" : "Cancel", () => _ = CancelBlipSend(transfer, queuedRelay));
+            stop.IsEnabled = !cancelling && BlipRunning && BlipOwner.Length > 0;
+            AutomationProperties.SetName(stop, "Cancel send of " + title);
+            Grid.SetColumn(stop, 1);
+            row.Children.Add(stop);
+        }
         return row;
+    }
+
+    private async Task CancelBlipSend(BlipTransfer transfer, bool queuedRelay)
+    {
+        var owner = BlipOwner;
+        if (diagnosticMode || owner.Length == 0 || !cancellingBlipSends.Add(transfer.Id)) return;
+        Render();
+        try
+        {
+            if (queuedRelay)
+            {
+                await CoreBridge.Call(new { action = "relay.cancel", data_dir = CoreBridge.DataDir,
+                    payload = new { @self = owner, id = transfer.Id } });
+                if (BlipOwner == owner)
+                    blipRelayQueued = blipRelayQueued.Where(item => item.id != transfer.Id).ToList();
+                Interlocked.Exchange(ref nextRelayDiscovery, 0);
+            }
+            else await blip.CancelSendAsync(owner, transfer.Id);
+        }
+        catch (Exception error) { if (owner == BlipOwner) Error(error); }
+        finally
+        {
+            cancellingBlipSends.Remove(transfer.Id);
+            await RefreshBlip();
+            if (currentView == "transfers") Render();
+        }
     }
     private (ContentDialog Dialog, RadioButton Desktop) BlipConnectionDialog()
     {
@@ -243,7 +311,7 @@ public sealed partial class MainWindow
         var snapshot=blipSnapshot;if(snapshot?.Status.Authenticated!=true)return;
         var account=snapshot.Status.UserId;bool same=Preferences.Current.BlipAutoOpenAccount.Equals(account,StringComparison.OrdinalIgnoreCase);
         var content=new StackPanel{Spacing=7,MaxWidth=compact?274:460};
-        var choices=new List<(string Peer,CheckBox Files,CheckBox Links,TextBox Name,string Initial,string Nickname)>();
+        var choices=new List<(string Peer,CheckBox Files,CheckBox Links,TextBox Name,string Initial)>();
         var devices=snapshot.Devices.Where(d=>BlipTrustPolicy.ExactPeer(d.Peer)&&!d.Peer.Equals(account+":"+snapshot.Status.DeviceId,StringComparison.OrdinalIgnoreCase)).ToList();
         foreach(var group in devices.GroupBy(d=>d.Peer.Split(':')[0],StringComparer.OrdinalIgnoreCase)) {
             string person = group.Key.Equals(account, StringComparison.OrdinalIgnoreCase)
@@ -253,7 +321,7 @@ public sealed partial class MainWindow
             ToolTipService.SetToolTip(heading, person);
             content.Children.Add(heading);
             foreach(var device in group.OrderBy(d=>d.Name).ThenBy(d=>d.Peer)) {
-                string name = device.DisplayName;
+                string name = BlipDeviceName(device);
                 var deviceCard = new StackPanel { Spacing = 3 };
                 var label = new TextBox { Text = name, FontSize = 12, MinHeight = 28,
                     Padding = new Thickness(5, 3, 5, 3), MaxLength = 80, Visibility = Visibility.Collapsed };
@@ -283,19 +351,22 @@ public sealed partial class MainWindow
                 deviceCard.Children.Add(permissions);
                 content.Children.Add(new Border { Child = deviceCard, Padding = new Thickness(7), CornerRadius = new CornerRadius(6),
                     BorderThickness = new Thickness(1), BorderBrush = Brush("DividerStrokeColorDefaultBrush") });
-                choices.Add((device.Peer, files, links, label, name, device.Nickname));
+                choices.Add((device.Peer, files, links, label, name));
             }
         }
         if(choices.Count==0)content.Children.Add(Text("No senders available yet.",12));
         var dialog=new ContentDialog{XamlRoot=root.XamlRoot,Title="Sender permissions",Content=new ScrollViewer{Content=content,MaxHeight=compact?235:440},PrimaryButtonText="Save",CloseButtonText="Cancel",DefaultButton=ContentDialogButton.Close};
-        if(await ShowDialog(dialog)!=ContentDialogResult.Primary||diagnosticMode)return;
+        if(await ShowDialog(dialog)!=ContentDialogResult.Primary||diagnosticMode||BlipOwner !=
+            (account + ":" + snapshot.Status.DeviceId).ToLowerInvariant())return;
         lock(blipPolicyGate) {
             Preferences.Current.BlipAutoOpenAccount=account;
             Preferences.Current.BlipAutoOpenPeers=choices.Where(c=>c.Links.IsChecked==true).Select(c=>c.Peer).ToList();
             Preferences.Current.BlipAutoReceivePeers=choices.Where(c=>c.Files.IsChecked==true).Select(c=>c.Peer).ToList();
             Preferences.Save();
         }
-        SenderCatalog.SetNicknames(account,choices.Select(c=>(c.Peer,c.Name.Text==c.Initial?c.Nickname:c.Name.Text)));
+        foreach (var choice in choices.Where(c => c.Name.Text != c.Initial))
+            if (devices.Find(d => d.Peer == choice.Peer) is { } device)
+                SaveBlipDeviceName(account, device, choice.Name.Text);
         await RefreshBlip();
     }
     private async Task StartBlip()
@@ -365,7 +436,7 @@ public sealed partial class MainWindow
         BlipDevice? clickedPeer = null;
         foreach (var device in devices)
         {
-            var title = QuickText(device.ToString(), 13);
+            var title = QuickText(BlipDeviceCaption(device), 13);
             var send = QuickButton("", () =>
             {
                 if (clickedPeer != null || nativePickerDepth > 0) return;
@@ -441,7 +512,9 @@ public sealed partial class MainWindow
     private void EditRecipientName(ContentDialog dialog, StackPanel recipients, string owner,
                                    BlipDevice device, TextBlock name, Button send)
     {
-        var input = new TextBox { Header = "Device name", Text = device.Nickname, PlaceholderText = device.DisplayName,
+        var input = new TextBox { Header = "Device name", Text = recentRecipients.Find(r =>
+            r.peer.Equals(device.Peer, StringComparison.OrdinalIgnoreCase))?.nickname ?? device.Nickname,
+            PlaceholderText = BlipDeviceName(device),
             MaxLength = 80 };
         var form = new StackPanel { Spacing = 8 };
         form.Children.Add(input);
@@ -456,7 +529,7 @@ public sealed partial class MainWindow
             }
             try { SaveBlipDeviceName(status.UserId, device, input.Text); }
             catch (IOException error) { Error(error); return; }
-            name.Text = device.ToString();
+            name.Text = BlipDeviceCaption(device);
             AutomationProperties.SetName(send, "Send to " + name.Text);
             ToolTipService.SetToolTip(send, name.Text);
             dialog.Content = recipients;
@@ -471,7 +544,13 @@ public sealed partial class MainWindow
     {
         if (!diagnosticMode) SenderCatalog.SetNicknames(account, new[] { (device.Peer, name) });
         device.Nickname = new string(name.Trim().Where(c => !char.IsControl(c)).Take(80).ToArray());
-        device.SelectionName = "";
+        var index = recentOwner == BlipOwner ? recentRecipients.FindIndex(r =>
+            r.peer.Equals(device.Peer, StringComparison.OrdinalIgnoreCase)) : -1;
+        if (index >= 0)
+        {
+            recentRecipients[index] = recentRecipients[index] with { nickname = device.Nickname };
+            _ = UpdateRecentRecipients("rename", BlipOwner, target: device.Peer, name: device.Nickname);
+        }
     }
 
     private Task AcceptBlip(BlipTransfer transfer)=>ReceiveFromBlipNotice(transfer);

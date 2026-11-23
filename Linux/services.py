@@ -193,6 +193,8 @@ class Blip:
         "sign_in_required": "Sign in to Blip to send or receive files.",
         "activity_unavailable": "myDrive could not read saved Send activity.",
         "activity_retry_unavailable": "This transfer can no longer be retried safely. Select the files again to send them.",
+        "cancel_not_active": "This send is no longer active. Refresh to check its status.",
+        "cancel_unconfirmed": "Blip hasn’t confirmed the cancellation. Refresh to check the send.",
         "search_unavailable": "Blip search is unavailable. Try again in a moment.",
         "invalid_search": "Enter a name or email address.",
         "accept_not_waiting": "This transfer is no longer waiting. Refresh to check its status.",
@@ -270,7 +272,9 @@ class Blip:
         self.arguments = True
 
     def command(self, action, *options):
-        mode = ["--desktop"] if self.desktop and action in {"poll", "send", "accept", "search", "activity", "retry"} else []
+        mode = ["--desktop"] if self.desktop and action in {
+            "poll", "send", "accept", "search", "activity", "retry", "cancel", "publish-name"
+        } else []
         return [self.executable, "--blip-engine", action, "--profile", str(self.profile), *mode, *options]
 
     def invoke(self, action, *options, input_text=""):
@@ -294,8 +298,10 @@ class Blip:
             return self.invoke(command, "--id", values[0], "--execute")
         if command == "activity":
             return self.invoke(command, input_text=values[0])
-        if command == "retry":
+        if command in {"retry", "cancel"}:
             return self.invoke(command, "--id", values[1], "--execute", input_text=values[0])
+        if command == "publish-name":
+            return self.invoke(command, "--name", os.uname().nodename, input_text=values[0])
         if command == "send":
             peer, request_id, *paths = values
             return self.invoke(command, "--peer", peer, "--id", request_id, "--execute", "--", *paths)

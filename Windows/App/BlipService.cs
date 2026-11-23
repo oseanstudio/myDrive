@@ -67,7 +67,7 @@ public sealed class BlipService : IAsyncDisposable
         };
         info.ArgumentList.Add(fixture ? Path.Combine(bundle, "cli.mjs") : "--blip-engine"); info.ArgumentList.Add(command);
         info.ArgumentList.Add("--profile"); info.ArgumentList.Add(profile);
-        if (attachedSocket != null && command is "status" or "devices" or "transfers" or "poll" or "send" or "accept" or "search" or "activity" or "retry")
+        if (attachedSocket != null && command is "status" or "devices" or "transfers" or "poll" or "send" or "accept" or "search" or "activity" or "retry" or "cancel" or "publish-name")
         {
             if (fixture) { info.ArgumentList.Add("--socket"); info.ArgumentList.Add(attachedSocket); }
             else info.ArgumentList.Add("--desktop");
@@ -145,6 +145,8 @@ public sealed class BlipService : IAsyncDisposable
         "sign_in_required" => "Sign in to Blip first.",
         "activity_unavailable" => "myDrive could not read saved Send activity.",
         "activity_retry_unavailable" => "This transfer can no longer be retried safely. Select the files again to send them.",
+        "cancel_not_active" => "This send is no longer active. Refresh to check its status.",
+        "cancel_unconfirmed" => "Blip hasn’t confirmed the cancellation. Refresh to check the send.",
         "search_unavailable" => "Blip search is unavailable. Try again in a moment.",
         "invalid_search" => "Enter a name or email address.",
         _ => "Blip could not confirm the request. Refresh before trying again."
@@ -361,6 +363,12 @@ public sealed class BlipService : IAsyncDisposable
 
     public Task<JsonElement> RetryAsync(string owner, string id, CancellationToken token = default) =>
         CommandAsync("retry", new[] { "--id", id, "--execute" }, owner, token);
+
+    public Task<JsonElement> CancelSendAsync(string owner, string id, CancellationToken token = default) =>
+        CommandAsync("cancel", new[] { "--id", id, "--execute" }, owner, token);
+
+    public Task<JsonElement> PublishNameAsync(string owner, CancellationToken token = default) =>
+        CommandAsync("publish-name", new[] { "--name", Environment.MachineName }, owner, token);
 
     public async Task AcceptAsync(string id, CancellationToken token = default)
     {

@@ -30,6 +30,11 @@ struct BlipRecentRecipient: Codable, Identifiable {
         return isType(label) ? "Device" : label
     }
 }
+struct BlipQueuedSend: Codable, Identifiable {
+    let id: String
+    let peer: String
+    let label: String
+}
 
 /// Uses the same-user local socket served by the headless helper or an existing Blip session.
 @MainActor final class BlipReceiver: ObservableObject {
@@ -44,6 +49,7 @@ struct BlipRecentRecipient: Codable, Identifiable {
     @Published private(set) var preparingSend = false
     @Published private(set) var sendMessage: String?
     @Published private(set) var relayWaiting = 0
+    @Published private(set) var relayQueued: [BlipQueuedSend] = []
     @Published private(set) var receiving = Set<String>()
     @Published private(set) var recentRecipients: [BlipRecentRecipient] = []
     @Published private(set) var directoryRecipients: [BlipPeer] = []
@@ -62,6 +68,13 @@ struct BlipRecentRecipient: Codable, Identifiable {
     private let client = BlipMacClient()
     private var adapterAvailable = false
     private var receiveReady = false
+    private var nextReceiveSetup = Date.distantPast
+    private var receiveSetupProblem: String?
+    private var receivedPolicyOwner = ""
+    private var nextReceiveAttempt = [String: Date]()
+    private var nextNamePublish = Date.distantPast
+    private var namingOwner = ""
+    @Published private(set) var cancellingSends = Set<String>()
     private var activity: NSObjectProtocol?
     private var backgroundProcess: Process?
     private var backgroundInput: FileHandle?
@@ -221,7 +234,7 @@ struct BlipRecentRecipient: Codable, Identifiable {
 
     private func updateRelay(_ snapshot: JSON, owner: String, rawTransfers: [BlipTransfer]) async throws {
         if relaySession != owner {
-            relayReceived.removeAll(); relaySession = owner; relayTransportState = ""; nextRelayDiscovery = .distantPast
+            relayReceived.removeAll(); relayQueued = []; relaySession = owner; relayTransportState = ""; nextRelayDiscovery = .distantPast
         }
         let transports = rawTransfers.filter {
             sameAccount($0.peer, account) && $0.item_names?.count == 1 &&
@@ -240,6 +253,8 @@ struct BlipRecentRecipient: Codable, Identifiable {
         relayTransportState = transportState
         nextRelayDiscovery = now.addingTimeInterval(30)
         relayWaiting = Int(result.int64("waiting"))
+        relayQueued = try JSONDecoder().decode([BlipQueuedSend].self,
+            from: JSONSerialization.data(withJSONObject: result.array("queued")))
         let command = result.dict("command")
         let id = command.str("id")
         switch command.str("action") {
@@ -391,9 +406,8 @@ struct BlipRecentRecipient: Codable, Identifiable {
     }
     func refreshConnection() async {
         if backgroundProcess == nil { nextHostAttempt = .distantPast }
-        if connected, !receiveReady {
-            _ = try? await BlipMacClient.request("configure-receive", [:])
-        }
+        nextReceiveSetup = .distantPast
+        nextReceiveAttempt.removeAll()
         await refresh()
     }
 
@@ -451,7 +465,31 @@ struct BlipRecentRecipient: Codable, Identifiable {
             let data = try JSONSerialization.data(withJSONObject:value.array("transfers"))
             let rawTransfers = try JSONDecoder().decode([BlipTransfer].self, from:data)
             selfPeer = identity
-            var receiveProblem: String?
+            if receivedPolicyOwner != identity {
+                receivedPolicyOwner = identity
+                nextReceiveSetup = .distantPast
+                receiveSetupProblem = nil
+                nextReceiveAttempt.removeAll()
+            }
+            if receiveReady { receiveSetupProblem = nil }
+            if managed, !receiveReady, Date() >= nextReceiveSetup {
+                nextReceiveSetup = Date().addingTimeInterval(30)
+                do {
+                    _ = try await BlipMacClient.request("configure-receive", [:])
+                    receiveSetupProblem = nil
+                } catch { receiveSetupProblem = error.localizedDescription }
+            }
+            if namingOwner != identity {
+                namingOwner = identity
+                nextNamePublish = .distantPast
+            }
+            if status["current_device_named"] as? Bool != true, Date() >= nextNamePublish,
+               let name = Host.current().localizedName, !name.isEmpty {
+                nextNamePublish = Date().addingTimeInterval(5 * 60)
+                let result = try? await BlipMacClient.request("publish-name", ["owner": identity, "name": name])
+                if result != nil && status["current_device_named"] as? Bool == nil { nextNamePublish = .distantFuture }
+            }
+            var receiveProblem = receiveSetupProblem
             if receiveReady {
                 do { try await updateRelay(value, owner: identity, rawTransfers: rawTransfers) }
                 catch { receiveProblem = "A relay action needs attention. Stored files are kept." }
@@ -460,6 +498,7 @@ struct BlipRecentRecipient: Codable, Identifiable {
                 !sameAccount($0.peer, account) || ($0.item_names?.count != 1 || $0.item_names?.first?.hasPrefix("mydrive-relay-v1.") != true)
             } + relayReceived.values.sorted { $0.id < $1.id }
             receiving.formIntersection(Set(transfers.filter(\.pending).map(\.id)))
+            nextReceiveAttempt = nextReceiveAttempt.filter { key, _ in transfers.contains { $0.id == key && $0.pending } }
             let incomingPeers=try JSONDecoder().decode([BlipPeer].self, from: JSONSerialization.data(withJSONObject:value.array("devices")))
             selfPeer = identity
             connectedPeers = Set(incomingPeers.filter { $0.history != true }.map(\.peer))
@@ -488,14 +527,18 @@ struct BlipRecentRecipient: Codable, Identifiable {
                 let live = !transfer.has_error && ["Invited","Pending","Active","Paused","ResumeRequested"].contains(transfer.status)
                 if changed && (!baseline || live) {NotificationCenter.default.post(name:.myDriveIncomingBlip,object:transfer.id)}
             }
-            for transfer in transfers where receiveReady && transfer.pending {
+            for transfer in transfers where receiveReady && transfer.pending && !receiving.contains(transfer.id) {
                 if policy.autoReceive(transfer,account:account,openLinks:autoOpen) {
-                    if try claims.claim(identity+":accept:"+transfer.id) {
+                    let mark = identity + ":accept:" + transfer.id
+                    if !claims.contains(mark), Date() >= (nextReceiveAttempt[transfer.id] ?? .distantPast) {
                         receiving.insert(transfer.id)
                         do {
                             _ = try await BlipMacClient.request("accept", ["id": transfer.id, "owner": identity])
+                            try claims.claim(mark)
                         } catch {
-                            receiving.remove(transfer.id); problem = error.localizedDescription
+                            receiving.remove(transfer.id)
+                            nextReceiveAttempt[transfer.id] = Date().addingTimeInterval(15)
+                            problem = error.localizedDescription
                         }
                     }
                 }
@@ -571,9 +614,12 @@ struct BlipRecentRecipient: Codable, Identifiable {
     func isTrusted(_ peer: BlipPeer) -> Bool { policy.account.lowercased()==account.lowercased() && policy.peers.contains(peer.peer.lowercased()) }
     func isFileTrusted(_ peer:BlipPeer)->Bool {policy.account.lowercased()==account.lowercased() && policy.files.contains(peer.peer.lowercased())}
     func deviceName(_ peer:BlipPeer)->String {
-        let person=peer.peer.split(separator:":").first
-        let same=peers.filter{$0.peer.split(separator:":").first==person && $0.displayName.caseInsensitiveCompare(peer.displayName) == .orderedSame}.sorted{$0.peer<$1.peer}
-        return same.count>1 ? peer.displayName+" "+String((same.firstIndex(where:{$0.peer==peer.peer}) ?? 0)+1) : peer.displayName
+        let match = peers.first { $0.peer.caseInsensitiveCompare(peer.peer) == .orderedSame }
+        let recent = recentRecipients.first { $0.peer.caseInsensitiveCompare(peer.peer) == .orderedSame }
+        if let nickname = recent?.nickname, !nickname.isEmpty { return nickname }
+        if let nickname = match?.nickname, !nickname.isEmpty { return nickname }
+        if let match, match.hasDeviceName { return match.displayName }
+        return peer.hasDeviceName ? peer.displayName : match?.displayName ?? peer.displayName
     }
     func recipientLabel(_ peer: BlipPeer) -> String {
         let label = deviceName(peer)
@@ -581,16 +627,16 @@ struct BlipRecentRecipient: Codable, Identifiable {
         return peer.hasDeviceName ? label + " · " + person : person + " · " + label
     }
     func senderLabel(_ identity: String) -> String {
-        guard let peer = peers.first(where: { $0.peer.caseInsensitiveCompare(identity) == .orderedSame }) else {
-            return "Previous device"
-        }
+        let peer = (peers + directoryRecipients).first { $0.peer.caseInsensitiveCompare(identity) == .orderedSame }
+            ?? BlipPeer(peer: identity, name: "")
         return recipientLabel(peer)
     }
     @discardableResult func rename(_ peer:BlipPeer) -> BlipPeer? {
         let owner = account
         let alert=NSAlert();alert.messageText="Device name";alert.informativeText="Choose a name for this device in myDrive.";alert.addButton(withTitle:"Save");alert.addButton(withTitle:"Cancel")
         alert.window.appearance = AppDelegate.appearance(for: PrefStore.shared.preferences.appearance)
-        let input=NSTextField(string:peer.nickname ?? "");input.placeholderString=peer.displayName;input.frame=NSRect(x:0,y:0,width:280,height:24);alert.accessoryView=input
+        let recent = recentRecipients.first { $0.peer.caseInsensitiveCompare(peer.peer) == .orderedSame }
+        let input=NSTextField(string:recent?.nickname ?? peer.nickname ?? "");input.placeholderString=deviceName(peer);input.frame=NSRect(x:0,y:0,width:280,height:24);alert.accessoryView=input
         guard alert.runModal() == .alertFirstButtonReturn, owner == account, let contacts else {return nil}
         do {
             try contacts.setNickname(account: owner, peer: peer.peer, name: input.stringValue)
@@ -598,6 +644,15 @@ struct BlipRecentRecipient: Codable, Identifiable {
             changed.nickname = String(input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
                 .filter { !$0.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) }.prefix(80))
             if let index = peers.firstIndex(where: { $0.peer == peer.peer }) { peers[index].nickname = changed.nickname }
+            if recent != nil {
+                let name = changed.nickname
+                let identity = selfPeer
+                let peerID = peer.peer
+                if let index = recentRecipients.firstIndex(where: { $0.peer.caseInsensitiveCompare(peerID) == .orderedSame }) {
+                    recentRecipients[index].nickname = name?.isEmpty == false ? name : nil
+                }
+                Task { await updateRecents("rename", owner: identity, target: peerID, name: name) }
+            }
             return changed
         } catch {
             problem = "The device name could not be saved."
@@ -606,20 +661,44 @@ struct BlipRecentRecipient: Codable, Identifiable {
     }
     func receive(_ transfer: BlipTransfer) {
         let owner = selfPeer
-        guard receiveReady else {
-            problem = "Allow myDrive access to Downloads, then click Refresh to receive."
-            return
-        }
         guard !owner.isEmpty, transfer.pending, UUID(uuidString: transfer.id) != nil,
               BlipPolicy.exactPeer(transfer.peer), receiving.insert(transfer.id).inserted else { return }
         Task {
             do {
-                try claims?.claim(owner + ":accept:" + transfer.id)
                 _ = try await BlipMacClient.request("accept", ["id": transfer.id, "owner": owner])
+                try claims?.claim(owner + ":accept:" + transfer.id)
                 await refresh()
             } catch {
                 receiving.remove(transfer.id)
                 problem = error.localizedDescription
+            }
+        }
+    }
+    func cancelSend(_ transfer: BlipTransfer) {
+        guard transfer.direction == "Outgoing", transfer.isLive else { return }
+        cancelOutgoing(id: transfer.id, relay: false)
+    }
+    func cancelQueuedSend(_ item: BlipQueuedSend) {
+        cancelOutgoing(id: item.id, relay: true)
+    }
+    private func cancelOutgoing(id: String, relay: Bool) {
+        let owner = selfPeer
+        guard !owner.isEmpty, cancellingSends.insert(id).inserted else { return }
+        Task {
+            defer { cancellingSends.remove(id) }
+            do {
+                if relay {
+                    _ = try await CoreBridge.shared.call(action: "relay.cancel", request: [
+                        "data_dir": Paths.dataDir.path, "payload": ["id": id, "self": owner]
+                    ])
+                    if selfPeer == owner { relayQueued.removeAll { $0.id == id } }
+                    nextRelayDiscovery = .distantPast
+                } else {
+                    _ = try await BlipMacClient.request("cancel", ["id": id, "owner": owner])
+                }
+                await refresh()
+            } catch {
+                if selfPeer == owner { reportSend(error.localizedDescription) }
             }
         }
     }

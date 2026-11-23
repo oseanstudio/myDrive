@@ -108,7 +108,7 @@ public sealed partial class MainWindow : Window
         AppWindow.Closing+=(_,e)=>{if(!quitting&&tray!=null){e.Cancel=true;AppWindow.Hide();}};
         Closed+=(_,_)=>{popupInput.Dispose();StopSmbMonitoring();updateTimer.Stop();autoUpdateTimer.Stop();tray?.Dispose();operation?.Cancel();smbHosting.Dispose();};
         AppWindow.Changed+=(_,e)=>{if(compact&&AppWindow.IsVisible)popupInput.Start();else popupInput.Stop();UpdateSmbView();UpdateBlipView();};
-        Activated+=(_,e)=>{if(e.WindowActivationState==WindowActivationState.Deactivated)DispatcherQueue.TryEnqueue(()=>{if(!diagnosticMode&&!PopupInput.OurForeground()&&tray?.PointerInside()!=true)DismissQuickPopup();});};
+        Activated+=(_,e)=>{if(e.WindowActivationState==WindowActivationState.Deactivated)DispatcherQueue.TryEnqueue(()=>{if(!diagnosticMode&&!PopupInput.OurForeground()&&tray?.PointerInside()!=true&&!popupInput.TrackingPress&&!LeftMousePressed())DismissQuickPopup();});};
         healthTimer.Tick+=async(_,_)=>await MonitorSmb();
         if(!diagnosticMode)NetworkChange.NetworkAddressChanged+=OnSmbNetworkChanged;
         navigation.SelectedItem=navigation.MenuItems[1];

@@ -1,3 +1,4 @@
+pub(crate) mod activity;
 #[cfg(windows)]
 #[path = "blip/host_windows.rs"]
 mod host;
@@ -6,7 +7,6 @@ mod host;
 mod host;
 #[cfg(target_os = "macos")]
 pub(crate) mod mac;
-pub(crate) mod activity;
 mod rpc;
 mod state;
 
@@ -392,6 +392,9 @@ impl Session {
         #[cfg(not(target_os = "macos"))]
         create_plain_directory(&self.inbox)?;
         let destination = self.inbox.join(id);
+        #[cfg(target_os = "macos")]
+        mac::prepare_inbox(&destination)?;
+        #[cfg(not(target_os = "macos"))]
         create_plain_directory(&destination)?;
         self.dispatch(
             "TransferAcceptanceRequested",
@@ -417,6 +420,27 @@ impl Session {
                 );
             }
             if waiting(item) {
+                #[cfg(target_os = "macos")]
+                if !self.desktop && initial.status["receive_policy_verified"] != true {
+                    mac::configure_receive(self)?;
+                    let deadline = Instant::now() + Duration::from_secs(2);
+                    loop {
+                        let status = self.snapshot()?.status;
+                        if status["user_id"] != initial.status["user_id"]
+                            || status["device_id"] != initial.status["device_id"]
+                        {
+                            return Err("sign_in_required");
+                        }
+                        if status["receive_policy_verified"] == true {
+                            break;
+                        }
+                        if Instant::now() >= deadline {
+                            return Err("receive_policy_unconfirmed");
+                        }
+                        thread::sleep(Duration::from_millis(125));
+                    }
+                }
+                #[cfg(not(target_os = "macos"))]
                 if !self.desktop && initial.status["receive_policy_verified"] != true {
                     return Err("receive_policy_unconfirmed");
                 }
@@ -446,6 +470,86 @@ impl Session {
             }
         }
         Ok(json!({"ok": false, "error": "accept_not_waiting", "native_status": last}))
+    }
+
+    fn cancel_send(&self, args: &Arguments, initial: &Snapshot) -> Result<Value> {
+        let id = args
+            .id
+            .as_deref()
+            .filter(|id| uuid(id) && args.execute)
+            .ok_or("invalid_transfer_id")?;
+        let transfer = initial
+            .transfer(id)
+            .filter(|transfer| transfer["direction"] == "Outgoing")
+            .ok_or("cancel_not_active")?;
+        if transfer["status"] == "Cancelled" {
+            return Ok(json!({"ok": true, "native_status": "Cancelled"}));
+        }
+        if transfer["completed"] == true
+            || transfer["dismissed"] == true
+            || !matches!(
+                transfer["status"].as_str(),
+                Some(
+                    "Created"
+                        | "InviteRequested"
+                        | "Invited"
+                        | "Pending"
+                        | "Active"
+                        | "Paused"
+                        | "ResumeRequested"
+                )
+            )
+        {
+            return Err("cancel_not_active");
+        }
+        self.dispatch("TransferCancellationRequested", string(1, id))?;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            let current = self.snapshot()?;
+            if activity::owner(&current) != activity::owner(initial) {
+                return Err("sign_in_required");
+            }
+            if let Some(transfer) = current.transfer(id) {
+                if transfer["status"] == "Cancelled" {
+                    if let Ok(data) = crate::automation::user_data() {
+                        let _ = activity::result(
+                            &data,
+                            &activity::owner(initial),
+                            id,
+                            "Cancelled",
+                            None,
+                        );
+                    }
+                    return Ok(json!({"ok": true, "native_status": "Cancelled"}));
+                }
+                if transfer["completed"] == true {
+                    return Err("cancel_not_active");
+                }
+            }
+            thread::sleep(Duration::from_millis(125));
+        }
+        Err("cancel_unconfirmed")
+    }
+
+    fn publish_name(&self, args: &Arguments, snapshot: &Snapshot) -> Result<Value> {
+        let name = args
+            .name
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| state::descriptive_device_name(name))
+            .ok_or("invalid_device_name")?;
+        let device = snapshot.status["device_id"]
+            .as_str()
+            .filter(|device| uuid(device))
+            .ok_or("sign_in_required")?;
+        if snapshot.status["current_device_named"] == true {
+            return Ok(json!({"ok": true, "status": "already_named"}));
+        }
+        self.dispatch(
+            "UpdateDevice",
+            [string(1, device), string(2, name)].concat(),
+        )?;
+        Ok(json!({"ok": true, "status": "requested"}))
     }
 
     fn send(&self, args: &Arguments, snapshot: Snapshot) -> Result<Value> {
@@ -494,14 +598,24 @@ impl Session {
             paths.push(path);
         }
         let owner = activity::owner(&snapshot);
-        let data = crate::automation::user_data().ok().filter(|_| !paths.iter().any(|path|
-            path.components().any(|part| part.as_os_str().to_string_lossy().starts_with("mydrive-relay-v1."))));
+        let data = crate::automation::user_data().ok().filter(|_| {
+            !paths.iter().any(|path| {
+                path.components().any(|part| {
+                    part.as_os_str()
+                        .to_string_lossy()
+                        .starts_with("mydrive-relay-v1.")
+                })
+            })
+        });
         if let Some(data) = &data {
-            if activity::record(data, &owner, exact, &id, &paths, false) == Err("transfer_id_exists") {
+            if activity::record(data, &owner, exact, &id, &paths, false)
+                == Err("transfer_id_exists")
+            {
                 return Err("transfer_id_exists");
             }
         }
-        let dispatch = self.dispatch("TransferCreateRequested", route.clone())
+        let dispatch = self
+            .dispatch("TransferCreateRequested", route.clone())
             .and_then(|()| self.dispatch("TransferAddContentRequested", content))
             .and_then(|()| self.dispatch("TransferInviteRequested", route));
         if let Some(data) = &data {
@@ -783,7 +897,9 @@ fn command(args: &Arguments) -> Result<Value> {
         _ => {}
     }
     let expected = match args.command.as_str() {
-        "activity" | "retry" => Some(input_value(None, 128, "sign_in_required")?),
+        "activity" | "retry" | "cancel" | "publish-name" => {
+            Some(input_value(None, 128, "sign_in_required")?)
+        }
         _ => None,
     };
     client_command(&session, args, None, expected.as_deref().map(str::trim))
@@ -816,6 +932,8 @@ fn client_command(
         "send" if authenticated => session.send(args, snapshot)?,
         "activity" if authenticated => activity::list(&snapshot)?,
         "retry" if authenticated => activity::retry(session, args, snapshot)?,
+        "cancel" if authenticated => session.cancel_send(args, &snapshot)?,
+        "publish-name" if authenticated => session.publish_name(args, &snapshot)?,
         "accept" if authenticated => session.accept(args, snapshot)?,
         "search" if authenticated => session.search(&snapshot.status, input)?,
         "search-clear" if authenticated => {
@@ -824,7 +942,8 @@ fn client_command(
         }
         "login" => session.registration(false, snapshot, input)?,
         "verify" => session.registration(true, snapshot, input)?,
-        "send" | "accept" | "search" | "search-clear" | "activity" | "retry" => return Err("sign_in_required"),
+        "send" | "accept" | "search" | "search-clear" | "activity" | "retry" | "cancel"
+        | "publish-name" => return Err("sign_in_required"),
         _ => return Err("invalid_command"),
     };
     Ok(result)
@@ -973,6 +1092,10 @@ pub(crate) fn error_message(error: &str) -> &'static str {
         "sign_in_required" => "The Blip device is signed out.",
         "activity_unavailable" => "myDrive could not read saved Send activity.",
         "activity_retry_unavailable" => "This transfer can no longer be retried safely. Choose the files again to start a new send.",
+        "cancel_not_active" => "This send is no longer active. Refresh to check its status.",
+        "cancel_unconfirmed" => "Blip hasn’t confirmed the cancellation. Refresh to check the send.",
+        "receive_downloads_denied" => "macOS denied access to Downloads. Allow myDrive in System Settings → Privacy & Security → Files and Folders, then refresh.",
+        "receive_downloads_unavailable" => "myDrive couldn’t prepare the received-files folder in Downloads. Check that Downloads/myDrive is a writable folder, then refresh.",
         "native_connection_unavailable" => "The local Blip connection is unavailable.",
         "invalid_native_response" => "Blip returned a response myDrive could not read.",
         "native_response_too_large" => "Blip’s local response was too large to read.",

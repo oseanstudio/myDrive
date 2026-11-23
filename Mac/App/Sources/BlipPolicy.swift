@@ -18,8 +18,12 @@ struct BlipPeer: Identifiable, Codable {
         if let nickname, !nickname.isEmpty { return nickname }
         if name_known == true { return name }
         let type = kind.flatMap { $0.isEmpty ? nil : $0 } ?? name
-        if ["Phone", "Tablet", "Laptop", "Desktop"].contains(type) { return type }
-        return history == true ? "Previous device" : "Device"
+        let label = ["Phone", "Tablet", "Laptop", "Desktop"].contains(type) ? type : "Device"
+        return Self.fallbackName(peer, kind: label)
+    }
+    static func fallbackName(_ peer: String, kind: String = "Device") -> String {
+        guard BlipPolicy.exactPeer(peer) else { return "Previous device" }
+        return kind + " " + peer.suffix(6).uppercased()
     }
     var id: String { peer }
 }

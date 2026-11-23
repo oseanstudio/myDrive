@@ -6,6 +6,8 @@ namespace MyDrive;
 public sealed partial class MainWindow
 {
     private int blipRelayWaiting;
+    private sealed record QueuedBlipRelay(string id, string peer, string label);
+    private List<QueuedBlipRelay> blipRelayQueued = [];
     private string relaySession = "";
     private string relayTransportState = "";
     private long nextRelayDiscovery;
@@ -43,11 +45,12 @@ public sealed partial class MainWindow
         {
             relayReceived.Clear();
             blipRelayWaiting = 0;
+            blipRelayQueued = [];
             relaySession = "";
             return;
         }
         var own = status.UserId + ":" + status.DeviceId;
-        if (relaySession != own) { relayReceived.Clear(); relaySession = own; relayTransportState = ""; Interlocked.Exchange(ref nextRelayDiscovery, 0); }
+        if (relaySession != own) { relayReceived.Clear(); blipRelayQueued = []; relaySession = own; relayTransportState = ""; Interlocked.Exchange(ref nextRelayDiscovery, 0); }
         var transports = snapshot.Transfers.Where(t => IsRelayPacket(t) && SameBlipAccount(t.Peer, status.UserId)).ToArray();
         var states = string.Join("|", transports.OrderBy(t => t.Id, StringComparer.Ordinal)
             .Select(t => $"{t.Id}:{t.Status}:{t.Completed}:{t.HasError}"));
@@ -60,6 +63,8 @@ public sealed partial class MainWindow
         relayTransportState = states;
         Interlocked.Exchange(ref nextRelayDiscovery, now + 30_000);
         blipRelayWaiting = data.GetProperty("waiting").GetInt32();
+        blipRelayQueued = Items(data, "queued").Select(entry =>
+            new QueuedBlipRelay(S(entry, "id"), S(entry, "peer"), S(entry, "label"))).ToList();
         var command = data.GetProperty("command");
         if (command.ValueKind != JsonValueKind.Object) return;
         string id = command.GetProperty("id").GetString() ?? "";

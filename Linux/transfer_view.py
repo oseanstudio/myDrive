@@ -3,7 +3,7 @@
 import hashlib
 import os
 import tempfile
-from collections import Counter, defaultdict
+from collections import defaultdict
 from pathlib import Path
 from time import monotonic
 from urllib.parse import unquote, urlsplit
@@ -49,11 +49,14 @@ class TransferView:
         self.notice_states = {}
         self.relay_states = ()
         self.relay_waiting = 0
+        self.relay_queued = []
         self.next_relay_discovery = 0
         self.next_poll = 0
         self.delivery = None
         self.error = ""
         self.connecting_to_send = False
+        self.cancelling_sends = set()
+        self.next_name_publish = 0
         self.recipient_owner = ""
         self.recent_recipients = []
         self.directory_recipients = []
@@ -75,27 +78,32 @@ class TransferView:
         return peer.lower() if status.get("authenticated") and exact_peer(peer) else ""
 
     @staticmethod
-    def names(devices, catalog):
-        raw = {}
+    def fallback_name(peer, kind="Device"):
+        if kind not in {"Desktop", "Laptop", "Phone", "Tablet"}:
+            kind = "Device"
+        return f"{kind} {peer[-6:].upper()}" if exact_peer(peer) else "Previous device"
+
+    def device_name(self, device, catalog):
+        peer = device["peer"].lower()
+        recent = next((r for r in self.recent_recipients if r["peer"] == peer), None)
+        return ((recent or {}).get("nickname") or catalog.get(peer, {}).get("name")
+                or (device.get("name") if device.get("name_known") else None)
+                or self.fallback_name(peer, device.get("kind")))
+
+    def names(self, devices, catalog):
+        names = {}
         for device in devices:
             peer = device.get("peer")
             if not exact_peer(peer):
                 continue
             peer = peer.lower()
             contact = device.get("user_name") or device.get("contact") or ""
-            if nickname := catalog.get(peer, {}).get("name"):
-                title = nickname
-            elif device.get("name_known"):
-                title = device["name"]
-            else:
-                title = device.get("kind") or "Device"
-            raw[peer] = " · ".join(part for part in (contact, title) if part)
-        counts, ordinal = Counter(raw.values()), defaultdict(int)
-        names = {}
-        for peer, title in sorted(raw.items(), key=lambda item: (item[1].casefold(), item[0])):
-            ordinal[title] += 1
-            names[peer] = title if counts[title] == 1 else f"{title} {ordinal[title]}"
-        return names
+            names[peer] = " · ".join(part for part in (contact, self.device_name(device, catalog)) if part)
+        return dict(sorted(names.items(), key=lambda item: (item[1].casefold(), item[0])))
+
+    def peer_captions(self):
+        owner = self.owner(self.snapshot)
+        return self.names(self.directory_recipients + self.snapshot.get("devices", []), self.catalog(owner))
 
     def catalog(self, identity):
         return read_settings("blip-permissions.json", {}).get(identity.partition(":")[0], {})
@@ -114,11 +122,22 @@ class TransferView:
             baseline = self.identity != identity
             if baseline:
                 self.identity = identity
+                self.next_name_publish = 0
                 self.history = {str(UUID(t["transfer_id"])) for t in incoming if completed(t)}
                 self.notice_states = {}
                 self.relay_states = ()
                 self.relay_waiting = 0
+                self.relay_queued = []
                 self.next_relay_discovery = 0
+            named = snapshot.get("status", {}).get("current_device_named")
+            if not self.app.fixture and named is not True and monotonic() >= self.next_name_publish:
+                self.next_name_publish = monotonic() + 300
+                try:
+                    self.blip.request("publish-name", identity)
+                    if named is None:
+                        self.next_name_publish = float("inf")
+                except (OSError, RuntimeError):
+                    pass
             permissions = self.catalog(identity)
             receipts = set(read_settings("blip-receipts.json", []))
             urls, notices = [], []
@@ -139,8 +158,10 @@ class TransferView:
                 self.relay_states = states
                 self.next_relay_discovery = monotonic() + 30
                 self.relay_waiting = command.get("waiting", 0)
+                self.relay_queued = command.get("queued", [])
                 relay = command.get("command") or {}
             snapshot["relays"] = self.relay_waiting
+            snapshot["queued"] = self.relay_queued
             if relay.get("action") == "send":
                 self.blip.send(relay["peer"], relay["paths"], relay["id"])
             elif relay.get("action") == "accept":
@@ -235,6 +256,25 @@ class TransferView:
                              ("Sender permissions…", self.permissions),
                              ("Received files", lambda: self.app.open_path(self.blip.inbox))]))
         self.page.append(actions)
+        names = self.names(self.snapshot.get("devices", []), self.catalog(identity))
+        for transfer in self.snapshot.get("transfers", []):
+            if (transfer.get("direction") == "Outgoing" and not transfer.get("dismissed")
+                    and not transfer.get("completed") and not packet(transfer) and transfer.get("status") in self.LIVE):
+                identifier = transfer["transfer_id"]
+                waiting = identifier in self.cancelling_sends
+                stop = button("Cancelling…" if waiting else "Cancel", lambda t=transfer: self.cancel_send(t))
+                stop.set_sensitive(not waiting and bool(identity))
+                title = next(iter(transfer.get("item_names", [])), "Outgoing transfer")
+                stop.set_tooltip_text("Cancel send of " + title)
+                peer = transfer.get("peer", "").lower()
+                self.page.append(row(title, f"{names.get(peer, self.fallback_name(peer))} · {transfer['status']}", stop))
+        if identity:
+            for item in self.snapshot.get("queued", []):
+                waiting = item["id"] in self.cancelling_sends
+                stop = button("Cancelling…" if waiting else "Cancel", lambda q=item: self.cancel_send(q, relay=True))
+                stop.set_sensitive(not waiting)
+                peer = item["peer"].lower()
+                self.page.append(row(item["label"], f"{names.get(peer, self.fallback_name(peer))} · Queued for relay", stop))
         if self.recipient_owner != identity:
             self.recipient_owner = identity
             self.recent_recipients = []
@@ -256,9 +296,9 @@ class TransferView:
             self.recipient_entry.grab_focus()
         if waiting := self.snapshot.get("relays"):
             self.page.append(label(f"{waiting} waiting for relay or delivery"))
-        names = self.names(self.snapshot.get("devices", []), self.catalog(identity))
         for transfer in self.snapshot.get("transfers", []):
-            if transfer.get("dismissed") or packet(transfer) or transfer.get("status") not in self.LIVE:
+            if (transfer.get("direction") != "Incoming" or transfer.get("dismissed") or packet(transfer)
+                    or transfer.get("status") not in self.LIVE):
                 continue
             state = transfer.get("status", "")
             title = names.get(transfer.get("peer", "").lower(), "Previous device")
@@ -346,7 +386,7 @@ class TransferView:
             for peer, name in known.items():
                 if peer in my_devices:
                     nickname = aliases.get(peer)
-                    displayed = nickname or details.get(peer, ("", ""))[1] or name.rsplit(" · ", 1)[-1]
+                    displayed = details.get(peer, ("", ""))[1] or name.rsplit(" · ", 1)[-1]
                     self.add_recipient_row(owner, displayed, peer, nickname=nickname, device_shortcut=True)
         recents = [entry for entry in self.recent_recipients if entry["peer"] not in my_devices]
         if recents:
@@ -364,11 +404,10 @@ class TransferView:
             person = alias or ("Your devices" if own else live_person) or first.get("person") or self.recent_fallback(first)
             if grouped:
                 self.add_recipient_row(owner, person, remove=account, nickname=alias, person=True)
-            for index, entry in enumerate(entries, 1):
+            for entry in entries:
                 peer = entry["peer"]
                 device_name = details.get(peer, ("", ""))[1]
-                name = (entry.get("nickname") or (person if not grouped and not own else None)
-                        or device_name or entry.get("device") or (f"Device {index}" if grouped else self.recent_fallback(entry)))
+                name = device_name or entry.get("nickname") or entry.get("device") or self.fallback_name(peer)
                 self.add_recipient_row(owner, name, peer if peer in known else None, peer,
                                        nickname=entry.get("nickname"), nested=grouped)
         listed = my_devices | {entry["peer"] for entry in recents}
@@ -387,8 +426,7 @@ class TransferView:
             if not exact_peer(peer):
                 continue
             person = device.get("user_name") or device.get("contact") or ""
-            name = catalog.get(peer, {}).get("name") or (device.get("name") if device.get("name_known") else "")
-            result[peer] = person, name or ""
+            result[peer] = person, self.device_name(device, catalog)
         return result
 
     @staticmethod
@@ -403,6 +441,9 @@ class TransferView:
 
     def rename_recent(self, owner, target, displayed, nickname, person):
         if self.owner(self.snapshot) != owner:
+            return
+        if not person:
+            self.rename_device(owner, target, displayed, None, lambda _: None)
             return
         name = Gtk.Entry(text=nickname or "", placeholder_text=displayed, max_length=80, activates_default=True)
         self.app.dialog("Person name" if person else "Device name", "Save", [name],
@@ -446,6 +487,26 @@ class TransferView:
     def accept(self, transfer):
         self.app.work("blip", "Receive transfer", lambda: self.blip.request("accept", transfer["transfer_id"]),
                       lambda _: self.refresh())
+
+    def cancel_send(self, transfer, relay=False):
+        owner = self.owner(self.snapshot)
+        identifier = transfer["id" if relay else "transfer_id"]
+        if not owner or identifier in self.cancelling_sends:
+            return
+        self.cancelling_sends.add(identifier)
+        self.render()
+        def refresh():
+            self.cancelling_sends.discard(identifier)
+            self.render()
+            self.refresh(quiet=False)
+        def cancel():
+            if relay:
+                result = core("relay.cancel", payload={"self": owner, "id": identifier})
+                self.next_relay_discovery = 0
+                return result
+            return self.blip.request("cancel", owner, identifier)
+        self.app.work("blip", "Cancel send", cancel,
+                      lambda _: refresh(), on_error=lambda _: refresh())
 
     def show_received(self, transfer):
         if not completed(transfer):
@@ -536,7 +597,9 @@ class TransferView:
             return
         account = owner.partition(":")[0]
         previous = self.catalog(owner).get(peer, {})
-        name = Gtk.Entry(text=previous.get("name", ""), placeholder_text=label_text, max_length=80)
+        recent = next((r for r in self.recent_recipients if r["peer"] == peer), None)
+        name = Gtk.Entry(text=(recent or {}).get("nickname") or previous.get("name", ""),
+                         placeholder_text=label_text, max_length=80)
         def save():
             if self.owner(self.snapshot) != owner:
                 return
@@ -545,10 +608,17 @@ class TransferView:
             nickname = "".join(c for c in name.get_text().strip() if c.isprintable())[:80]
             device_rules["name"] = nickname
             save_settings("blip-permissions.json", all_rules)
+            self.update_recent_nickname(owner, peer, nickname)
             names = self.names(self.snapshot.get("devices", []), all_rules[account])
             updated(names.get(peer, nickname or label_text))
             self.render()
         self.app.dialog("Device name", "Save", [name], save, parent=parent)
+
+    def update_recent_nickname(self, owner, peer, nickname):
+        recent = next((r for r in self.recent_recipients if r["peer"] == peer), None)
+        if recent is not None:
+            recent["nickname"] = nickname
+            self.update_recents("rename", owner, target=peer, name=nickname)
 
     def recipients(self):
         identity = self.owner(self.snapshot)
@@ -718,7 +788,9 @@ class TransferView:
             if peer == identity:
                 continue
             previous = saved.get(peer, {})
-            name = Gtk.Entry(text=previous.get("name", ""), placeholder_text=title, visible=False, max_length=80)
+            recent = next((r for r in self.recent_recipients if r["peer"] == peer), None)
+            existing = (recent or {}).get("nickname") or previous.get("name", "")
+            name = Gtk.Entry(text=existing, placeholder_text=title, visible=False, max_length=80)
             name.set_tooltip_text("Local label for " + title)
             files = Gtk.CheckButton(label="Auto-receive files", active=bool(previous.get("files")))
             links = Gtk.CheckButton(label="Auto-open links", active=bool(previous.get("links")))
@@ -734,13 +806,21 @@ class TransferView:
             group.append(heading)
             group.append(name)
             group.append(checks)
-            fields[peer] = (name, files, links)
+            fields[peer] = (name, files, links, existing)
         def save():
+            if self.owner(self.snapshot) != identity:
+                return
             all_rules = read_settings("blip-permissions.json", {})
             account = identity.partition(":")[0]
             rules = all_rules.setdefault(account, {})
-            for peer, (name, files, links) in fields.items():
-                rules[peer] = {"name": name.get_text()[:80].strip(), "files": files.get_active(), "links": links.get_active()}
+            changed = []
+            for peer, (name, files, links, existing) in fields.items():
+                text = "".join(c for c in name.get_text().strip() if c.isprintable())[:80]
+                rules[peer] = {"name": text, "files": files.get_active(), "links": links.get_active()}
+                if text != existing:
+                    changed.append((peer, text))
             save_settings("blip-permissions.json", all_rules)
+            for peer, name in changed:
+                self.update_recent_nickname(identity, peer, name)
             self.render()
         self.app.dialog("Sender permissions", "Save", [self.app.scrolled_list(group, height=260)], save)

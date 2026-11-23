@@ -18,7 +18,7 @@ enum BlipMacPaths {
         FileManager.default.temporaryDirectory.appendingPathComponent("mdblip", isDirectory: true)
     }
     static var receivedDirectory: URL {
-        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Downloads/myDrive", isDirectory: true)
+        URL.downloadsDirectory.appendingPathComponent("myDrive", isDirectory: true)
     }
 }
 

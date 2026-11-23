@@ -21,6 +21,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private let networkMonitor = NWPathMonitor()
     private var cancellables = Set<AnyCancellable>()
     private var eventMonitors: [Any] = []
+    private var outsidePress: (point: NSPoint, button: Int)?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         SingleInstance.install { [weak self] in self?.showPopover() }
@@ -237,7 +238,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     private func setupPopover() {
         popover.contentSize = NSSize(width: PopupMetrics.width, height: PopupMetrics.maxHeight)
-        popover.behavior = .transient
+        popover.behavior = .applicationDefined
         popover.delegate = self
         let root = PopupRootView().environmentObject(appState)
         popover.contentViewController = NSHostingController(rootView: root)
@@ -261,31 +262,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     func popoverDidClose(_ notification: Notification) {
         appState.popoverVisible = false
+        outsidePress = nil
     }
 
     // MARK: - Popover dismissal
 
-    /// A transient popover shown by an accessory app can miss outside clicks
-    /// once the app has been activated, so menu bar apps watch for them
-    /// explicitly. A global monitor covers clicks in other apps; a local
-    /// monitor covers our own windows (full window, other panels) without
-    /// swallowing clicks inside the popover or on the status item itself.
+    /// A mouse-down in Finder may be the start of a drag into the popover.
+    /// Dismiss only after a matching outside click, once movement is known.
     private func installPopoverDismissMonitors() {
-        eventMonitors.append(NSEvent.addGlobalMonitorForEvents(
-            matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] _ in
-            guard let self, self.popover.isShown, NSApp.modalWindow == nil else { return }
-            self.popover.performClose(nil)
-        })
-        eventMonitors.append(NSEvent.addLocalMonitorForEvents(
-            matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] event in
-            guard let self, self.popover.isShown, NSApp.modalWindow == nil else { return event }
-            if let window = event.window,
-               window !== self.popover.contentViewController?.view.window,
-               window !== self.statusItem?.button?.window {
-                self.popover.performClose(nil)
+        let clickEvents: NSEvent.EventTypeMask = [.leftMouseDown, .rightMouseDown, .otherMouseDown,
+                                                  .leftMouseUp, .rightMouseUp, .otherMouseUp]
+        if let monitor = NSEvent.addGlobalMonitorForEvents(matching: clickEvents, handler: { [weak self] event in
+            self?.observePopoverClick(event, isLocal: false)
+        }) { eventMonitors.append(monitor) }
+        if let monitor = NSEvent.addLocalMonitorForEvents(matching: clickEvents.union(.keyDown), handler: { [weak self] event in
+            guard let self else { return event }
+            if event.type == .keyDown {
+                if event.keyCode == 53, self.popover.isShown, NSApp.modalWindow == nil,
+                   event.window === self.popover.contentViewController?.view.window {
+                    self.popover.performClose(nil)
+                    return nil
+                }
+            } else {
+                self.observePopoverClick(event, isLocal: true)
             }
             return event
-        })
+        }) { eventMonitors.append(monitor) }
+    }
+
+    private func observePopoverClick(_ event: NSEvent, isLocal: Bool) {
+        guard popover.isShown, NSApp.modalWindow == nil else { outsidePress = nil; return }
+        let point = NSEvent.mouseLocation
+        let inside = isLocal && (event.window === popover.contentViewController?.view.window ||
+                                event.window === statusItem?.button?.window)
+        if [.leftMouseDown, .rightMouseDown, .otherMouseDown].contains(event.type) {
+            outsidePress = inside ? nil : (point, event.buttonNumber)
+        } else {
+            guard let press = outsidePress, press.button == event.buttonNumber else { return }
+            outsidePress = nil
+            if !inside, hypot(point.x - press.point.x, point.y - press.point.y) < 6 {
+                popover.performClose(nil)
+            }
+        }
     }
 
     // MARK: - Full window
@@ -317,7 +335,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
         NotificationCenter.default.addObserver(forName: NSApplication.didResignActiveNotification,
                                                object: NSApp, queue: .main) { [weak self] _ in
-            guard let self, self.popover.isShown, NSApp.modalWindow == nil else { return }
+            guard let self, self.popover.isShown, NSApp.modalWindow == nil,
+                  NSEvent.pressedMouseButtons == 0, self.outsidePress == nil else { return }
             self.popover.performClose(nil)
         }
         let workspaceCenter = NSWorkspace.shared.notificationCenter

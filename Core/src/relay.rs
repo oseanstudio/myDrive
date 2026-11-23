@@ -162,6 +162,8 @@ struct Job {
     custody: bool,
     #[serde(default)]
     alternatives: Vec<String>,
+    #[serde(default)]
+    queued_label: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -254,6 +256,24 @@ fn storage(data: &Path, own: &str) -> Result<PathBuf> {
     Ok(root)
 }
 
+fn job_lock(root: &Path) -> Result<fs::File> {
+    let lock = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(root.join("jobs.lock"))
+        .map_err(io)?;
+    lock.lock().map_err(io)?;
+    Ok(lock)
+}
+
+fn discard_job(root: &Path, directory: &Path) -> Result<()> {
+    checked(directory)?;
+    let discarded = tempfile::tempdir_in(root).map_err(io)?;
+    fs::rename(directory, discarded.path().join("job")).map_err(io)?;
+    Ok(())
+}
+
 fn put(path: &Path, value: &impl Serialize) -> Result<()> {
     let parent = path.parent().ok_or("Missing relay storage parent")?;
     let mut tmp = tempfile::NamedTempFile::new_in(parent).map_err(io)?;
@@ -309,6 +329,18 @@ fn stage(data: &Path, req: Stage) -> Result<Value> {
         originals.push(source);
     }
     let final_root = root.join(&packet.job);
+    let queued_label = if originals.len() == 1 {
+        originals[0]
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("File or folder")
+            .chars()
+            .filter(|c| !c.is_control())
+            .take(160)
+            .collect()
+    } else {
+        format!("{} items", originals.len())
+    };
     let alternatives = req
         .alternatives
         .into_iter()
@@ -330,10 +362,13 @@ fn stage(data: &Path, req: Stage) -> Result<Value> {
             since: now(),
             custody: false,
             alternatives,
+            queued_label: Some(queued_label),
         },
     )?;
+    let _lock = job_lock(&root)?;
     fs::rename(staging.path(), final_root).map_err(io)?;
-    let _ = crate::blip::activity::record(data, &req.own, &req.target, &packet.job, &originals, true);
+    let _ =
+        crate::blip::activity::record(data, &req.own, &req.target, &packet.job, &originals, true);
     Ok(json!({"id": packet.job}))
 }
 
@@ -378,6 +413,9 @@ fn check_tree(path: &Path, depth: usize) -> Result<()> {
 fn send(job: &mut Job, record: &Path, peer: String, paths: Vec<PathBuf>) -> Result<Action> {
     job.dispatched = id()?;
     job.since = now();
+    if job.phase != "probe" {
+        job.queued_label = None;
+    }
     put(record, job)?;
     Ok(Action::Send {
         id: job.dispatched.clone(),
@@ -570,6 +608,7 @@ fn receive(
                         since: now(),
                         custody: false,
                         alternatives: vec![],
+                        queued_label: None,
                     },
                 )?;
                 put(&done, &true)?;
@@ -656,8 +695,13 @@ fn advance(req: &Snapshot, root: &Path, data: &Path) -> Result<Option<Action>> {
                     fs::remove_dir_all(&envelope).map_err(io)?;
                 }
                 if job.phase != "forward" {
-                    let status = if job.phase == "handoff" { "Handed to relay" } else { "Delivered" };
-                    let _ = crate::blip::activity::result(data, &req.own, &packet.job, status, None);
+                    let status = if job.phase == "handoff" {
+                        "Handed to relay"
+                    } else {
+                        "Delivered"
+                    };
+                    let _ =
+                        crate::blip::activity::result(data, &req.own, &packet.job, status, None);
                 }
                 fs::remove_file(record).map_err(io)?;
                 let _ = fs::remove_dir(dir.path().join(packet.name("probe")));
@@ -666,6 +710,17 @@ fn advance(req: &Snapshot, root: &Path, data: &Path) -> Result<Option<Action>> {
                 let _ = fs::remove_dir(dir.path());
             } else if outgoing(req, &job.dispatched, peer).is_some_and(|t| t.status == "Cancelled")
             {
+                if job.phase == "direct" {
+                    discard_job(root, &dir.path())?;
+                    let _ = crate::blip::activity::result(
+                        data,
+                        &req.own,
+                        &packet.job,
+                        "Cancelled",
+                        None,
+                    );
+                    continue;
+                }
                 job.dispatched.clear();
                 job.since = now().saturating_add(30);
                 put(&record, &job)?;
@@ -754,6 +809,35 @@ mod tests {
         let received = parent.join(source.file_name().unwrap());
         copy(&source, &received, 0).unwrap();
         received
+    }
+
+    #[test]
+    fn cancelling_a_queued_send_keeps_the_original_and_prevents_dispatch() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let file = root.join("project.txt");
+        fs::write(&file, b"original").unwrap();
+        let staged = run(
+            "stage",
+            &json!({
+                "self": peer(A), "target": peer(C), "relay": peer(B), "paths": [file],
+            }),
+            root,
+        )
+        .unwrap();
+        let id = &staged["id"];
+        let pending = tick(root, A, &[A, B], vec![]);
+        assert_eq!(pending["queued"][0]["id"], *id);
+        assert_eq!(pending["queued"][0]["label"], "project.txt");
+        assert!(run("cancel", &json!({"self": peer(B), "id": id}), root).is_err());
+        assert_eq!(
+            run("cancel", &json!({"self": peer(A), "id": id}), root).unwrap()["cancelled"],
+            true
+        );
+        let next = tick(root, A, &[A, B, C], vec![]);
+        assert!(next["command"].is_null());
+        assert_eq!(next["waiting"], 0);
+        assert_eq!(fs::read(file).unwrap(), b"original");
     }
 
     #[test]
@@ -958,6 +1042,29 @@ pub fn run(action: &str, payload: &Value, data: &Path) -> Result<Value> {
             data,
             serde_json::from_value(payload.clone()).map_err(|_| "Invalid relay selection")?,
         ),
+        "cancel" => {
+            let owner = payload["self"]
+                .as_str()
+                .ok_or("Relay requires a signed-in device.")?;
+            let id = payload["id"]
+                .as_str()
+                .filter(|id| uuid(id))
+                .ok_or("Invalid relay transfer.")?;
+            let root = storage(data, owner)?;
+            let _lock = job_lock(&root)?;
+            let directory = root.join(id);
+            let job: Job = get(&directory.join("job.json"))
+                .map_err(|_| "This relay transfer is no longer queued.")?;
+            if job.queued_label.is_none() {
+                return Err(
+                    "This transfer has already been sent to a device. Refresh to check its status."
+                        .into(),
+                );
+            }
+            discard_job(&root, &directory)?;
+            let _ = crate::blip::activity::result(data, owner, id, "Cancelled", None);
+            Ok(json!({"cancelled": true}))
+        }
         "tick" => {
             let req: Snapshot =
                 serde_json::from_value(payload.clone()).map_err(|_| "Invalid relay snapshot")?;
@@ -967,6 +1074,7 @@ pub fn run(action: &str, payload: &Value, data: &Path) -> Result<Value> {
                 return Err("Relay transfer history exceeds its limit.".into());
             }
             let root = storage(data, &req.own)?;
+            let _lock = job_lock(&root)?;
             let pending = fs::read_dir(&root)
                 .map_err(io)?
                 .filter_map(std::result::Result::ok)
@@ -984,15 +1092,25 @@ pub fn run(action: &str, payload: &Value, data: &Path) -> Result<Value> {
             } else {
                 advance(&req, &root, data)?
             };
-            let waiting = fs::read_dir(&root)
-                .map_err(io)?
-                .filter_map(std::result::Result::ok)
-                .filter(|dir| {
-                    dir.file_name().to_str().is_some_and(uuid)
-                        && dir.path().join("job.json").is_file()
-                })
-                .count();
-            Ok(json!({"command": action, "waiting": waiting}))
+            let mut waiting = 0;
+            let mut queued = Vec::new();
+            for dir in fs::read_dir(&root).map_err(io)?.flatten() {
+                let file = dir.file_name();
+                let Some(id) = file.to_str().filter(|id| uuid(id)) else {
+                    continue;
+                };
+                let record = dir.path().join("job.json");
+                if !record.is_file() {
+                    continue;
+                }
+                waiting += 1;
+                if let Ok(job) = get::<Job>(&record) {
+                    if let Some(label) = job.queued_label {
+                        queued.push(json!({"id": id, "peer": job.target, "label": label}));
+                    }
+                }
+            }
+            Ok(json!({"command": action, "waiting": waiting, "queued": queued}))
         }
         _ => Err("Unknown relay action.".into()),
     }

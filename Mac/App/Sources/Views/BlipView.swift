@@ -26,6 +26,23 @@ struct BlipView: View {
                 .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
                 .accessibilityLabel("Blip options")
             }.controlSize(.small)
+            ForEach(receiver.transfers.filter { $0.direction == "Outgoing" && $0.isLive }) { transfer in
+                liveTransfer(transfer)
+            }
+            if receiver.connected {
+                ForEach(receiver.relayQueued) { item in
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(item.label).font(.system(size: 12, weight: .semibold)).lineLimit(1)
+                            Text(receiver.senderLabel(item.peer) + " · Queued for relay")
+                                .font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+                        }
+                        Spacer(minLength: 6)
+                        Button("Cancel") { receiver.cancelQueuedSend(item) }
+                            .controlSize(.small).disabled(receiver.cancellingSends.contains(item.id))
+                    }.frame(minHeight: 44)
+                }
+            }
             if receiver.connected { recipientPanel }
             if receiver.canSetUpBlip {
                 Button("Set up Blip…", action: receiver.setUpBlip).controlSize(.small)
@@ -44,7 +61,7 @@ struct BlipView: View {
             if let problem = receiver.problem {
                 Text(problem).font(.system(size: 11)).foregroundStyle(.red)
             }
-            ForEach(receiver.transfers.filter(\.isLive)) { transfer in
+            ForEach(receiver.transfers.filter { $0.direction != "Outgoing" && $0.isLive }) { transfer in
                 liveTransfer(transfer)
             }
             DisclosureGroup("Sender permissions", isExpanded: $senders) {
@@ -93,7 +110,7 @@ struct BlipView: View {
                     Text("My devices").font(.caption).fontWeight(.semibold)
                     ForEach(myDevices) { device in
                         let recent = receiver.recentRecipients.first { $0.peer.caseInsensitiveCompare(device.peer) == .orderedSame }
-                        recipientRow(firstName(recent?.nickname, device.displayName), peer: device,
+                        recipientRow(receiver.deviceName(device), peer: device,
                                      nickname: recent?.nickname, deviceShortcut: true)
                     }
                 }
@@ -128,11 +145,11 @@ struct BlipView: View {
                     if grouped {
                         recipientRow(person, peer: nil, removing: account, nickname: first.person_nickname, person: true)
                     }
-                    ForEach(Array(entries.enumerated()), id: \.element.id) { index, entry in
+                    ForEach(entries) { entry in
                         let device = available.first { $0.peer.caseInsensitiveCompare(entry.peer) == .orderedSame }
-                        let name = firstName(entry.nickname, !grouped && !own ? person : nil,
-                            device?.hasDeviceName == true ? device?.displayName : nil, entry.device,
-                            grouped ? "Device \(index + 1)" : entry.fallbackLabel)
+                        let known = device ?? receiver.peers.first { $0.peer.caseInsensitiveCompare(entry.peer) == .orderedSame }
+                        let name = known.map(receiver.deviceName) ??
+                            firstName(entry.nickname, entry.device, BlipPeer.fallbackName(entry.peer))
                         recipientRow(name, peer: device, removing: entry.peer, nickname: entry.nickname)
                             .padding(.leading, grouped ? 12 : 0)
                     }
@@ -195,17 +212,16 @@ struct BlipView: View {
             }
             if deviceShortcut, let peer {
                 Button {
-                    if let nickname {
-                        receiver.renameRecent(peer.peer, displayed: name, nickname: nickname, person: false)
-                    } else {
-                        receiver.rename(peer)
-                    }
+                    receiver.rename(peer)
                 } label: { Image(systemName: "pencil") }
                 .accessibilityLabel("Rename " + name)
                 .help("Rename")
             }
             if let removing {
-                Button { receiver.renameRecent(removing, displayed: name, nickname: nickname, person: person) } label: {
+                Button {
+                    if let peer { receiver.rename(peer) }
+                    else { receiver.renameRecent(removing, displayed: name, nickname: nickname, person: person) }
+                } label: {
                     Image(systemName: "pencil")
                 }
                 .accessibilityLabel("Rename " + name)
@@ -220,15 +236,22 @@ struct BlipView: View {
     private func liveTransfer(_ transfer: BlipTransfer) -> some View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
-                Text(receiver.senderLabel(transfer.peer)).font(.system(size: 12, weight: .semibold))
+                let name = receiver.senderLabel(transfer.peer)
+                Text(transfer.direction == "Outgoing" ? transfer.item_names?.first ?? name : name)
+                    .font(.system(size: 12, weight: .semibold))
                     .lineLimit(1).truncationMode(.middle)
-                Text(transfer.has_error ? "Needs attention" : receiver.receiving.contains(transfer.id) ? "Receiving" :
-                    transfer.pending ? "Waiting for you" : transfer.status)
+                let progress = transfer.has_error ? "Needs attention" : receiver.receiving.contains(transfer.id) ? "Receiving" :
+                    transfer.pending ? "Waiting for you" : transfer.status
+                Text(transfer.direction == "Outgoing" ? name + " · " + progress : progress)
                     .font(.system(size: 11)).foregroundStyle(.secondary)
             }
             Spacer(minLength: 6)
             if transfer.pending && !receiver.receiving.contains(transfer.id) {
                 Button("Receive") { receiver.receive(transfer) }.controlSize(.small)
+            } else if transfer.direction == "Outgoing" {
+                Button(receiver.cancellingSends.contains(transfer.id) ? "Cancelling…" : "Cancel") {
+                    receiver.cancelSend(transfer)
+                }.controlSize(.small).disabled(receiver.cancellingSends.contains(transfer.id))
             }
         }.frame(minHeight: 44)
     }

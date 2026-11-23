@@ -208,6 +208,9 @@ pub(crate) fn result(
     status: &str,
     error: Option<&str>,
 ) -> Result<()> {
+    if !data.join("Blip/send-activity.json").is_file() {
+        return Ok(());
+    }
     let mut journal = Journal::open(data)?;
     if let Some(entry) = journal
         .entries
@@ -293,7 +296,7 @@ pub(super) fn list(snapshot: &Snapshot) -> Result<Value> {
             .and_then(|device| device["name"].as_str())
             .unwrap_or("Device");
         rows.push(json!({
-            "id": entry.id, "kind": entry.kind, "name": entry.name, "recipient": name, "at": entry.at,
+            "id": entry.id, "peer": entry.peer, "kind": entry.kind, "name": entry.name, "recipient": name, "at": entry.at,
             "status": if entry.retried { "Retried" } else { &entry.status },
             "detail": entry.error, "can_retry": retryable(entry, snapshot)
         }));

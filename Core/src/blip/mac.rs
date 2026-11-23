@@ -1,7 +1,6 @@
 //! Locate the native macOS host without moving its saved profiles.
 use super::{
-    client_command, create_plain_directory, emit, field, number, random_id, rpc, string, uuid,
-    Arguments, Result, Session,
+    client_command, emit, field, number, random_id, rpc, string, uuid, Arguments, Result, Session,
 };
 use serde_json::{json, Value};
 use std::{
@@ -140,11 +139,24 @@ pub(super) fn registration_device(profile: &Path) -> Result<String> {
 }
 
 pub(super) fn prepare_inbox(inbox: &Path) -> Result<()> {
-    let parent = inbox.parent().ok_or("profile_unavailable")?;
-    if !parent.is_dir() {
-        fs::create_dir_all(parent).map_err(|_| "profile_unavailable")?;
+    use std::os::unix::fs::DirBuilderExt;
+    let parent = inbox.parent().ok_or("receive_downloads_unavailable")?;
+    let classify = |error: io::Error| {
+        if error.kind() == io::ErrorKind::PermissionDenied {
+            "receive_downloads_denied"
+        } else {
+            "receive_downloads_unavailable"
+        }
+    };
+    fs::create_dir_all(parent).map_err(classify)?;
+    match fs::DirBuilder::new().mode(0o700).create(inbox) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+            fs::File::open(inbox).map_err(classify)?;
+            super::check_plain_directory(inbox).map_err(|_| "receive_downloads_unavailable")
+        }
+        Err(error) => Err(classify(error)),
     }
-    create_plain_directory(inbox)
 }
 
 pub(super) fn configure_receive(session: &Session) -> Result<()> {
@@ -209,7 +221,7 @@ fn run_request(action: &str, payload: &Value) -> Result<Value> {
         command: action.to_owned(),
         profile: PathBuf::new(),
         desktop: false,
-        name: None,
+        name: payload["name"].as_str().map(str::to_owned),
         peer: payload["peer"].as_str().map(str::to_owned),
         id: payload["id"].as_str().map(str::to_owned),
         files: payload["paths"]
@@ -270,6 +282,98 @@ mod tests {
     const USER: &str = "11111111-1111-4111-8111-111111111111";
     const DEVICE: &str = "22222222-2222-4222-8222-222222222222";
     const ID: &str = "ABCD1234-EF56-4789-ABCD-123456789ABC";
+
+    #[test]
+    fn cancel_send_confirms_an_outgoing_transfer_by_exact_id() {
+        let root = tempfile::Builder::new()
+            .prefix("md-blip-")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let session = Session {
+            profile: root.path().join("Blip"),
+            socket: root.path().join("sock"),
+            inbox: root.path().join("downloads"),
+            desktop: false,
+        };
+        let listener = UnixListener::bind(&session.socket).unwrap();
+        let make_state = |phase| {
+            let auth = field(
+                201,
+                &[
+                    string(201, "fixture"),
+                    string(202, USER),
+                    string(204, DEVICE),
+                ]
+                .concat(),
+            );
+            let transfer = [string(100, ID), number(700, 2), number(800, phase)].concat();
+            field(2, &[auth, field(600, &field(2, &transfer))].concat())
+        };
+        let server = thread::spawn(move || {
+            for request in 0..3 {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                let mut body = Vec::new();
+                for _ in 0..4 {
+                    let mut header = [0; 3];
+                    stream.read_exact(&mut header).unwrap();
+                    let size = rpc::varint(|| {
+                        let mut byte = [0];
+                        stream.read_exact(&mut byte).map_err(|_| "fixture_read")?;
+                        Ok(byte[0])
+                    })
+                    .unwrap();
+                    assert!(size < 4096);
+                    let mut bytes = vec![0; size as usize];
+                    stream.read_exact(&mut bytes).unwrap();
+                    body.extend(bytes);
+                }
+                let response = match request {
+                    1 => {
+                        let event = b"TransferCancellationRequested";
+                        assert!(body.windows(event.len()).any(|part| part == event));
+                        let payload = string(1, ID);
+                        assert!(body
+                            .windows(payload.len())
+                            .any(|part| part == payload.as_slice()));
+                        Vec::new()
+                    }
+                    _ => make_state(if request == 0 { 5 } else { 9 }),
+                };
+                let mut reply = vec![5, 1, 1];
+                rpc::encode_varint(&mut reply, response.len() as u64);
+                reply.extend(response);
+                stream.write_all(&reply).unwrap();
+            }
+        });
+        let args = Arguments {
+            command: "cancel".into(),
+            profile: PathBuf::new(),
+            desktop: false,
+            name: None,
+            peer: None,
+            id: Some(ID.into()),
+            files: Vec::new(),
+            execute: true,
+        };
+        let owner = format!("{USER}:{DEVICE}");
+        let result = client_command(&session, &args, None, Some(&owner)).unwrap();
+        assert_eq!(result["native_status"], "Cancelled");
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn blocked_downloads_subfolder_is_distinguished_from_permissions() {
+        let root = tempfile::tempdir().unwrap();
+        let inbox = root.path().join("Downloads/myDrive");
+        prepare_inbox(&inbox).unwrap();
+        fs::remove_dir(&inbox).unwrap();
+        fs::write(&inbox, b"existing file").unwrap();
+        assert_eq!(prepare_inbox(&inbox), Err("receive_downloads_unavailable"));
+        assert_eq!(fs::read(inbox).unwrap(), b"existing file");
+    }
 
     #[test]
     fn official_socket_is_discovered_with_a_stale_override_and_other_local_socket() {

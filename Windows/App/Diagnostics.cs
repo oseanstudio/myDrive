@@ -12,6 +12,9 @@ public sealed partial class MainWindow
         object result;
         try
         {
+            if (!PopupInput.IsClick(new(100, 100), new(103, 104)) ||
+                PopupInput.IsClick(new(100, 100), new(140, 130)))
+                throw new IOException("An outside click and a file drag were not distinguished.");
             currentView="sync";
             syncSnapshot=JsonSerializer.SerializeToElement(new
             {

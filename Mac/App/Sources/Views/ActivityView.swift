@@ -117,7 +117,7 @@ private struct SendActivityView: View {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(entry.str("kind") + " · " + entry.str("name"))
                                 .font(.system(size: 12, weight: .semibold)).lineLimit(1)
-                            Text(entry.str("recipient") + " · " + entry.str("status"))
+                            Text(receiver.senderLabel(entry.str("peer")) + " · " + entry.str("status"))
                                 .font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
                             if let text = entry.optStr("detail"), !text.isEmpty {
                                 Text(text).font(.system(size: 11)).lineLimit(2)

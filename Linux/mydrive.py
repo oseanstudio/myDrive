@@ -924,11 +924,14 @@ class MyDrive(Gtk.Application):
         if owner:
             page.append(row("Send activity", "", button("Refresh", self.refresh_send_activity)))
             if owner == self.send_activity_owner:
+                names = self.transfer_view.peer_captions()
                 if self.send_activity_error:
                     page.append(label(self.send_activity_error))
                 for entry in self.send_activity:
                     title = f"{entry.get('kind', 'File')} · {entry.get('name', '')}"
-                    detail = " · ".join(filter(None, (entry.get("recipient"), entry.get("status"), entry.get("detail"))))
+                    peer = entry.get("peer", "")
+                    recipient = names.get(peer.lower(), self.transfer_view.fallback_name(peer))
+                    detail = " · ".join(filter(None, (recipient, entry.get("status"), entry.get("detail"))))
                     actions = [button("Retry", lambda id=entry["id"]: self.refresh_send_activity(id))] if entry.get("can_retry") else []
                     page.append(row(title, detail, *actions))
                 if not self.send_activity and not self.send_activity_error:

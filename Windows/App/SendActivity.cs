@@ -61,7 +61,7 @@ public sealed partial class MainWindow
         {
             var details = new StackPanel { Spacing = 2 };
             details.Children.Add(QuickText(S(entry, "kind") + " · " + S(entry, "name"), 12, true));
-            details.Children.Add(QuickText(S(entry, "recipient") + " · " + S(entry, "status"), 11));
+            details.Children.Add(QuickText(BlipPeerCaption(S(entry, "peer")) + " · " + S(entry, "status"), 11));
             if (S(entry, "detail") is { Length: > 0 } failure) details.Children.Add(Text(failure, 11));
             if (B(entry, "can_retry"))
             {

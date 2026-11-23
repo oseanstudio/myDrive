@@ -32,13 +32,6 @@ public sealed class BlipSenderCatalog
             if(!peers.ContainsKey(peer))peers[peer]=new(){Peer=peer,Name="Previous device",History=true};
         peers.Remove(self);
         var result=peers.Values.OrderBy(d=>d.Name,StringComparer.CurrentCultureIgnoreCase).ToList();
-        foreach(var device in result)device.SelectionName="";
-        foreach (var group in result.GroupBy(d => d.Peer.Split(':')[0] + ":" + d.BaseLabel, StringComparer.OrdinalIgnoreCase).Where(g => g.Count() > 1))
-        {
-            int ordinal = 0;
-            foreach (var device in group.OrderBy(d => d.Peer, StringComparer.OrdinalIgnoreCase))
-                device.SelectionName = device.BaseLabel + " " + (++ordinal);
-        }
         accounts[account]=result;
         string after=JsonSerializer.Serialize(accounts);
         if(before!=after){Directory.CreateDirectory(Path.GetDirectoryName(file)!);File.WriteAllText(file+".tmp",after);File.Move(file+".tmp",file,true);}

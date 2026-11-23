@@ -45,7 +45,7 @@ public sealed partial class MainWindow
         int hover = 0;
         timer.Tick += (_, _) =>
         {
-            if ((GetAsyncKeyState(1) & 0x8000) == 0 || !GetCursorPos(out var pointer))
+            if (!LeftMousePressed() || !GetCursorPos(out var pointer))
             {
                 start = null;
                 hover = 0;
@@ -131,6 +131,7 @@ public sealed partial class MainWindow
 
     [DllImport("user32.dll")]
     private static extern short GetAsyncKeyState(int key);
+    private static bool LeftMousePressed() => (GetAsyncKeyState(1) & 0x8000) != 0;
 
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]

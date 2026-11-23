@@ -8,6 +8,7 @@ public sealed class BlipStatus
     [JsonPropertyName("registration")] public string Registration { get; set; } = "NOT_STARTED";
     [JsonPropertyName("user_id")] public string UserId { get; set; } = "";
     [JsonPropertyName("device_id")] public string DeviceId { get; set; } = "";
+    [JsonPropertyName("current_device_named")] public bool? CurrentDeviceNamed { get; set; }
     [JsonPropertyName("downloads_directory")] public string? DownloadsDirectory { get; set; }
 }
 public sealed class BlipDevice
@@ -22,7 +23,6 @@ public sealed class BlipDevice
     [JsonPropertyName("name_known")] public bool NameKnown { get; set; }
     [JsonPropertyName("user_name")] public string UserName { get; set; }="";
     [JsonPropertyName("nickname")] public string Nickname { get; set; }="";
-    [JsonIgnore] public string SelectionName {get;set;}="";
     [JsonIgnore] public bool HasDeviceName => NameKnown || !string.IsNullOrWhiteSpace(Nickname);
     [JsonIgnore] public string ContactName => string.IsNullOrWhiteSpace(UserName) ? Contact : UserName;
     [JsonIgnore] public string BaseLabel
@@ -32,11 +32,16 @@ public sealed class BlipDevice
             if (!string.IsNullOrWhiteSpace(Nickname)) return Nickname;
             if (NameKnown) return Name;
             var kind = Kind.Length > 0 ? Kind : Name;
-            if (kind is "Desktop" or "Laptop" or "Phone" or "Tablet") return kind;
-            return History ? "Previous device" : "Device";
+            return FallbackName(Peer, kind is "Desktop" or "Laptop" or "Phone" or "Tablet" ? kind : "Device");
         }
     }
-    [JsonIgnore] public string DisplayName => SelectionName.Length > 0 ? SelectionName : BaseLabel;
+    [JsonIgnore] public string DisplayName => BaseLabel;
+    public static string FallbackName(string peer, string kind = "Device")
+    {
+        var parts = peer.Split(':', 2);
+        return parts.Length == 2 && Guid.TryParseExact(parts[1], "D", out _)
+            ? kind + " " + parts[1][^6..].ToUpperInvariant() : "Previous device";
+    }
     public override string ToString()
     {
         if (string.IsNullOrWhiteSpace(ContactName)) return DisplayName;
@@ -60,7 +65,7 @@ public sealed class BlipTransfer
     [JsonPropertyName("item_names")] public List<string> ItemNames { get; set; }=new();
     [JsonPropertyName("received_items")] public List<BlipReceivedItem> ReceivedItems {get;set;}=new();
     public string ItemLabel=>ItemNames.Count==0?"Incoming transfer":string.Join(", ",ItemNames);
-    public string ProgressLabel=>Status=="Active"&&TotalBytes>0&&Progress>=0&&Progress<=TotalBytes?$"Receiving · {100.0*Progress/TotalBytes:0}%":StateLabel;
+    public string ProgressLabel=>Status=="Active"&&TotalBytes>0&&Progress>=0&&Progress<=TotalBytes?$"{(Direction=="Outgoing"?"Sending":"Receiving")} · {100.0*Progress/TotalBytes:0}%":StateLabel;
     public bool ConfirmedComplete => Status == "Completed" && Completed && !HasError;
     public bool IsLive => !Dismissed && !Completed &&
         Status is "Created" or "InviteRequested" or "Invited" or "Pending" or "Active" or "Paused" or "ResumeRequested";

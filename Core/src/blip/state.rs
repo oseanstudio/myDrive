@@ -118,6 +118,38 @@ pub(super) fn safe_text(value: &str, limit: usize) -> bool {
         && !value.chars().any(char::is_control)
 }
 
+pub(super) fn descriptive_device_name(value: &str) -> bool {
+    let name = value.trim();
+    if !safe_text(name, 160) {
+        return false;
+    }
+    let (kind, suffix) = name.split_once(' ').unwrap_or((name, ""));
+    let placeholder = [
+        "device",
+        "desktop",
+        "laptop",
+        "phone",
+        "tablet",
+        "previous device",
+        "unnamed",
+        "mac",
+        "windows",
+        "linux",
+        "mydrive on mac",
+        "mydrive on macos",
+        "mydrive on windows",
+        "mydrive on linux",
+    ]
+    .iter()
+    .any(|value| name.eq_ignore_ascii_case(value))
+        || (["device", "desktop", "laptop", "phone", "tablet"]
+            .iter()
+            .any(|value| kind.eq_ignore_ascii_case(value))
+            && !suffix.is_empty()
+            && suffix.bytes().all(|byte| byte.is_ascii_digit()));
+    !placeholder
+}
+
 pub(super) struct Snapshot {
     pub status: Value,
     pub devices: Vec<Value>,
@@ -238,6 +270,7 @@ impl Snapshot {
             documents: super::mac::home().map(|home| home.join("Documents")),
         };
         let mut devices = BTreeMap::new();
+        let mut own_device_name = None;
         let mut names = HashMap::new();
         for entry in state.message(500)?.messages(1) {
             let person = entry?.message(2)?;
@@ -264,7 +297,10 @@ impl Snapshot {
                     5 => "Desktop",
                     _ => "Device",
                 };
-                let name_known = safe_text(peer.text(3), 160);
+                if person_id.eq_ignore_ascii_case(user) && peer_id.eq_ignore_ascii_case(device) {
+                    own_device_name = Some(peer.text(3));
+                }
+                let name_known = descriptive_device_name(peer.text(3));
                 let mut row = json!({
                     "peer": destination, "name": if name_known { peer.text(3) } else { kind },
                     "kind": kind, "contact": contact, "user_name": name, "history": false,
@@ -337,6 +373,7 @@ impl Snapshot {
                 "ok": true, "headless": true, "desktop_session": desktop, "authenticated": authenticated,
                 "user_id": if authenticated { user } else { "" },
                 "device_id": if authenticated { device } else { "" },
+                "current_device_named": own_device_name.map(descriptive_device_name),
                 "registration": registration_name, "downloads_directory": paths.downloads,
                 "native_auto_accept_disabled": auto_accept_disabled,
                 "receive_path_configured": receive_path_configured,
@@ -491,6 +528,38 @@ fn join_relative(root: &Path, suffix: &str) -> Option<PathBuf> {
 mod tests {
     use super::*;
     use crate::blip::rpc::{field, number, string};
+
+    #[test]
+    fn distinguishes_registered_computer_names_from_placeholders() {
+        let user = "11111111-1111-4111-8111-111111111111";
+        let device = "22222222-2222-4222-8222-222222222222";
+        let snapshot = |name: &str| {
+            let auth = field(
+                201,
+                &[
+                    string(201, "fixture"),
+                    string(202, user),
+                    string(204, device),
+                ]
+                .concat(),
+            );
+            let computer = [string(1, device), number(2, 5), string(3, name)].concat();
+            let person = [string(8, user), field(7, &field(2, &computer))].concat();
+            let users = field(500, &field(1, &field(2, &person)));
+            Snapshot::decode(
+                &field(2, &[auth, users].concat()),
+                false,
+                Path::new("fixture"),
+            )
+            .unwrap()
+        };
+        let generic = snapshot("Device 2");
+        assert_eq!(generic.status["current_device_named"], false);
+        assert_eq!(generic.devices[0]["name_known"], false);
+        let named = snapshot("Studio Workstation");
+        assert_eq!(named.status["current_device_named"], true);
+        assert_eq!(named.devices[0]["name"], "Studio Workstation");
+    }
 
     #[test]
     fn finished_root_shortcuts_keep_paths_and_exact_invitation_ids() {
