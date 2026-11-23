@@ -31,6 +31,7 @@ public sealed partial class MainWindow
         }
         finally
         {
+            lastSendActivity = Environment.TickCount64;
             readingSendActivity = false;
             if (currentView == "activity") Render();
         }

@@ -661,10 +661,11 @@ class MyDrive(Gtk.Application):
         self.sync_issue_folder = identifier
         page = self.sync_issues_header("Device progress", self.leave_sync_attention,
                                        lambda: self.show_device_progress(folder))
-        page.append(label("Loading…"))
+        loading = label("Loading…")
+        page.append(loading)
 
         def loaded(result=None, error=None):
-            if self.sync_issue_folder != identifier:
+            if loading.get_parent() != page:
                 return
             self.sync_issues_header("Device progress", self.leave_sync_attention,
                                     lambda: self.show_device_progress(folder))
@@ -682,7 +683,7 @@ class MyDrive(Gtk.Application):
                     parts.append(f"{percent:.1f}%")
                 page.append(row(device.get("name", "Device"), " · ".join(parts)))
         self.work("sync", "Read device progress", lambda: self.sync.request("device_progress", folder_id=identifier),
-                  loaded, quiet=True, on_error=lambda error: loaded(error=error))
+                  loaded, quiet=True, queue=True, on_error=lambda error: loaded(error=error))
 
     def stop_folder(self, folder):
         self.confirm("Stop syncing folder?", "Files and saved versions stay on your devices.", "Stop syncing",

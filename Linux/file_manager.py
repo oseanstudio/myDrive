@@ -17,7 +17,7 @@ def install_actions(appimage, data_home):
     quoted = "".join(f"\\{character}" if character in '"$\\\x60' else character for character in command)
     quoted = quoted.replace("\\", "\\\\").replace("%", "%%")
     nautilus = f"""#!/bin/sh
-case "${NAUTILUS_SCRIPT_CURRENT_URI:-}" in
+case "${{NAUTILUS_SCRIPT_CURRENT_URI:-}}" in
     file://*) exec {shlex.quote(command)} --send-files "$@" ;;
 esac
 """

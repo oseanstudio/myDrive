@@ -208,9 +208,11 @@ public sealed partial class MainWindow
             foreach (var peer in peers)
             {
                 var detail = S(peer, "state");
-                if (peer.TryGetProperty("remaining_bytes", out var bytes) && bytes.TryGetInt64(out var remaining))
+                if (peer.TryGetProperty("remaining_bytes", out var bytes) &&
+                    bytes.ValueKind == JsonValueKind.Number && bytes.TryGetInt64(out var remaining))
                     detail += " · " + Bytes(remaining) + " remaining";
-                if (peer.TryGetProperty("percent", out var ratio) && ratio.TryGetDouble(out var percent))
+                if (peer.TryGetProperty("percent", out var ratio) &&
+                    ratio.ValueKind == JsonValueKind.Number && ratio.TryGetDouble(out var percent))
                     detail += $" · {percent:0.#}%";
                 var row = new StackPanel { Spacing = 2 };
                 row.Children.Add(QuickText(S(peer, "name", "Device"), 12, true));
