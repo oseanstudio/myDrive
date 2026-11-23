@@ -615,11 +615,13 @@ struct BlipQueuedSend: Codable, Identifiable {
     func isFileTrusted(_ peer:BlipPeer)->Bool {policy.account.lowercased()==account.lowercased() && policy.files.contains(peer.peer.lowercased())}
     private func baseDeviceName(_ peer: BlipPeer) -> String {
         let match = peers.first { $0.peer.caseInsensitiveCompare(peer.peer) == .orderedSame }
-        let recent = recentRecipients.first { $0.peer.caseInsensitiveCompare(peer.peer) == .orderedSame }
+        let recent = recentOwner == selfPeer
+            ? recentRecipients.first { $0.peer.caseInsensitiveCompare(peer.peer) == .orderedSame } : nil
         if let nickname = recent?.nickname, !nickname.isEmpty { return nickname }
         if let nickname = match?.nickname, !nickname.isEmpty { return nickname }
         if let match, match.hasDeviceName { return match.displayName }
-        return peer.hasDeviceName ? peer.displayName : match?.displayName ?? peer.displayName
+        if peer.hasDeviceName { return peer.displayName }
+        return recent?.device ?? match?.displayName ?? peer.displayName
     }
     func deviceName(_ peer: BlipPeer) -> String {
         let name = baseDeviceName(peer)

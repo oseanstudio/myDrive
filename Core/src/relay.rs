@@ -814,7 +814,8 @@ mod tests {
     #[test]
     fn cancelling_a_queued_send_keeps_the_original_and_prevents_dispatch() {
         let directory = tempfile::tempdir().unwrap();
-        let root = directory.path();
+        let resolved = directory.path().canonicalize().unwrap();
+        let root = resolved.as_path();
         let file = root.join("project.txt");
         fs::write(&file, b"original").unwrap();
         let staged = run(

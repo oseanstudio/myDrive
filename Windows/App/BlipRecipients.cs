@@ -55,7 +55,7 @@ public sealed partial class MainWindow
             r.peer.Equals(device.Peer, StringComparison.OrdinalIgnoreCase)) : null;
         var known = blipSnapshot?.Devices.Find(d => d.Peer.Equals(device.Peer, StringComparison.OrdinalIgnoreCase));
         return FirstName(recent?.nickname, known?.Nickname, known?.HasRegisteredName == true ? known.Name : null,
-            device.HasDeviceName ? device.BaseLabel : null, known?.BaseLabel, device.BaseLabel);
+            device.HasDeviceName ? device.BaseLabel : null, recent?.device, known?.BaseLabel, device.BaseLabel);
     }
 
     private string BlipDeviceName(BlipDevice device)
@@ -79,7 +79,7 @@ public sealed partial class MainWindow
 
     private string BlipPeerCaption(string peer) => (blipSnapshot?.Devices ?? []).Concat(directoryRecipients)
         .FirstOrDefault(d => d.Peer.Equals(peer, StringComparison.OrdinalIgnoreCase)) is { } device
-        ? BlipDeviceCaption(device) : BlipDevice.FallbackName(peer);
+        ? BlipDeviceCaption(device) : BlipDeviceName(new BlipDevice { Peer = peer });
 
     private async Task UpdateRecentRecipients(string action, string owner, BlipDevice? recipient = null,
                                               string? target = null, string? name = null)

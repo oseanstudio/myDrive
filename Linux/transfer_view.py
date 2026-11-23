@@ -85,9 +85,12 @@ class TransferView:
 
     def base_device_name(self, device, catalog):
         peer = device["peer"].lower()
-        recent = next((r for r in self.recent_recipients if r["peer"] == peer), None)
-        return ((recent or {}).get("nickname") or catalog.get(peer, {}).get("name")
+        recent = {}
+        if self.recipient_owner == self.owner(self.snapshot):
+            recent = next((r for r in self.recent_recipients if r["peer"] == peer), {})
+        return (recent.get("nickname") or catalog.get(peer, {}).get("name")
                 or (device.get("name") if device.get("name_known") else None)
+                or recent.get("device")
                 or self.fallback_name(peer, device.get("kind")))
 
     def device_name(self, device, catalog):
@@ -113,7 +116,9 @@ class TransferView:
 
     def peer_captions(self):
         owner = self.owner(self.snapshot)
-        return self.names(self.directory_recipients + self.snapshot.get("devices", []), self.catalog(owner))
+        recents = [{"peer": item["peer"], "user_name": item.get("person")}
+                   for item in self.recent_recipients] if owner == self.recipient_owner else []
+        return self.names(recents + self.directory_recipients + self.snapshot.get("devices", []), self.catalog(owner))
 
     def catalog(self, identity):
         return read_settings("blip-permissions.json", {}).get(identity.partition(":")[0], {})
