@@ -661,9 +661,13 @@ struct BlipQueuedSend: Codable, Identifiable {
         let target = peer.peer.split(separator: ":").first?.lowercased() ?? ""
         let saved = recentRecipients.filter { $0.peer.lowercased().hasPrefix(target + ":") }
         let known = (peers + directoryRecipients).filter { $0.peer.lowercased().hasPrefix(target + ":") }
-        return (saved.compactMap(\.person_nickname) + [peer.user_name].compactMap { $0 } +
-                known.compactMap(\.user_name) + saved.compactMap(\.person) +
-                [peer.contact].compactMap { $0 } + known.compactMap(\.contact)).first { !$0.isEmpty }
+        var candidates = saved.map(\.person_nickname)
+        candidates.append(peer.user_name)
+        candidates.append(contentsOf: known.map(\.user_name))
+        candidates.append(contentsOf: saved.map(\.person))
+        candidates.append(peer.contact)
+        candidates.append(contentsOf: known.map(\.contact))
+        return candidates.compactMap { $0 }.first { !$0.isEmpty }
     }
     func senderLabel(_ identity: String) -> String {
         let peer = (peers + directoryRecipients).first { $0.peer.caseInsensitiveCompare(identity) == .orderedSame }
