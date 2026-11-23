@@ -74,6 +74,7 @@ class MyDrive(Gtk.Application):
         self.auto_update_timer = 0
         self.auto_update_after = 0
         self.file_picker_depth = 0
+        self.popup_dismiss_timer = 0
         self.startup = {"enabled": True, "configured": False}
 
     def do_activate(self):
@@ -126,7 +127,9 @@ class MyDrive(Gtk.Application):
         self.window.set_child(content)
         drop = Gtk.DropTarget.new(Gdk.FileList.__gtype__, Gdk.DragAction.COPY)
         drop.connect("drop", self.dropped)
+        self.file_drop = drop
         self.window.add_controller(drop)
+        self.window.connect("notify::is-active", self.popup_focus_changed)
         self.status = label("")
         self.status.set_margin_start(8)
         self.status.set_margin_end(8)
@@ -410,6 +413,39 @@ class MyDrive(Gtk.Application):
         else:
             self.window.maximize()
 
+    def dismiss_compact(self):
+        if not self.window.is_maximized():
+            self.window.set_visible(False)
+
+    def popup_focus_changed(self, window, _):
+        if self.popup_dismiss_timer:
+            GLib.source_remove(self.popup_dismiss_timer)
+            self.popup_dismiss_timer = 0
+        if window.get_visible() and not window.is_active() and not window.is_maximized():
+            self.popup_dismiss_timer = GLib.timeout_add(350, self.dismiss_after_click)
+
+    def dismiss_after_click(self):
+        if self.window.get_visible() and not self.window.is_active() and not self.window.is_maximized():
+            if self.file_drop.get_current_drop() is None:
+                surface = self.window.get_surface()
+                seat = self.window.get_display().get_default_seat()
+                pointer = seat.get_pointer() if seat else None
+                if surface and pointer:
+                    _, _, _, state = surface.get_device_position(pointer)
+                    if state & (Gdk.ModifierType.BUTTON1_MASK | Gdk.ModifierType.BUTTON2_MASK |
+                                Gdk.ModifierType.BUTTON3_MASK):
+                        return GLib.SOURCE_CONTINUE
+                self.dismiss_compact()
+        self.popup_dismiss_timer = 0
+        return GLib.SOURCE_REMOVE
+
+    def present_dialog(self, dialog):
+        if not self.window.is_maximized() and dialog.get_transient_for() == self.window:
+            dialog.set_transient_for(None)
+            dialog.set_application(self)
+        dialog.present()
+        self.dismiss_compact()
+
     def apply_appearance(self):
         theme = self.preferences.get("appearance", "System")
         if theme == "System":
@@ -480,7 +516,7 @@ class MyDrive(Gtk.Application):
                     return
             dialog.close()
         dialog.connect("response", response)
-        dialog.present()
+        self.present_dialog(dialog)
         return dialog
 
     def confirm(self, title, message, action, accepted):
@@ -494,7 +530,8 @@ class MyDrive(Gtk.Application):
         text.grab_focus()
 
     def files(self, title, action, accepted, multiple=False, suggested_name=None):
-        chooser = Gtk.FileChooserNative.new(title, self.window, action, "Choose", "Cancel")
+        parent = self.window if self.window.is_maximized() else None
+        chooser = Gtk.FileChooserNative.new(title, parent, action, "Choose", "Cancel")
         chooser.set_select_multiple(multiple)
         if suggested_name:
             chooser.set_current_name(suggested_name)
@@ -511,6 +548,7 @@ class MyDrive(Gtk.Application):
         chooser.connect("response", response)
         self.file_picker_depth += 1
         chooser.show()
+        self.dismiss_compact()
 
     def open_uri(self, uri):
         try:
@@ -548,7 +586,7 @@ class MyDrive(Gtk.Application):
             if response in actions:
                 actions[response]()
         dialog.connect("response", chosen)
-        dialog.present()
+        self.present_dialog(dialog)
 
     def smb_share_folder(self, folder):
         field = Gtk.Entry(text=Path(folder).name, placeholder_text="SMB share name")
@@ -1087,6 +1125,7 @@ class MyDrive(Gtk.Application):
         chosen = []
         recipients = self.transfer_view.choose_recipient({f"{n}": f"Fixture device {n}" for n in range(10)},
                                                          chosen.append)
+        assert not self.window.get_visible(), "The recipient picker should replace the compact menu."
         initial_size = self.window.get_default_size()
 
         class FixtureBlip:
@@ -1126,6 +1165,26 @@ class MyDrive(Gtk.Application):
             assert other_owned.get_first_child().get_child().get_label() == "Fixture studio"
             assert other_heading.get_label() == "Other devices"
             assert other_heading.get_next_sibling() == view.recipient_rows.get_last_child()
+            external = view.recipient_rows.get_last_child()
+            archive = external.get_last_child()
+            assert archive.get_icon_name() == "window-close-symbolic"
+            external_peer = view.snapshot["devices"][-1]["peer"]
+            requests = []
+            update_recents = view.update_recents
+            view.update_recents = lambda action, owner, **kwargs: requests.append((action, kwargs["target"]))
+            archive.emit("clicked")
+            view.recent_recipients.append({"peer": external_peer, "label": "Fixture external", "archived": "other"})
+            view.render_recipient_rows()
+            assert external_peer not in view.visible_recipients()
+            section = view.recipient_rows.get_last_child()
+            assert section.get_label() == "Archived"
+            section.set_expanded(True)
+            section.get_child().get_first_child().get_last_child().emit("clicked")
+            assert requests == [("archive", external_peer), ("restore", external_peer)]
+            view.recent_recipients.pop()
+            view.update_recents = update_recents
+            view.render_recipient_rows()
+            recipient = view.recipient_rows.get_first_child().get_next_sibling()
             calls = []
             view.choose_files = lambda **options: calls.append(options)
             view.paste = lambda selected, owner: calls.append(("paste", selected, owner))

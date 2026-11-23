@@ -141,7 +141,7 @@ struct BlipSendPayload {
     }
 
     private func canChooseRecipient() -> Bool {
-        guard connected, !sending, !recipients.isEmpty else {
+        guard connected, !sending, recipients.contains(where: { !isArchived($0) }) else {
             reportSend("Connect to Blip and wait for a recipient device to appear in the Send view.")
             return false
         }
@@ -150,7 +150,7 @@ struct BlipSendPayload {
 
     private func chooseRecipient(description: String?) -> (peer: BlipPeer, paste: Bool)? {
         guard canChooseRecipient() else { return nil }
-        var choices = recipients
+        var choices = recipients.filter { !isArchived($0) }
         let owner = recipientOwner
         let picker = BlipRecipientPicker(labels: choices.map { recipientLabel($0) }, description: description,
             rename: { index in

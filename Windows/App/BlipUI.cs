@@ -422,7 +422,8 @@ public sealed partial class MainWindow
         if (busy || modalDepth > 0 || blipSnapshot?.Status.Authenticated != true) return;
         var content = new StackPanel { Spacing = 4 };
         string localPeer = blipSnapshot.Status.UserId + ":" + blipSnapshot.Status.DeviceId;
-        var devices = blipSnapshot.Devices.Where(d => !d.History && !d.Peer.Equals(localPeer, StringComparison.OrdinalIgnoreCase))
+        var devices = blipSnapshot.Devices.Where(d => !d.History && !d.Peer.Equals(localPeer, StringComparison.OrdinalIgnoreCase)
+                && !IsRecipientArchived(BlipOwner, d.Peer))
             .OrderBy(d => d.ContactName, StringComparer.CurrentCultureIgnoreCase)
             .ThenBy(d => d.DisplayName, StringComparer.CurrentCultureIgnoreCase).ToList();
         var paths = initialPaths ?? new List<string>();
@@ -484,14 +485,14 @@ public sealed partial class MainWindow
             choices.Children.Add(QuickButton("Choose folder…", async () =>
             {
                 var picker = new FolderPicker();
-                InitializeWithWindow.Initialize(picker, hwnd);
+                InitializeWithWindow.Initialize(picker, detachedDialog == null ? hwnd : WindowNative.GetWindowHandle(detachedDialog));
                 picker.FileTypeFilter.Add("*");
                 var folder = await Modal(async () => await picker.PickSingleFolderAsync());
                 if (folder != null) SetPayload(new() { folder.Path }, folder.Name);
             }));
             content.Children.Add(choices);
         }
-        await ShowDialog(dialog);
+        await ShowDialog(dialog, dismissMenu: true);
         if (clickedPeer is not { } peer || diagnosticMode) return;
         if (pasteClipboard) { await SendToBlipRecipient(localPeer.ToLowerInvariant(), peer, paste: true); return; }
         if (paths.Count == 0) { await SendToBlipRecipient(localPeer.ToLowerInvariant(), peer); return; }

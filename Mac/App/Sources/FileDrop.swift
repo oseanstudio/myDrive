@@ -73,11 +73,15 @@ import UniformTypeIdentifiers
         actions.addButton(withTitle: "Sync Folder")
         actions.addButton(withTitle: "Share over SMB")
         actions.addButton(withTitle: "Cancel")
+        let openedFromPopup = popoverVisible
         switch actions.runModal() {
         case .alertFirstButtonReturn: send()
         case .alertSecondButtonReturn:
             shareFolderPath = folder.path
             dialog = .share
+            if openedFromPopup && !popoverVisible {
+                NotificationCenter.default.post(name: .myDriveShow, object: nil)
+            }
         case .alertThirdButtonReturn: createPrivateShare(folder)
         default: break
         }

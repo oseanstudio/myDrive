@@ -11,6 +11,7 @@ internal sealed class PopupInput : IDisposable
     private IntPtr hook;
     private PointInt32? pressedAt;
     private long pressedButton;
+    private bool dragged;
     private delegate IntPtr HookProc(int code,IntPtr message,IntPtr data);
     [DllImport("user32.dll",SetLastError=true)]private static extern IntPtr SetWindowsHookExW(int id,HookProc callback,IntPtr module,uint thread);
     [DllImport("user32.dll")]private static extern bool UnhookWindowsHookEx(IntPtr hook);
@@ -41,12 +42,17 @@ internal sealed class PopupInput : IDisposable
             {
                 pressedAt = new PointInt32(Marshal.ReadInt32(data), Marshal.ReadInt32(data, 4));
                 pressedButton = kind;
+                dragged = false;
+            }
+            else if (kind == 0x200 && !dragged && pressedAt is { } origin)
+            {
+                dragged = !IsClick(origin, new PointInt32(Marshal.ReadInt32(data), Marshal.ReadInt32(data, 4)));
             }
             else if (kind == pressedButton + 1 && pressedAt is { } start)
             {
                 pressedAt = null;
                 var end = new PointInt32(Marshal.ReadInt32(data), Marshal.ReadInt32(data, 4));
-                if (IsClick(start, end))
+                if (!dragged && IsClick(start, end))
                     try { click(end); } catch {} // Never let a managed exception cross the OS callback.
             }
         }

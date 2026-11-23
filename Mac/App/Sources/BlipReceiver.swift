@@ -16,6 +16,7 @@ struct BlipRecentRecipient: Codable, Identifiable {
     var device: String?
     var nickname: String?
     var person_nickname: String?
+    var archived: String?
     var id: String { peer }
     var fallbackLabel: String {
         let parts = label.components(separatedBy: " · ")
@@ -140,9 +141,20 @@ struct BlipQueuedSend: Codable, Identifiable {
         directoryRecipients = devices.filter { $0.peer.caseInsensitiveCompare(owner) != .orderedSame }
     }
 
-    func removeRecent(_ target: String) {
+    func isArchived(_ peer: BlipPeer) -> Bool {
+        recentOwner == selfPeer && recentRecipients.contains {
+            $0.archived != nil && $0.peer.caseInsensitiveCompare(peer.peer) == .orderedSame
+        }
+    }
+
+    func archiveRecipient(_ target: String, peer: BlipPeer?) {
         let owner = selfPeer
-        Task { await updateRecents("remove", owner: owner, target: target) }
+        Task { await updateRecents("archive", owner: owner, peer: peer, target: target) }
+    }
+
+    func restoreRecipient(_ target: String) {
+        let owner = selfPeer
+        Task { await updateRecents("restore", owner: owner, target: target) }
     }
 
     func renameRecent(_ target: String, displayed: String, nickname: String?, person: Bool) {

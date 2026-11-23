@@ -57,6 +57,7 @@ public sealed partial class MainWindow : Window
     };
     private static ElementTheme colorTheme=RequestedAppearance;
     private ContentDialog? activeDialog;
+    private Window? detachedDialog;
     private readonly Dictionary<(ElementTheme,string),SolidColorBrush> themeBrushes=new();
     private Windows.Graphics.PointInt32? quickOrigin;
     private const string StorageViewName = "SMB Drives";
@@ -118,11 +119,13 @@ public sealed partial class MainWindow : Window
     private void ToggleQuickMenu(){if(compact&&AppWindow.IsVisible){AppWindow.Hide();return;}OpenQuickMenu();}
     public void OpenQuickMenu()
     {
+        if (detachedDialog != null) { detachedDialog.Activate(); return; }
+        if (nativePickerDepth > 0 && !AppWindow.IsVisible) return;
         if (!AppWindow.IsVisible && !busy && modalDepth == 0 && currentView != "transfers")
             NavigateQuick("transfers");
         SetMode(true);
     }
-    public void OpenTransfers(){currentView="transfers";SetMode(true);}
+    public void OpenTransfers(){currentView="transfers";OpenQuickMenu();}
     private void SetMode(bool small,bool activate=true)
     {
         bool placePopup=small&&(!compact||!AppWindow.IsVisible||quickOrigin==null);
@@ -487,6 +490,73 @@ public sealed partial class MainWindow : Window
         dialog.PrimaryButtonClick+=async(_,args)=>{var deferral=args.GetDeferral();try{var (bookmark,credential)=Values();var next=bookmarks.Where(x=>x.id!=b.id).Append(bookmark).ToList();var oldSecrets=CredentialStore.Read(b.id);CredentialStore.Save(b.id,b.username,credential);try{await CoreBridge.Save(next);}catch{if(existing==null)CredentialStore.Delete(b.id);else CredentialStore.Save(b.id,existing.username,oldSecrets);throw;}bookmarks=next;}catch(Exception e){args.Cancel=true;validation.Severity=InfoBarSeverity.Error;validation.Title="Could not save";validation.Message=e.Message;validation.IsOpen=true;}finally{deferral.Complete();}};
         await ShowDialog(dialog);Render();
     }
-    private async Task<T> Modal<T>(Func<Task<T>> action){modalDepth++;nativePickerDepth++;SizeQuickMenu();try{return await action();}finally{nativePickerDepth--;modalDepth--;SizeQuickMenu();}}
-    private async Task<ContentDialogResult> ShowDialog(ContentDialog dialog){modalDepth++;SizeQuickMenu();activeDialog=dialog;try{return await dialog.ShowAsync();}finally{activeDialog=null;modalDepth--;SizeQuickMenu();}}
+    private async Task<T> Modal<T>(Func<Task<T>> action, bool dismissMenu = false)
+    {
+        modalDepth++;
+        nativePickerDepth++;
+        SizeQuickMenu();
+        try
+        {
+            var picking = action();
+            if (dismissMenu && activeDialog == null && compact) AppWindow.Hide();
+            return await picking;
+        }
+        finally { nativePickerDepth--; modalDepth--; SizeQuickMenu(); }
+    }
+
+    private async Task<ContentDialogResult> ShowDialog(ContentDialog dialog, bool dismissMenu = false)
+    {
+        modalDepth++;
+        SizeQuickMenu();
+        activeDialog = dialog;
+        try
+        {
+            return dismissMenu && compact && !diagnosticMode
+                ? await ShowDetachedDialog(dialog)
+                : await dialog.ShowAsync();
+        }
+        finally { activeDialog = null; modalDepth--; SizeQuickMenu(); }
+    }
+
+    private async Task<ContentDialogResult> ShowDetachedDialog(ContentDialog dialog)
+    {
+        var host = new Grid { RequestedTheme = RequestedAppearance, Background = root.Background };
+        var window = new Window { Title = "myDrive", Content = host };
+        detachedDialog = window;
+        var bounds = AppWindow.Size;
+        var origin = AppWindow.Position;
+        window.AppWindow.MoveAndResize(new Windows.Graphics.RectInt32(origin.X, origin.Y, bounds.Width, bounds.Height));
+        window.AppWindow.IsShownInSwitchers = false;
+        if (window.AppWindow.Presenter is OverlappedPresenter presenter)
+        {
+            presenter.SetBorderAndTitleBar(true, false);
+            presenter.IsResizable = presenter.IsMinimizable = presenter.IsMaximizable = false;
+        }
+        var ready = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        host.Loaded += (_, _) => ready.TrySetResult(true);
+        bool showing = false;
+        void ClosePicker(AppWindow _, AppWindowClosingEventArgs args)
+        {
+            args.Cancel = true;
+            if (showing) dialog.Hide();
+            else ready.TrySetResult(false);
+        }
+        window.AppWindow.Closing += ClosePicker;
+        try
+        {
+            window.Activate();
+            if (!await ready.Task) return ContentDialogResult.None;
+            dialog.XamlRoot = host.XamlRoot;
+            var result = dialog.ShowAsync();
+            showing = true;
+            AppWindow.Hide();
+            return await result;
+        }
+        finally
+        {
+            window.AppWindow.Closing -= ClosePicker;
+            detachedDialog = null;
+            window.Close();
+        }
+    }
 }

@@ -21,7 +21,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private let networkMonitor = NWPathMonitor()
     private var cancellables = Set<AnyCancellable>()
     private var eventMonitors: [Any] = []
-    private var outsidePress: (point: NSPoint, button: Int)?
+    private var outsidePress: (point: NSPoint, button: Int, dragged: Bool)?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         SingleInstance.install { [weak self] in self?.showPopover() }
@@ -274,7 +274,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     /// Dismiss only after a matching outside click, once movement is known.
     private func installPopoverDismissMonitors() {
         let clickEvents: NSEvent.EventTypeMask = [.leftMouseDown, .rightMouseDown, .otherMouseDown,
-                                                  .leftMouseUp, .rightMouseUp, .otherMouseUp]
+                                                  .leftMouseUp, .rightMouseUp, .otherMouseUp,
+                                                  .leftMouseDragged, .rightMouseDragged, .otherMouseDragged]
         if let monitor = NSEvent.addGlobalMonitorForEvents(matching: clickEvents, handler: { [weak self] event in
             self?.observePopoverClick(event, isLocal: false)
         }) { eventMonitors.append(monitor) }
@@ -298,14 +299,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         let point = NSEvent.mouseLocation
         let inside = isLocal && (event.window === popover.contentViewController?.view.window ||
                                 event.window === statusItem?.button?.window)
-        if [.leftMouseDown, .rightMouseDown, .otherMouseDown].contains(event.type) {
-            outsidePress = inside ? nil : (point, event.buttonNumber)
-        } else {
+        switch event.type {
+        case .leftMouseDown, .rightMouseDown, .otherMouseDown:
+            outsidePress = inside ? nil : (point, event.buttonNumber, false)
+        case .leftMouseDragged, .rightMouseDragged, .otherMouseDragged:
+            if let press = outsidePress, press.button == event.buttonNumber,
+               hypot(point.x - press.point.x, point.y - press.point.y) >= 6 {
+                outsidePress?.dragged = true
+            }
+        case .leftMouseUp, .rightMouseUp, .otherMouseUp:
             guard let press = outsidePress, press.button == event.buttonNumber else { return }
             outsidePress = nil
-            if !inside, hypot(point.x - press.point.x, point.y - press.point.y) < 6 {
+            if !inside, !press.dragged, hypot(point.x - press.point.x, point.y - press.point.y) < 6 {
                 popover.performClose(nil)
             }
+        default: break
         }
     }
 
@@ -335,6 +343,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private func setupNotifications() {
         NotificationCenter.default.addObserver(forName: .myDriveIncomingBlip, object: nil, queue: .main) { [weak self] notification in
             if let id=notification.object as? String {self?.blipNotice.show(id)}
+        }
+        NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification,
+                                               object: nil, queue: .main) { [weak self] notification in
+            guard let self, self.popover.isShown, self.appState.dialog == nil,
+                  let window = notification.object as? NSWindow,
+                  window !== self.popover.contentViewController?.view.window,
+                  window !== self.statusItem?.button?.window else { return }
+            self.popover.performClose(nil)
         }
         NotificationCenter.default.addObserver(forName: NSApplication.didResignActiveNotification,
                                                object: NSApp, queue: .main) { [weak self] _ in

@@ -59,6 +59,7 @@ class TransferView:
         self.next_name_publish = 0
         self.recipient_owner = ""
         self.recent_recipients = []
+        self.archives_expanded = False
         self.directory_recipients = []
         self.searched_query = ""
         self.search_status = ""
@@ -292,6 +293,7 @@ class TransferView:
                 self.page.append(row(item["label"], f"{names.get(peer, self.fallback_name(peer))} · Queued for relay", stop))
         if self.recipient_owner != identity:
             self.recipient_owner = identity
+            self.archives_expanded = False
             self.recent_recipients = []
             self.directory_recipients = []
             self.searched_query = self.search_status = ""
@@ -371,7 +373,7 @@ class TransferView:
         owner = self.recipient_owner
         if not owner:
             return
-        known = self.recipients()
+        known = self.visible_recipients()
         query = self.recipient_entry.get_text().strip()
         if query:
             term = query.casefold()
@@ -383,7 +385,7 @@ class TransferView:
             searched = query == self.searched_query
             if searched:
                 for peer, name in self.names(self.directory_recipients, self.catalog(owner)).items():
-                    if peer != owner:
+                    if peer != owner and not self.is_archived(peer):
                         matched.setdefault(peer, name)
             for peer, name in sorted(matched.items(), key=lambda item: item[1].casefold())[:30]:
                 self.add_recipient_row(owner, name, peer)
@@ -403,7 +405,8 @@ class TransferView:
                     nickname = aliases.get(peer)
                     displayed = details.get(peer, ("", ""))[1] or name.rsplit(" · ", 1)[-1]
                     self.add_recipient_row(owner, displayed, peer, nickname=nickname, device_shortcut=True)
-        recents = [entry for entry in self.recent_recipients if entry["peer"] not in my_devices]
+        recents = [entry for entry in self.recent_recipients
+                   if not entry.get("archived") and entry["peer"] not in my_devices]
         if recents:
             self.recipient_rows.append(label("Recent recipients", "heading"))
         groups = defaultdict(list)
@@ -430,7 +433,24 @@ class TransferView:
         if others:
             self.recipient_rows.append(label("Other devices", "heading"))
         for peer, name in others:
-            self.add_recipient_row(owner, name, peer, device_shortcut=True)
+            self.add_recipient_row(owner, name, peer, remove=peer)
+        archived = [entry for entry in self.recent_recipients if entry.get("archived")]
+        if archived:
+            entries = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+            for entry in archived:
+                peer = entry["peer"]
+                name = entry.get("nickname") or entry["label"]
+                actions = Gtk.Box(spacing=4)
+                name_label = label(name)
+                name_label.set_hexpand(True)
+                actions.append(name_label)
+                restore = button("Restore", lambda peer=peer: self.update_recents("restore", owner, target=peer))
+                restore.set_tooltip_text("Restore " + name)
+                actions.append(restore)
+                entries.append(actions)
+            section = Gtk.Expander(label="Archived", expanded=self.archives_expanded, child=entries)
+            section.connect("notify::expanded", lambda current, _: setattr(self, "archives_expanded", current.get_expanded()))
+            self.recipient_rows.append(section)
 
     def recent_details(self, owner):
         catalog = self.catalog(owner)
@@ -494,8 +514,8 @@ class TransferView:
             controls.append(self.rename_button(name, rename))
         if remove:
             controls.append(self.rename_button(name, lambda: self.rename_recent(owner, remove, name, nickname, person)))
-            cross = Gtk.Button(icon_name="window-close-symbolic", tooltip_text="Remove " + name + " from recent recipients")
-            cross.connect("clicked", lambda *_: self.update_recents("remove", owner, target=remove))
+            cross = Gtk.Button(icon_name="window-close-symbolic", tooltip_text="Archive " + name)
+            cross.connect("clicked", lambda *_: self.update_recents("archive", owner, peer=peer, title=name, target=remove))
             controls.append(cross)
         self.recipient_rows.append(controls)
 
@@ -608,7 +628,7 @@ class TransferView:
             box.append(item)
         dialog.connect("close-request", close)
         dialog.connect("response", lambda dialog, _: dialog.close())
-        dialog.present()
+        self.app.present_dialog(dialog)
         return box
 
     @staticmethod
@@ -652,6 +672,12 @@ class TransferView:
         devices = [d for d in self.snapshot.get("devices", [])
                    if not d.get("history") and str(d.get("peer", "")).lower() != identity]
         return self.names(devices, self.catalog(identity))
+
+    def is_archived(self, peer):
+        return any(entry.get("archived") and entry["peer"] == peer for entry in self.recent_recipients)
+
+    def visible_recipients(self):
+        return {peer: name for peer, name in self.recipients().items() if not self.is_archived(peer)}
 
     def set_up_blip(self):
         def setup():
@@ -724,12 +750,12 @@ class TransferView:
             if owner == self.owner(self.snapshot):
                 picked(peer)
         else:
-            self.with_send_connection(lambda: self.choose_recipient(self.recipients(), picked))
+            self.with_send_connection(lambda: self.choose_recipient(self.visible_recipients(), picked))
 
     def send_dropped(self, paths, cancelled=lambda: None):
         self.with_send_connection(
             lambda: self.choose_recipient(
-                self.recipients(), lambda peer: self.send(peer, paths), cancelled
+                self.visible_recipients(), lambda peer: self.send(peer, paths), cancelled
             ),
             cancelled,
         )

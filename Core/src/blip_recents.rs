@@ -4,6 +4,13 @@ use std::{collections::BTreeMap, fs, io::Write, path::Path};
 
 const MAX_RECIPIENTS: usize = 24;
 
+#[derive(Clone, Copy, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+enum ArchiveSource {
+    Recent,
+    Other,
+}
+
 #[derive(Deserialize, Serialize)]
 struct Recipient {
     peer: String,
@@ -16,6 +23,8 @@ struct Recipient {
     nickname: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     person_nickname: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    archived: Option<ArchiveSource>,
 }
 
 impl Recipient {
@@ -46,6 +55,7 @@ fn recipient(value: &Value) -> Option<Recipient> {
         device: display_text(&value["device"], 160),
         nickname: String::new(),
         person_nickname: String::new(),
+        archived: None,
     })
 }
 
@@ -111,6 +121,7 @@ pub fn run(action: &str, data: &Path, payload: &Value) -> Result<Value, String> 
                 .ok_or("Choose a valid Blip recipient.")?;
             if let Some(previous) = history.iter().find(|r| r.peer == saved.peer) {
                 saved.nickname.clone_from(&previous.nickname);
+                saved.archived = previous.archived;
                 if saved.person.is_empty() {
                     saved.person.clone_from(&previous.person);
                 }
@@ -123,13 +134,50 @@ pub fn run(action: &str, data: &Path, payload: &Value) -> Result<Value, String> 
             }
             history.retain(|r| r.peer != saved.peer);
             history.insert(0, saved);
-            history.truncate(MAX_RECIPIENTS);
+        }
+        "archive" => {
+            let target = target(payload);
+            if is_peer(&target) && target != owner {
+                if let Some(saved) = history.iter_mut().find(|r| r.peer == target) {
+                    saved.archived.get_or_insert(ArchiveSource::Recent);
+                } else {
+                    let mut saved = recipient(&payload["recipient"])
+                        .filter(|r| r.peer == target)
+                        .ok_or("Choose a valid Blip recipient.")?;
+                    saved.archived = Some(ArchiveSource::Other);
+                    history.push(saved);
+                }
+            } else if crate::automation::uuid(&target) {
+                for saved in history
+                    .iter_mut()
+                    .filter(|r| r.account() == target && r.peer != owner)
+                {
+                    saved.archived.get_or_insert(ArchiveSource::Recent);
+                }
+            } else {
+                return Err("Choose a valid Blip recipient.".into());
+            }
+        }
+        "restore" => {
+            let target = target(payload);
+            if !is_peer(&target) || target == owner {
+                return Err("Choose a valid archived device.".into());
+            }
+            if let Some(index) = history.iter().position(|r| r.peer == target) {
+                match history[index].archived.take() {
+                    Some(ArchiveSource::Other) => {
+                        history.remove(index);
+                    }
+                    Some(ArchiveSource::Recent) => {
+                        let saved = history.remove(index);
+                        history.insert(0, saved);
+                    }
+                    None => {}
+                }
+            }
         }
         "remove" => {
-            let target = payload["target"]
-                .as_str()
-                .unwrap_or_default()
-                .to_ascii_lowercase();
+            let target = target(payload);
             if is_peer(&target) {
                 history.retain(|r| r.peer != target);
             } else if crate::automation::uuid(&target) {
@@ -139,10 +187,7 @@ pub fn run(action: &str, data: &Path, payload: &Value) -> Result<Value, String> 
             }
         }
         "rename" => {
-            let target = payload["target"]
-                .as_str()
-                .unwrap_or_default()
-                .to_ascii_lowercase();
+            let target = target(payload);
             if !is_peer(&target) && !crate::automation::uuid(&target) {
                 return Err("Choose a valid recent recipient.".into());
             }
@@ -163,6 +208,16 @@ pub fn run(action: &str, data: &Path, payload: &Value) -> Result<Value, String> 
         }
         _ => return Err("Unknown Blip recipient action.".into()),
     }
+    if matches!(action, "remember" | "restore") {
+        let mut active = 0;
+        history.retain(|recipient| {
+            if recipient.archived.is_some() {
+                return true;
+            }
+            active += 1;
+            active <= MAX_RECIPIENTS
+        });
+    }
     let result = json!(history
         .iter()
         .filter(|r| r.peer != owner)
@@ -174,6 +229,13 @@ pub fn run(action: &str, data: &Path, payload: &Value) -> Result<Value, String> 
         staged.persist(&path).map_err(|e| e.to_string())?;
     }
     Ok(result)
+}
+
+fn target(payload: &Value) -> String {
+    payload["target"]
+        .as_str()
+        .unwrap_or_default()
+        .to_ascii_lowercase()
 }
 
 #[cfg(test)]
@@ -226,5 +288,31 @@ mod tests {
             operation("list", json!({"owner":owner,"seed":seed})),
             json!([])
         );
+    }
+
+    #[test]
+    fn archived_devices_survive_refresh_and_can_return_to_their_original_list() {
+        let directory = tempfile::tempdir().unwrap();
+        let owner = "00000000-0000-4000-8000-000000000001:00000000-0000-4000-8000-000000000002";
+        let peer = "00000000-0000-4000-8000-000000000003:00000000-0000-4000-8000-000000000004";
+        let recipient = json!({"peer":peer,"label":"Fixture laptop"});
+        let operation = |action, value| run(action, directory.path(), &value).unwrap();
+        let archive = json!({"owner":owner,"target":peer,"recipient":recipient});
+        assert_eq!(
+            operation("archive", archive.clone())[0]["archived"],
+            "other"
+        );
+        assert_eq!(
+            operation("list", json!({"owner":owner}))[0]["label"],
+            "Fixture laptop"
+        );
+        assert_eq!(operation("list", json!({"owner":peer})), json!([]));
+        let restore = json!({"owner":owner,"target":peer});
+        assert_eq!(operation("restore", restore.clone()), json!([]));
+        let remember = json!({"owner":owner,"recipient":recipient});
+        operation("remember", remember.clone());
+        assert_eq!(operation("archive", archive)[0]["archived"], "recent");
+        assert_eq!(operation("remember", remember)[0]["archived"], "recent");
+        assert_eq!(operation("restore", restore), json!([recipient]));
     }
 }

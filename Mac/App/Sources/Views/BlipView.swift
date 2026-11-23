@@ -86,14 +86,15 @@ struct BlipView: View {
                     .disabled(searching || query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }.controlSize(.small)
             let term = query.trimmingCharacters(in: .whitespacesAndNewlines)
-            let available = receiver.recipients
+            let available = receiver.recipients.filter { !receiver.isArchived($0) }
             if !term.isEmpty {
                 let known = available.filter {
                     [$0.contactName, $0.contact, $0.name, $0.displayName].compactMap { $0 }
                         .contains { $0.localizedStandardContains(term) }
                 }
                 let searched = term == submittedQuery
-                let matches = unique(known + (searched ? receiver.directoryRecipients : []))
+                let remote = searched ? receiver.directoryRecipients.filter { !receiver.isArchived($0) } : []
+                let matches = unique(known + remote)
                 ForEach(matches.prefix(30)) { peer in
                     recipientRow(receiver.recipientLabel(peer), peer: peer)
                 }
@@ -115,16 +116,35 @@ struct BlipView: View {
                     }
                 }
                 let listed = Set(myDevices.map { $0.peer.lowercased() })
-                recentRows(receiver.recentRecipients.filter { !listed.contains($0.peer.lowercased()) }, available: available)
-                let seen = listed.union(receiver.recentRecipients.map { $0.peer.lowercased() })
+                let recents = receiver.recentRecipients.filter { $0.archived == nil }
+                recentRows(recents.filter { !listed.contains($0.peer.lowercased()) }, available: available)
+                let seen = listed.union(recents.map { $0.peer.lowercased() })
                 let others = available.filter { !seen.contains($0.peer.lowercased()) }
                 if !others.isEmpty {
                     Text("Other devices").font(.caption).fontWeight(.semibold)
                     ForEach(others) { device in
-                        recipientRow(receiver.recipientLabel(device), peer: device, deviceShortcut: true)
+                        recipientRow(receiver.recipientLabel(device), peer: device, removing: device.peer)
                     }
                 }
+                archivedRecipients
             }
+        }
+    }
+
+    @ViewBuilder private var archivedRecipients: some View {
+        let archived = receiver.recentRecipients.filter { $0.archived != nil }
+        if !archived.isEmpty {
+            DisclosureGroup("Archived") {
+                ForEach(archived) { entry in
+                    let name = firstName(entry.nickname, entry.label)
+                    HStack(spacing: 4) {
+                        Text(name).lineLimit(1).help(name)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        Button("Restore") { receiver.restoreRecipient(entry.peer) }
+                            .accessibilityLabel("Restore " + name)
+                    }.controlSize(.small)
+                }
+            }.font(.caption)
         }
     }
 
@@ -226,9 +246,9 @@ struct BlipView: View {
                 }
                 .accessibilityLabel("Rename " + name)
                 .help("Rename")
-                Button { receiver.removeRecent(removing) } label: { Image(systemName: "xmark") }
-                    .accessibilityLabel("Remove " + name + " from recent recipients")
-                    .help("Remove from recent recipients")
+                Button { receiver.archiveRecipient(removing, peer: peer) } label: { Image(systemName: "xmark") }
+                    .accessibilityLabel("Archive " + name)
+                    .help("Archive " + name)
             }
         }.controlSize(.small).font(.system(size: 12))
     }
