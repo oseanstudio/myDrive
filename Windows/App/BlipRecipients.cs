@@ -59,8 +59,8 @@ public sealed partial class MainWindow
         var recent = recentOwner == BlipOwner ? recentRecipients.Find(r =>
             r.peer.Equals(device.Peer, StringComparison.OrdinalIgnoreCase)) : null;
         var known = blipSnapshot?.Devices.Find(d => d.Peer.Equals(device.Peer, StringComparison.OrdinalIgnoreCase));
-        return FirstName(recent?.nickname, known?.Nickname, known?.HasRegisteredName == true ? known.Name : null,
-            device.HasDeviceName ? device.BaseLabel : null, recent?.device, known?.BaseLabel, device.BaseLabel);
+        return FirstName(recent?.nickname, known?.Nickname, device.HasDeviceName ? device.BaseLabel : null,
+            known?.HasRegisteredName == true ? known.Name : null, recent?.device, known?.BaseLabel, device.BaseLabel);
     }
 
     private string BlipDeviceName(BlipDevice device)
@@ -77,14 +77,33 @@ public sealed partial class MainWindow
     private string BlipDeviceCaption(BlipDevice device)
     {
         var name = BlipDeviceName(device);
-        if (string.IsNullOrWhiteSpace(device.ContactName) ||
-            device.Peer.StartsWith(BlipOwner.Split(':')[0] + ":", StringComparison.OrdinalIgnoreCase)) return name;
-        return device.HasDeviceName ? name + " · " + device.ContactName : device.ContactName + " · " + name;
+        var account = device.Peer.Split(':')[0];
+        var known = (blipSnapshot?.Devices ?? []).Concat(directoryRecipients);
+        var recent = recentRecipients.Find(r => r.peer.Equals(device.Peer, StringComparison.OrdinalIgnoreCase));
+        var person = BlipPersonName(device, account);
+        bool distinguish = !string.IsNullOrWhiteSpace(recent?.nickname) ||
+            !string.IsNullOrWhiteSpace(device.Nickname) ||
+            known.Any(other => !other.History && !other.Peer.Equals(device.Peer, StringComparison.OrdinalIgnoreCase) &&
+                other.Peer.StartsWith(account + ":", StringComparison.OrdinalIgnoreCase) &&
+                !IsRecipientArchived(BlipOwner, other.Peer));
+        return device.RecipientCaption(BlipOwner.Split(':')[0], name, person, distinguish);
+    }
+
+    private string? BlipPersonName(BlipDevice device, string account)
+    {
+        var saved = recentRecipients.Where(r => r.Account.Equals(account, StringComparison.OrdinalIgnoreCase));
+        var known = (blipSnapshot?.Devices ?? []).Concat(directoryRecipients).Where(other =>
+            other.Peer.StartsWith(account + ":", StringComparison.OrdinalIgnoreCase));
+        return saved.Select(r => r.person_nickname).Append(device.UserName)
+            .Concat(known.Select(other => other.UserName))
+            .Concat(saved.Select(r => r.person)).Append(device.Contact)
+            .Concat(known.Select(other => other.Contact))
+            .FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
     }
 
     private string BlipPeerCaption(string peer) => (blipSnapshot?.Devices ?? []).Concat(directoryRecipients)
         .FirstOrDefault(d => d.Peer.Equals(peer, StringComparison.OrdinalIgnoreCase)) is { } device
-        ? BlipDeviceCaption(device) : BlipDeviceName(new BlipDevice { Peer = peer });
+        ? BlipDeviceCaption(device) : BlipDeviceCaption(new BlipDevice { Peer = peer });
 
     private async Task UpdateRecentRecipients(string action, string owner, BlipDevice? recipient = null,
                                               string? target = null, string? name = null)
@@ -217,17 +236,16 @@ public sealed partial class MainWindow
             var entries = group.ToList();
             bool own = owner.StartsWith(group.Key + ":", StringComparison.OrdinalIgnoreCase);
             bool grouped = entries.Count > 1;
-            var person = FirstName(entries[0].person_nickname, own ? "Your devices" : null,
-                devices.FirstOrDefault(d => d.Peer.StartsWith(group.Key + ":", StringComparison.OrdinalIgnoreCase))?.ContactName,
-                entries[0].person, entries[0].FallbackLabel);
+            var person = own ? "Your devices" : FirstName(
+                BlipPersonName(new BlipDevice { Peer = entries[0].peer }, group.Key), entries[0].FallbackLabel);
             if (grouped)
                 AddRecipientRow(rows, owner, person, null, group.Key, entries[0].person_nickname, person: true);
             foreach (var entry in entries)
             {
                 var device = devices.Find(d => d.Peer.Equals(entry.peer, StringComparison.OrdinalIgnoreCase));
-                var known = device ?? blipSnapshot?.Devices.Find(d => d.Peer.Equals(entry.peer, StringComparison.OrdinalIgnoreCase));
-                var name = known != null ? BlipDeviceName(known) :
-                    FirstName(entry.nickname, entry.device, BlipDevice.FallbackName(entry.peer));
+                var known = device ?? blipSnapshot?.Devices.Find(d => d.Peer.Equals(entry.peer, StringComparison.OrdinalIgnoreCase))
+                    ?? new BlipDevice { Peer = entry.peer };
+                var name = grouped ? BlipDeviceName(known) : BlipDeviceCaption(known);
                 AddRecipientRow(rows, owner, name, device, entry.peer, entry.nickname, nested: grouped);
             }
         }
@@ -243,12 +261,13 @@ public sealed partial class MainWindow
             var contents = new StackPanel { Spacing = 3 };
             foreach (var entry in archived)
             {
+                var name = BlipPeerCaption(entry.peer);
                 var entryRow = new Grid { ColumnSpacing = 4 };
                 entryRow.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
                 entryRow.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
-                entryRow.Children.Add(QuickText(entry.nickname ?? entry.label, 12));
+                entryRow.Children.Add(QuickText(name, 12));
                 var restore = QuickButton("Restore", () => _ = UpdateRecentRecipients("restore", owner, target: entry.peer));
-                AutomationProperties.SetName(restore, "Restore " + (entry.nickname ?? entry.label));
+                AutomationProperties.SetName(restore, "Restore " + name);
                 Grid.SetColumn(restore, 1);
                 entryRow.Children.Add(restore);
                 contents.Children.Add(entryRow);

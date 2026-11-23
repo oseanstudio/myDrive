@@ -24,7 +24,7 @@ public sealed class BlipDevice
     [JsonPropertyName("user_name")] public string UserName { get; set; }="";
     [JsonPropertyName("nickname")] public string Nickname { get; set; }="";
     [JsonIgnore] public string SelectionName { get; set; } = "";
-    [JsonIgnore] public bool HasRegisteredName => NameKnown && !IsPlaceholder(Name);
+    [JsonIgnore] public bool HasRegisteredName => NameKnown && !string.IsNullOrWhiteSpace(Name);
     [JsonIgnore] public bool HasDeviceName => HasRegisteredName || !string.IsNullOrWhiteSpace(Nickname);
     [JsonIgnore] public string ContactName => string.IsNullOrWhiteSpace(UserName) ? Contact : UserName;
     [JsonIgnore] public string BaseLabel
@@ -34,20 +34,18 @@ public sealed class BlipDevice
             if (!string.IsNullOrWhiteSpace(Nickname)) return Nickname;
             if (HasRegisteredName) return Name;
             var kind = Kind.Length > 0 ? Kind : Name;
-            return FallbackName(Peer, kind is "Desktop" or "Laptop" or "Phone" or "Tablet" ? kind : "Device");
+            return kind is "Desktop" or "Laptop" or "Phone" or "Tablet" ? kind : "Device";
         }
     }
     [JsonIgnore] public string DisplayName => SelectionName.Length > 0 ? SelectionName : BaseLabel;
     public string DisambiguatedName(string name) => BlipDevice.FallbackName(Peer, name);
 
-    private static bool IsPlaceholder(string name)
+    public string RecipientCaption(string account, string device, string? person, bool showDevice)
     {
-        var text = name.Trim().ToLowerInvariant();
-        if (text.Length == 0 || text is "previous device" or "unnamed" or "mac" or "windows" or "linux" ||
-            text.StartsWith("mydrive on ", StringComparison.Ordinal)) return true;
-        var parts = text.Split(' ', 2);
-        return (parts[0] is "device" or "desktop" or "laptop" or "phone" or "tablet") &&
-            (parts.Length == 1 || parts[1].Length > 0 && parts[1].All(char.IsAsciiDigit));
+        if (Peer.StartsWith(account + ":", StringComparison.OrdinalIgnoreCase) ||
+            string.IsNullOrWhiteSpace(person)) return device;
+        return showDevice && !person.Equals(device, StringComparison.CurrentCultureIgnoreCase)
+            ? person + " · " + device : person;
     }
     public static string FallbackName(string peer, string kind = "Device")
     {
@@ -57,8 +55,7 @@ public sealed class BlipDevice
     }
     public override string ToString()
     {
-        if (string.IsNullOrWhiteSpace(ContactName)) return DisplayName;
-        return HasDeviceName ? DisplayName + " · " + ContactName : ContactName + " · " + DisplayName;
+        return RecipientCaption("", DisplayName, ContactName, HasDeviceName);
     }
 }
 public sealed class BlipTransfer

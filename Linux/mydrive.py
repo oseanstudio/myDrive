@@ -1134,7 +1134,7 @@ class MyDrive(Gtk.Application):
                 return {"status": {"authenticated": True, "user_id": "00000000-0000-4000-8000-000000000001",
                                    "device_id": "00000000-0000-4000-8000-000000000002"},
                         "devices": [{"peer": "00000000-0000-4000-8000-000000000001:00000000-0000-4000-8000-000000000003",
-                                     "name": "Fixture laptop", "name_known": True}]}
+                                     "name": "Fixture laptop", "name_known": True, "user_name": "Fixture owner"}]}
 
             def request(self, action, query):
                 assert (action, query) == ("search", "Remote person")
@@ -1217,7 +1217,15 @@ class MyDrive(Gtk.Application):
             if self.pending["blip-recipients"]:
                 return GLib.SOURCE_CONTINUE
             result = self.transfer_view.recipient_rows.get_first_child().get_first_child()
-            assert result.get_child().get_label() == "Remote person · Remote desktop"
+            assert result.get_child().get_label() == "Remote person"
+            view = self.transfer_view
+            first = view.directory_recipients[0]
+            account = first["peer"].partition(":")[0]
+            second = {"peer": account + ":00000000-0000-4000-8000-000000000007",
+                      "name": "Remote phone", "name_known": True}
+            view.directory_recipients.append(second)
+            labels = view.names(view.directory_recipients, view.catalog(view.recipient_owner))
+            assert labels == {first["peer"]: "Remote person · Remote desktop", second["peer"]: "Remote person · Remote phone"}
             print("Linux GTK directory lookup, grouped destinations and direct recipient controls passed", flush=True)
             self.stack.set_visible_child_name("Sync")
             warning.emit("clicked")

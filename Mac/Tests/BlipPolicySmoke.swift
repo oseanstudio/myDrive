@@ -29,8 +29,15 @@ import Foundation
         let renamed=try BlipContactStore(root.appendingPathComponent("senders.json")).merge(account:account,selfPeer:account+":"+account,peers:[BlipPeer(peer:peer,name:"Remote name",name_known:true)],transfers:[incoming],approved:[])
         precondition(renamed.first?.displayName=="Travel MacBook" && renamed.first?.peer==peer)
         let unnamed = BlipPeer(peer: peer, name: "Phone", online: false, can_relay: false, name_known: false, kind: "Phone", user_name: "Studio tester")
-        precondition(unnamed.displayName == "Phone " + peer.suffix(6).uppercased() &&
+        precondition(unnamed.displayName == "Phone" &&
                      !unnamed.hasDeviceName && unnamed.contactName == "Studio tester")
+        precondition(unnamed.recipientCaption(account: device, device: unnamed.displayName,
+                                              person: unnamed.contactName, distinguish: false) == "Studio tester")
+        precondition(unnamed.recipientCaption(account: device, device: unnamed.displayName,
+                                              person: unnamed.contactName, distinguish: true) == "Studio tester · Phone")
+        let owned = BlipPeer(peer: account + ":" + UUID().uuidString, name: "Mac", name_known: true, user_name: "Fixture user")
+        precondition(owned.recipientCaption(account: account, device: owned.displayName, person: owned.contactName,
+                                            distinguish: true) == "Mac")
         let remembered = try BlipContactStore(root.appendingPathComponent("senders.json"))
             .merge(account: account, selfPeer: account + ":" + account, peers: [unnamed], transfers: [], approved: [])
         precondition(remembered.first?.name == "Remote name" && remembered.first?.online == false && remembered.first?.can_relay == false)

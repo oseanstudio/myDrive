@@ -118,36 +118,16 @@ pub(super) fn safe_text(value: &str, limit: usize) -> bool {
         && !value.chars().any(char::is_control)
 }
 
-pub(super) fn descriptive_device_name(value: &str) -> bool {
-    let name = value.trim();
-    if !safe_text(name, 160) {
-        return false;
-    }
-    let (kind, suffix) = name.split_once(' ').unwrap_or((name, ""));
-    let placeholder = [
-        "device",
-        "desktop",
-        "laptop",
-        "phone",
-        "tablet",
-        "previous device",
-        "unnamed",
-        "mac",
-        "windows",
-        "linux",
-        "mydrive on mac",
-        "mydrive on macos",
-        "mydrive on windows",
-        "mydrive on linux",
-    ]
-    .iter()
-    .any(|value| name.eq_ignore_ascii_case(value))
-        || (["device", "desktop", "laptop", "phone", "tablet"]
-            .iter()
-            .any(|value| kind.eq_ignore_ascii_case(value))
-            && !suffix.is_empty()
-            && suffix.bytes().all(|byte| byte.is_ascii_digit()));
-    !placeholder
+pub(super) fn registered_device_name(value: &str) -> bool {
+    safe_text(value, 160)
+        && ![
+            "myDrive on Mac",
+            "myDrive on macOS",
+            "myDrive on Windows",
+            "myDrive on Linux",
+        ]
+        .iter()
+        .any(|placeholder| value.eq_ignore_ascii_case(placeholder))
 }
 
 pub(super) struct Snapshot {
@@ -280,8 +260,8 @@ impl Snapshot {
             }
             let contact = person.text(1);
             let contact = if email(contact) { contact } else { "" };
-            let name = person.text(2);
-            let name = if safe_text(name, 100) { name } else { contact };
+            let name = person.text(2).trim();
+            let name = if safe_text(name, 100) { name } else { "" };
             names.insert(person_id, (contact, name));
             for entry in person.messages(7) {
                 let peer = entry?.message(2)?;
@@ -297,12 +277,13 @@ impl Snapshot {
                     5 => "Desktop",
                     _ => "Device",
                 };
+                let device_name = peer.text(3).trim();
+                let name_known = registered_device_name(device_name);
                 if person_id.eq_ignore_ascii_case(user) && peer_id.eq_ignore_ascii_case(device) {
-                    own_device_name = Some(peer.text(3));
+                    own_device_name = Some(name_known);
                 }
-                let name_known = descriptive_device_name(peer.text(3));
                 let mut row = json!({
-                    "peer": destination, "name": if name_known { peer.text(3) } else { kind },
+                    "peer": destination, "name": if name_known { device_name } else { kind },
                     "kind": kind, "contact": contact, "user_name": name, "history": false,
                     "name_known": name_known, "can_relay": matches!(kind, "Desktop" | "Laptop"),
                 });
@@ -373,7 +354,7 @@ impl Snapshot {
                 "ok": true, "headless": true, "desktop_session": desktop, "authenticated": authenticated,
                 "user_id": if authenticated { user } else { "" },
                 "device_id": if authenticated { device } else { "" },
-                "current_device_named": own_device_name.map(descriptive_device_name),
+                "current_device_named": own_device_name,
                 "registration": registration_name, "downloads_directory": paths.downloads,
                 "native_auto_accept_disabled": auto_accept_disabled,
                 "receive_path_configured": receive_path_configured,
@@ -533,7 +514,7 @@ mod tests {
     fn distinguishes_registered_computer_names_from_placeholders() {
         let user = "11111111-1111-4111-8111-111111111111";
         let device = "22222222-2222-4222-8222-222222222222";
-        let snapshot = |name: &str| {
+        let snapshot = |name: &str, username: &str| {
             let auth = field(
                 201,
                 &[
@@ -544,7 +525,13 @@ mod tests {
                 .concat(),
             );
             let computer = [string(1, device), number(2, 5), string(3, name)].concat();
-            let person = [string(8, user), field(7, &field(2, &computer))].concat();
+            let person = [
+                string(1, "fixture@example.test"),
+                string(2, username),
+                string(8, user),
+                field(7, &field(2, &computer)),
+            ]
+            .concat();
             let users = field(500, &field(1, &field(2, &person)));
             Snapshot::decode(
                 &field(2, &[auth, users].concat()),
@@ -553,12 +540,15 @@ mod tests {
             )
             .unwrap()
         };
-        let generic = snapshot("Device 2");
+        let generic = snapshot("myDrive on Mac", "");
         assert_eq!(generic.status["current_device_named"], false);
         assert_eq!(generic.devices[0]["name_known"], false);
-        let named = snapshot("Studio Workstation");
+        assert_eq!(generic.devices[0]["user_name"], "");
+        assert_eq!(generic.devices[0]["contact"], "fixture@example.test");
+        let named = snapshot("Mac", "Fixture username");
         assert_eq!(named.status["current_device_named"], true);
-        assert_eq!(named.devices[0]["name"], "Studio Workstation");
+        assert_eq!(named.devices[0]["name"], "Mac");
+        assert_eq!(named.devices[0]["user_name"], "Fixture username");
     }
 
     #[test]

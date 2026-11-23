@@ -35,15 +35,22 @@ catalog.SetNicknames(account,new[]{(peer,"Phone"),(phonePeer,"Phone")});
 phones=catalog.Merge(status,Array.Empty<BlipDevice>(),Array.Empty<BlipTransfer>(),Array.Empty<string>());
 Check(phones.Select(d=>d.DisplayName).Distinct().Count()==2,"identically named devices remain distinguishable in recipient selection");
 var namedPhone = new BlipDevice { Peer = phonePeer, Kind = "Phone", Name = "Studio Pixel 9", NameKnown = true, UserName = "Studio tester" };
-Check(namedPhone.ToString() == "Studio Pixel 9 · Studio tester", "the native label leads while the contact disambiguates matching device names");
+Check(namedPhone.RecipientCaption(account, namedPhone.DisplayName, namedPhone.ContactName, false) == "Studio tester",
+    "a remote person is shown by their Blip username");
+Check(namedPhone.RecipientCaption(account, namedPhone.DisplayName, namedPhone.ContactName, true) == "Studio tester · Studio Pixel 9",
+    "the username leads when a remote person has multiple targets");
+var ownMac = new BlipDevice { Peer = account + ":" + Guid.NewGuid(), Name = "Mac", NameKnown = true, UserName = "Studio tester" };
+Check(ownMac.RecipientCaption(account, ownMac.DisplayName, ownMac.ContactName, true) == "Mac",
+    "an owned device keeps its registered name even when it resembles a platform name");
 var hiddenPhone = new BlipDevice { Peer = phonePeer, Kind = "Phone", Name = "Phone", UserName = "Studio tester" };
-Check(hiddenPhone.ToString() == "Studio tester · " + BlipDevice.FallbackName(phonePeer, "Phone") && !hiddenPhone.HasDeviceName,
-    "blank native names use the contact and device type");
+Check(hiddenPhone.ToString() == "Studio tester" && hiddenPhone.DisplayName == "Phone" && !hiddenPhone.HasDeviceName,
+    "a missing device name keeps the remote username and a readable fallback");
 var blankPeer = peer.Split(':')[0] + ":" + Guid.NewGuid();
 catalog.Merge(status, new[] { new BlipDevice { Peer = blankPeer, Kind = "Laptop", UserName = "Studio tester" } }, Array.Empty<BlipTransfer>(), Array.Empty<string>());
 var restoredContact = catalog.Merge(status, new[] { new BlipDevice { Peer = blankPeer, History = true } },
     Array.Empty<BlipTransfer>(), Array.Empty<string>()).Single(d => d.Peer == blankPeer);
-Check(restoredContact.ToString() == "Studio tester · " + BlipDevice.FallbackName(blankPeer, "Laptop"), "a history-only row keeps the contact and type of its exact peer");
+Check(restoredContact.ToString() == "Studio tester" && restoredContact.Kind == "Laptop",
+    "a history-only row keeps the username and type of its exact peer");
 var otherStatus=new BlipStatus{Authenticated=true,UserId=Guid.NewGuid().ToString()};
 Check(catalog.Merge(otherStatus,Array.Empty<BlipDevice>(),Array.Empty<BlipTransfer>(),Array.Empty<string>()).Count==0,"cached sender list is isolated per account");
 var tracker=new BlipNoticeTracker();Check(tracker.Update(status,new[]{old}).Count==0,"initial completed history produces no popup");

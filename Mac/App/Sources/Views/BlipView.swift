@@ -136,7 +136,7 @@ struct BlipView: View {
         if !archived.isEmpty {
             DisclosureGroup("Archived") {
                 ForEach(archived) { entry in
-                    let name = firstName(entry.nickname, entry.label)
+                    let name = receiver.senderLabel(entry.peer)
                     HStack(spacing: 4) {
                         Text(name).lineLimit(1).help(name)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -159,17 +159,16 @@ struct BlipView: View {
                 if let first = entries.first {
                     let grouped = entries.count > 1
                     let own = account.caseInsensitiveCompare(receiver.account) == .orderedSame
-                    let person = firstName(first.person_nickname, own ? "Your devices" : nil,
-                        available.first { accountPart($0.peer) == account }?.contactName,
-                        first.person, first.fallbackLabel)
+                    let person = own ? "Your devices" :
+                        firstName(receiver.personName(BlipPeer(peer: first.peer, name: "")), first.fallbackLabel)
                     if grouped {
                         recipientRow(person, peer: nil, removing: account, nickname: first.person_nickname, person: true)
                     }
                     ForEach(entries) { entry in
                         let device = available.first { $0.peer.caseInsensitiveCompare(entry.peer) == .orderedSame }
                         let known = device ?? receiver.peers.first { $0.peer.caseInsensitiveCompare(entry.peer) == .orderedSame }
-                        let name = known.map(receiver.deviceName) ??
-                            firstName(entry.nickname, entry.device, BlipPeer.fallbackName(entry.peer))
+                            ?? BlipPeer(peer: entry.peer, name: "")
+                        let name = grouped ? receiver.deviceName(known) : receiver.recipientLabel(known)
                         recipientRow(name, peer: device, removing: entry.peer, nickname: entry.nickname)
                             .padding(.leading, grouped ? 12 : 0)
                     }

@@ -536,7 +536,7 @@ impl Session {
             .name
             .as_deref()
             .map(str::trim)
-            .filter(|name| state::descriptive_device_name(name))
+            .filter(|name| state::registered_device_name(name))
             .ok_or("invalid_device_name")?;
         let device = snapshot.status["device_id"]
             .as_str()

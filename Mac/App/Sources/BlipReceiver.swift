@@ -631,8 +631,8 @@ struct BlipQueuedSend: Codable, Identifiable {
             ? recentRecipients.first { $0.peer.caseInsensitiveCompare(peer.peer) == .orderedSame } : nil
         if let nickname = recent?.nickname, !nickname.isEmpty { return nickname }
         if let nickname = match?.nickname, !nickname.isEmpty { return nickname }
-        if let match, match.hasDeviceName { return match.displayName }
         if peer.hasDeviceName { return peer.displayName }
+        if let match, match.hasDeviceName { return match.displayName }
         return recent?.device ?? match?.displayName ?? peer.displayName
     }
     func deviceName(_ peer: BlipPeer) -> String {
@@ -647,8 +647,23 @@ struct BlipQueuedSend: Codable, Identifiable {
     }
     func recipientLabel(_ peer: BlipPeer) -> String {
         let label = deviceName(peer)
-        guard let person = peer.contactName, !person.isEmpty else { return label }
-        return peer.hasDeviceName ? label + " · " + person : person + " · " + label
+        let target = peer.peer.split(separator: ":").first?.lowercased() ?? ""
+        let recent = recentRecipients.first { $0.peer.caseInsensitiveCompare(peer.peer) == .orderedSame }
+        let distinguish = recent?.nickname?.isEmpty == false || peer.nickname?.isEmpty == false ||
+            (recipients + directoryRecipients).contains {
+                $0.peer.caseInsensitiveCompare(peer.peer) != .orderedSame &&
+                sameAccount($0.peer, target) && !isArchived($0)
+            }
+        return peer.recipientCaption(account: account, device: label, person: personName(peer),
+                                     distinguish: distinguish)
+    }
+    func personName(_ peer: BlipPeer) -> String? {
+        let target = peer.peer.split(separator: ":").first?.lowercased() ?? ""
+        let saved = recentRecipients.filter { $0.peer.lowercased().hasPrefix(target + ":") }
+        let known = (peers + directoryRecipients).filter { $0.peer.lowercased().hasPrefix(target + ":") }
+        return (saved.compactMap(\.person_nickname) + [peer.user_name].compactMap { $0 } +
+                known.compactMap(\.user_name) + saved.compactMap(\.person) +
+                [peer.contact].compactMap { $0 } + known.compactMap(\.contact)).first { !$0.isEmpty }
     }
     func senderLabel(_ identity: String) -> String {
         let peer = (peers + directoryRecipients).first { $0.peer.caseInsensitiveCompare(identity) == .orderedSame }

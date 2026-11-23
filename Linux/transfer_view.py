@@ -89,10 +89,14 @@ class TransferView:
         recent = {}
         if self.recipient_owner == self.owner(self.snapshot):
             recent = next((r for r in self.recent_recipients if r["peer"] == peer), {})
+        kind = device.get("kind")
+        kind = kind if kind in {"Desktop", "Laptop", "Phone", "Tablet"} else "Device"
+        saved = recent.get("device")
+        if saved == self.fallback_name(peer, kind):
+            saved = None
         return (recent.get("nickname") or catalog.get(peer, {}).get("name")
                 or (device.get("name") if device.get("name_known") else None)
-                or recent.get("device")
-                or self.fallback_name(peer, device.get("kind")))
+                or saved or kind)
 
     def device_name(self, device, catalog):
         name = self.base_device_name(device, catalog)
@@ -100,19 +104,48 @@ class TransferView:
         account = peer.partition(":")[0] + ":"
         devices = self.snapshot.get("devices", []) + self.directory_recipients
         duplicate = any(other["peer"].lower() != peer and other["peer"].lower().startswith(account)
+                        and not other.get("history")
                         and self.base_device_name(other, catalog).casefold() == name.casefold()
                         for other in devices if exact_peer(other.get("peer")))
         return name + " " + peer[-6:].upper() if duplicate else name
 
-    def names(self, devices, catalog):
+    def person_name(self, device):
+        prefix = device["peer"].lower().partition(":")[0] + ":"
+        saved = [entry for entry in self.recent_recipients if entry["peer"].startswith(prefix)]
+        known = [other for other in self.snapshot.get("devices", []) + self.directory_recipients
+                 if str(other.get("peer", "")).lower().startswith(prefix)]
+        candidates = ([entry.get("person_nickname") for entry in saved] + [device.get("user_name")]
+                      + [other.get("user_name") for other in known] + [entry.get("person") for entry in saved]
+                      + [device.get("contact")] + [other.get("contact") for other in known])
+        return next((name for name in candidates if name), "")
+
+    def recipient_name(self, device, catalog, show_device=False):
+        peer = device["peer"].lower()
+        device_name = self.device_name(device, catalog)
+        owner = self.owner(self.snapshot).partition(":")[0]
+        prefix = peer.partition(":")[0] + ":"
+        if owner and prefix == owner + ":":
+            return device_name
+        person = self.person_name(device)
+        if not person:
+            return device_name
+        nickname = catalog.get(peer, {}).get("name") or next(
+            (entry.get("nickname") for entry in self.recent_recipients if entry["peer"] == peer), None)
+        other_device = any(other["peer"].lower() != peer and other["peer"].lower().startswith(prefix)
+                           and not other.get("history") and not self.is_archived(other["peer"].lower())
+                           for other in self.snapshot.get("devices", []) + self.directory_recipients
+                           if exact_peer(other.get("peer")))
+        return (person + " · " + device_name
+                if (show_device or nickname or other_device) and person.casefold() != device_name.casefold() else person)
+
+    def names(self, devices, catalog, show_device=False):
         names = {}
         for device in devices:
             peer = device.get("peer")
             if not exact_peer(peer):
                 continue
             peer = peer.lower()
-            contact = device.get("user_name") or device.get("contact") or ""
-            names[peer] = " · ".join(part for part in (contact, self.device_name(device, catalog)) if part)
+            names[peer] = self.recipient_name(device, catalog, show_device)
         return dict(sorted(names.items(), key=lambda item: (item[1].casefold(), item[0])))
 
     def peer_captions(self):
@@ -380,7 +413,8 @@ class TransferView:
             matched = {peer: name for peer, name in known.items() if term in name.casefold()}
             for device in self.snapshot.get("devices", []):
                 peer = str(device.get("peer", "")).lower()
-                if peer in known and term in str(device.get("contact", "")).casefold():
+                if peer in known and any(term in str(device.get(field) or "").casefold()
+                                         for field in ("contact", "user_name", "name")):
                     matched[peer] = known[peer]
             searched = query == self.searched_query
             if searched:
@@ -395,6 +429,7 @@ class TransferView:
                 self.recipient_rows.append(label("No matching Blip devices." if searched else "Press Enter to search Blip."))
             return
         details = self.recent_details(owner)
+        catalog = self.catalog(owner)
         account_prefix = owner.partition(":")[0] + ":"
         my_devices = {peer for peer in known if peer.startswith(account_prefix)}
         aliases = {entry["peer"]: entry.get("nickname") for entry in self.recent_recipients}
@@ -403,8 +438,7 @@ class TransferView:
             for peer, name in known.items():
                 if peer in my_devices:
                     nickname = aliases.get(peer)
-                    displayed = details.get(peer, ("", ""))[1] or name.rsplit(" · ", 1)[-1]
-                    self.add_recipient_row(owner, displayed, peer, nickname=nickname, device_shortcut=True)
+                    self.add_recipient_row(owner, name, peer, nickname=nickname, device_shortcut=True)
         recents = [entry for entry in self.recent_recipients
                    if not entry.get("archived") and entry["peer"] not in my_devices]
         if recents:
@@ -424,8 +458,8 @@ class TransferView:
                 self.add_recipient_row(owner, person, remove=account, nickname=alias, person=True)
             for entry in entries:
                 peer = entry["peer"]
-                device_name = details.get(peer, ("", ""))[1]
-                name = device_name or entry.get("nickname") or entry.get("device") or self.fallback_name(peer)
+                device_name = details.get(peer, ("", ""))[1] or self.device_name({"peer": peer}, catalog)
+                name = device_name if grouped else known.get(peer) or self.recipient_name({"peer": peer}, catalog)
                 self.add_recipient_row(owner, name, peer if peer in known else None, peer,
                                        nickname=entry.get("nickname"), nested=grouped)
         listed = my_devices | {entry["peer"] for entry in recents}
@@ -437,9 +471,10 @@ class TransferView:
         archived = [entry for entry in self.recent_recipients if entry.get("archived")]
         if archived:
             entries = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+            captions = self.peer_captions()
             for entry in archived:
                 peer = entry["peer"]
-                name = entry.get("nickname") or entry["label"]
+                name = captions.get(peer, entry["label"])
                 actions = Gtk.Box(spacing=4)
                 name_label = label(name)
                 name_label.set_hexpand(True)
@@ -831,7 +866,7 @@ class TransferView:
         if not identity:
             self.app.announce("Connect Blip before choosing sender permissions.")
             return
-        names = self.names(self.snapshot.get("devices", []), self.catalog(identity))
+        names = self.names(self.snapshot.get("devices", []), self.catalog(identity), show_device=True)
         saved = self.catalog(identity)
         group = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         fields = {}
