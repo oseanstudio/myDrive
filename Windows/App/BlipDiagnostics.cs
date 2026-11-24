@@ -83,6 +83,40 @@ public sealed partial class MainWindow
             throw new IOException("The tray menu placement ignored the secondary monitor's origin or taskbar edge.");
     }
 
+    private static async Task CheckReceivedTextCopy(string directory)
+    {
+        string path = Path.Combine(directory, $"received-{Guid.NewGuid():N}.txt");
+        try
+        {
+            const string text = "  Received café 雪\r\n\r\n2\n3\n4\n5\n6\n7\n ";
+            await File.WriteAllTextAsync(path, text, System.Text.Encoding.Unicode);
+            var item = new BlipReceivedItem { Name = Path.GetFileName(path), Path = path };
+            var value = new BlipTransfer { Id = Guid.NewGuid().ToString(), Direction = "Incoming",
+                Status = "Completed", Completed = true, ReceivedItems = [item] };
+            var clipboard = (await BlipReceivedActions.CopyData(BlipFileAction.Copy, value, item, path)).GetView();
+            if (clipboard.Contains(Windows.ApplicationModel.DataTransfer.StandardDataFormats.StorageItems) ||
+                await clipboard.GetTextAsync() != text)
+                throw new IOException("Copy must put all of the received text, including line breaks, on the clipboard.");
+            var file = (await BlipReceivedActions.CopyData(BlipFileAction.CopyFile, value, item, path)).GetView();
+            if (!file.Contains(Windows.ApplicationModel.DataTransfer.StandardDataFormats.StorageItems))
+                throw new IOException("Copy file must still copy the attachment.");
+
+            bool fail = true;
+            var card = new BlipReceivedCard(() => 0, (_, _, _) => fail
+                ? Task.FromException(new IOException("Generated copy failure")) : Task.CompletedTask);
+            string? copied = null;
+            card.Copied += id => copied = id;
+            card.SetTransfer(value);
+            await card.LoadedPreview;
+            await card.Perform(BlipFileAction.Copy);
+            if (copied != null) throw new IOException("A failed copy requested popup dismissal.");
+            fail = false;
+            await card.Perform(BlipFileAction.Copy);
+            if (copied != value.Id) throw new IOException("A successful copy did not request popup dismissal.");
+        }
+        finally { File.Delete(path); }
+    }
+
     private static IEnumerable<Grid> BlipPickerRows(ListView list) =>
         list.Items.OfType<ListViewItem>().Select(item => item.Content).OfType<Grid>()
             .Where(row => row.Children.OfType<Button>().Any(button => button.Tag is BlipDevice));
@@ -142,7 +176,7 @@ public sealed partial class MainWindow
                 .OfType<StackPanel>().Select(panel => panel.Children.OfType<TextBlock>().First().Text)
                 .ToArray() ?? Array.Empty<string>();
             var headings = recipientRows?.Children.OfType<TextBlock>().Select(text => text.Text).ToArray();
-            if (headings?.SequenceEqual(new[] { "My devices", "Recent recipients" }) != true ||
+            if (headings?.SequenceEqual(new[] { "Recent recipients", "My devices" }) != true ||
                 devicesInSend.Count(name => name == "Fixture spare") != 1 ||
                 devicesInSend.Contains("Fixture current") || devicesInSend.Length != 2)
                 throw new IOException("Send must show each registered destination once, including offline devices.");
@@ -242,7 +276,7 @@ public sealed partial class MainWindow
             incoming.ReceivedItems=new(){new(){Name=Path.GetFileName(textFile),Path=textFile},new(){Name="Generated folder",Path=receivedFolder,IsDirectory=true}};
             card.SetTransfer(incoming);await card.LoadedPreview;
             if(card.PreviewKind!="text")throw new IOException("Received text preview did not load");
-            foreach(var label in new[]{"Open","Open with…","Copy","Copy path","Open folder","Show in folder","Copy listed files","Copy listed paths"})if(!card.ActionLabels.Contains(label))throw new IOException("Missing received action: "+label);
+            foreach(var label in new[]{"Open","Open with…","Copy","Copy file","Copy path","Open folder","Show in folder","Copy listed files","Copy listed paths"})if(!card.ActionLabels.Contains(label))throw new IOException("Missing received action: "+label);
             if(card.ActionLabels.Any(label=>label is "Print" or "Properties"))throw new IOException("Unneeded receive actions are visible.");
             foreach(var action in Enum.GetValues<BlipFileAction>())await card.Perform(action);
             if(calls.Count!=Enum.GetValues<BlipFileAction>().Length)throw new IOException("A received action did not dispatch");

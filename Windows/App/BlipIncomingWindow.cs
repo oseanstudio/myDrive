@@ -41,7 +41,10 @@ internal sealed class BlipIncomingWindow : Window
         preferences.Click+=(_,_)=>settings();
         Grid.SetColumn(preferences,2);identity.Children.Add(preferences);
         content.Children.Add(identity);
-        fileCard=new BlipReceivedCard(()=>WindowNative.GetWindowHandle(this));fileCard.MenuActive+=active=>{menuOpen=active;UpdateExpiry();};content.Children.Add(fileCard);content.Children.Add(details);content.Children.Add(progress);
+        fileCard=new BlipReceivedCard(()=>WindowNative.GetWindowHandle(this));
+        fileCard.MenuActive+=active=>{menuOpen=active;UpdateExpiry();};
+        fileCard.Copied += id => { if (TransferId == id) Dismiss(); };
+        content.Children.Add(fileCard);content.Children.Add(details);content.Children.Add(progress);
         receive.Click+=(_,_)=>{if(transfer!=null)accept(transfer);};content.Children.Add(receive);
         var border=new Border{Padding=new Thickness(14),Child=new ScrollViewer{Content=content,VerticalScrollBarVisibility=ScrollBarVisibility.Auto},RequestedTheme=MainWindow.RequestedAppearance};
         border.PointerEntered+=(_,_)=>{hovered=true;UpdateExpiry();};border.PointerExited+=(_,_)=>{hovered=false;UpdateExpiry();};

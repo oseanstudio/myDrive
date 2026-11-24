@@ -333,13 +333,6 @@ public sealed partial class MainWindow
         }
         var myDevices = devices.Where(d => d.Peer.StartsWith(ownAccount + ":", StringComparison.OrdinalIgnoreCase))
             .OrderBy(d => d.DisplayName, StringComparer.CurrentCultureIgnoreCase).ToList();
-        rows.Children.Add(QuickText("My devices", 12, true));
-        if (myDevices.Count == 0) rows.Children.Add(QuickText("No other devices on this Blip account.", 11));
-        foreach (var device in myDevices)
-        {
-            var recent = recentRecipients.Find(r => r.peer.Equals(device.Peer, StringComparison.OrdinalIgnoreCase));
-            AddRecipientRow(rows, owner, BlipDeviceName(device), device, null, deviceShortcut: true, nickname: recent?.nickname);
-        }
         var saved = recentRecipients.Where(r => r.archived == null &&
             !r.Account.Equals(ownAccount, StringComparison.OrdinalIgnoreCase)).ToList();
         var byAccount = people.ToDictionary(d => d.Account, StringComparer.OrdinalIgnoreCase);
@@ -349,9 +342,9 @@ public sealed partial class MainWindow
             .ToList();
         var recentAccounts = previous.Select(d => d.Account).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var others = people.Where(d => !recentAccounts.Contains(d.Account)).OrderBy(BlipDeviceCaption, StringComparer.CurrentCultureIgnoreCase).ToList();
-        foreach (var (heading, group) in new[] { ("Recent recipients", previous), ("Other people", others) })
+        void AddPeople(string heading, List<BlipDevice> group)
         {
-            if (group.Count == 0) continue;
+            if (group.Count == 0) return;
             rows.Children.Add(QuickText(heading, 12, true));
             foreach (var person in group)
             {
@@ -360,6 +353,15 @@ public sealed partial class MainWindow
                 AddRecipientRow(rows, owner, BlipDeviceCaption(person), person, person.Peer, alias);
             }
         }
+        AddPeople("Recent recipients", previous);
+        rows.Children.Add(QuickText("My devices", 12, true));
+        if (myDevices.Count == 0) rows.Children.Add(QuickText("No other devices on this Blip account.", 11));
+        foreach (var device in myDevices)
+        {
+            var recent = recentRecipients.Find(r => r.peer.Equals(device.Peer, StringComparison.OrdinalIgnoreCase));
+            AddRecipientRow(rows, owner, BlipDeviceName(device), device, null, deviceShortcut: true, nickname: recent?.nickname);
+        }
+        AddPeople("Other people", others);
         var archived = recentRecipients.Where(r => r.archived != null).ToList();
         if (archived.Count > 0)
         {

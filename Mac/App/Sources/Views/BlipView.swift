@@ -96,6 +96,9 @@ struct BlipView: View {
             } else {
                 let account = receiver.account.lowercased()
                 let myDevices = available.filter { accountPart($0.peer) == account }
+                let listed = Set(myDevices.map { $0.peer.lowercased() })
+                let recents = receiver.recentRecipients.filter { $0.archived == nil }
+                recentRows(recents.filter { !listed.contains($0.peer.lowercased()) }, available: available + receiver.people)
                 if !myDevices.isEmpty {
                     Text("My devices").font(.caption).fontWeight(.semibold)
                     ForEach(myDevices) { device in
@@ -104,9 +107,6 @@ struct BlipView: View {
                                      nickname: recent?.nickname, deviceShortcut: true)
                     }
                 }
-                let listed = Set(myDevices.map { $0.peer.lowercased() })
-                let recents = receiver.recentRecipients.filter { $0.archived == nil }
-                recentRows(recents.filter { !listed.contains($0.peer.lowercased()) }, available: available + receiver.people)
                 let seen = listed.union(recents.map { $0.peer.lowercased() })
                 let others = available.filter { !seen.contains($0.peer.lowercased()) }
                 if !others.isEmpty {

@@ -9,10 +9,37 @@ from time import monotonic
 from urllib.parse import unquote, urlsplit
 from uuid import UUID
 
-from gi.repository import Gdk, Gio, GLib, Gtk
+from gi.repository import Gdk, Gio, GLib, GObject, Gtk
 
 from services import DATA, core, exact_peer, link_url, person_destination, read_settings, save_settings
 from ui_widgets import button, clear, label, menu, row
+
+TEXT_EXTENSIONS = frozenset((
+    ".txt", ".md", ".csv", ".json", ".xml", ".log", ".yaml", ".yml", ".ini",
+    ".css", ".html", ".htm", ".svg", ".js", ".ts", ".cs", ".swift", ".py", ".rs",
+))
+
+
+def clipboard_text(path):
+    if path.suffix.lower() not in TEXT_EXTENSIONS:
+        return None
+    limit = 16 * 1024 * 1024
+    if path.stat().st_size > limit:
+        return None
+    with path.open("rb") as stream:
+        data = stream.read(limit + 1)
+    if len(data) > limit:
+        return None
+    encoding = "utf-8-sig"
+    if data.startswith((b"\xff\xfe\x00\x00", b"\x00\x00\xfe\xff")):
+        encoding = "utf-32"
+    elif data.startswith((b"\xff\xfe", b"\xfe\xff")):
+        encoding = "utf-16"
+    try:
+        text = data.decode(encoding)
+    except UnicodeDecodeError:
+        return None
+    return text if "\x00" not in text else None
 
 
 def completed(transfer):
@@ -479,12 +506,6 @@ class TransferView:
         account_prefix = owner.partition(":")[0] + ":"
         my_devices = {peer for peer in known if peer.startswith(account_prefix)}
         aliases = {entry["peer"]: entry.get("nickname") for entry in self.recent_recipients}
-        if my_devices:
-            self.recipient_rows.append(label("My devices", "heading"))
-            for peer, name in known.items():
-                if peer in my_devices:
-                    nickname = aliases.get(peer)
-                    self.add_recipient_row(owner, name, peer, nickname=nickname, device_shortcut=True)
         recents = [entry for entry in self.recent_recipients
                    if not entry.get("archived") and entry["peer"] not in my_devices]
         if recents:
@@ -508,6 +529,12 @@ class TransferView:
                 name = device_name if grouped else known.get(peer) or self.recipient_name({"peer": peer}, catalog)
                 self.add_recipient_row(owner, name, peer if peer in known else None, peer,
                                        nickname=entry.get("nickname"), nested=grouped)
+        if my_devices:
+            self.recipient_rows.append(label("My devices", "heading"))
+            for peer, name in known.items():
+                if peer in my_devices:
+                    nickname = aliases.get(peer)
+                    self.add_recipient_row(owner, name, peer, nickname=nickname, device_shortcut=True)
         listed = my_devices | {entry["peer"] for entry in recents}
         others = [(peer, name) for peer, name in known.items() if peer not in listed]
         if others:
@@ -629,6 +656,7 @@ class TransferView:
         if not completed(transfer):
             return
         items = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        feedback = Gtk.Label(xalign=0, wrap=True, visible=False)
         for item in transfer.get("received_items", []):
             path = received_path(item)
             if path is None:
@@ -644,16 +672,44 @@ class TransferView:
                     with path.open("rb") as file:
                         preview = file.read(2048).decode(errors="replace")
                     items.append(label("\n".join(preview.splitlines()[:5])))
-            actions = menu([("Copy path", lambda p=path: self.app.window.get_clipboard().set_text(str(p))),
-                            ("Open folder", lambda p=path: self.app.open_path(p if p.is_dir() else p.parent))])
+            options = []
+            if not item.get("is_directory") and path.suffix.lower() in TEXT_EXTENSIONS:
+                options.append(("Copy file", lambda i=item: self.copy_received(i, dialog, feedback, mode="file")))
+            options.extend([
+                ("Copy path", lambda i=item: self.copy_received(i, dialog, feedback, mode="path")),
+                ("Open folder", lambda p=path: self.app.open_path(p if p.is_dir() else p.parent)),
+            ])
             items.append(row(item.get("name") or path.name, "", button("Open", lambda p=path: self.app.open_path(p)),
-                             button("Copy", lambda p=path: self.copy_path(p)), actions))
-        self.app.dialog("Received files", "Done", [self.app.scrolled_list(items, height=270)], lambda: None)
+                             button("Copy", lambda i=item: self.copy_received(i, dialog, feedback)), menu(options)))
+        dialog = self.app.dialog("Received files", "Done", [self.app.scrolled_list(items, height=270), feedback], lambda: None)
 
-    def copy_path(self, path):
-        uri = Gio.File.new_for_path(str(path)).get_uri()
-        provider = Gdk.ContentProvider.new_for_bytes("text/uri-list", GLib.Bytes.new((uri + "\r\n").encode()))
-        self.app.window.get_clipboard().set_content(provider)
+    def copy_received(self, item, dialog, feedback, mode="text"):
+        def prepare():
+            path = received_path(item)
+            if path is None:
+                raise OSError("This received item is unavailable or has moved.")
+            if mode == "path":
+                return str(path), None
+            text = clipboard_text(path) if mode == "text" and not item.get("is_directory") else None
+            return text, path
+
+        def copy(data):
+            text, path = data
+            clipboard = self.app.window.get_clipboard()
+            if text is not None:
+                provider = Gdk.ContentProvider.new_for_value(GObject.Value(str, text))
+            else:
+                uri = Gio.File.new_for_path(str(path)).get_uri()
+                provider = Gdk.ContentProvider.new_for_bytes("text/uri-list", GLib.Bytes.new((uri + "\r\n").encode()))
+            if not clipboard.set_content(provider):
+                raise RuntimeError("The received item could not be copied.")
+            dialog.close()
+
+        def failed(message):
+            feedback.set_label(message)
+            feedback.set_visible(True)
+
+        self.app.work("blip-recipients", "", prepare, copy, quiet=True, queue=True, on_error=failed)
 
     def choose_recipient(self, devices, selected, cancelled=lambda: None):
         box = Gtk.ListBox()

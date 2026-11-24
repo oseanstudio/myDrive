@@ -9,6 +9,7 @@ import sys
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from threading import Event
 from time import monotonic
 
@@ -21,7 +22,7 @@ from services import DATA, ROOT, Blip, Sync, core, read_settings, save_settings
 from smb_sharing import add_private_share
 from storage_view import StorageView
 from tray import Tray
-from transfer_view import TransferView
+from transfer_view import TransferView, clipboard_text
 from ui_widgets import button, clear, label, menu, row
 
 
@@ -1079,6 +1080,14 @@ class MyDrive(Gtk.Application):
         self.work("sync", "Connect Syncthing", connect, lambda data: (setattr(self, "snapshot", data), self.render_sync()))
 
     def run_fixture(self):
+        with TemporaryDirectory() as directory:
+            text_file = Path(directory, "clipboard.txt")
+            text = "  Received café 雪\r\n\r\n2\n3\n4\n5\n6\n7\n "
+            for encoding in ("utf-8", "utf-8-sig", "utf-16", "utf-32"):
+                text_file.write_bytes(text.encode(encoding))
+                assert clipboard_text(text_file) == text
+            text_file.write_bytes(b"binary\x00data")
+            assert clipboard_text(text_file) is None
         self.snapshot = {"version": "v2 fixture", "folders": [
             {"id": "folder", "label": "A long studio folder label to verify truncation", "path": "/tmp/mydrive-fixture",
              "device_ids": ["device"], "status": {"state": "idle", "needFiles": 2, "pullErrors": 1}}
@@ -1205,6 +1214,11 @@ class MyDrive(Gtk.Application):
             assert requests == [("archive", external_peer), ("restore", external_peer)]
             view.recent_recipients.pop()
             view.update_recents = update_recents
+            view.recent_recipients.append({"peer": external_peer, "label": "Fixture external"})
+            view.render_recipient_rows()
+            assert view.recipient_rows.get_first_child().get_label() == "Recent recipients"
+            assert view.recipient_rows.get_first_child().get_next_sibling().get_next_sibling().get_label() == "My devices"
+            view.recent_recipients.pop()
             view.render_recipient_rows()
             recipient = view.recipient_rows.get_first_child().get_next_sibling()
             calls = []

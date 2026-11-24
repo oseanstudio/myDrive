@@ -26,7 +26,10 @@ private struct ReceiveNoticeHeight: PreferenceKey {
     func show(_ id:String) {
         guard !dismissed.contains(id),let transfer=receiver.transfers.first(where:{$0.id==id}) else {return}
         self.id=id;expiry?.invalidate()
-        let view = BlipReceiveNoticeView(receiver: receiver, id: id, openTransfers: openTransfers)
+        let view = BlipReceiveNoticeView(receiver: receiver, id: id, openTransfers: openTransfers,
+                                        onCopy: { [weak self] in
+                                            if self?.id == id { self?.dismiss() }
+                                        })
             .frame(width: Self.width)
             .fixedSize(horizontal: false, vertical: true)
             .background {
@@ -64,7 +67,8 @@ private struct ReceiveNoticeHeight: PreferenceKey {
         panel.setFrame(frame, display: panel.isVisible)
     }
     private func updateExpiry(hovered:Bool){expiry?.invalidate();guard !hovered,let transfer=receiver.transfers.first(where:{$0.id==id}),transfer.confirmed||transfer.has_error||transfer.status=="Cancelled" else{return};expiry=Timer.scheduledTimer(withTimeInterval:30,repeats:false){[weak self]_ in Task{@MainActor in self?.panel.orderOut(nil)}}}
-    func windowShouldClose(_ sender:NSWindow)->Bool {dismissed.insert(id);expiry?.invalidate();panel.orderOut(nil);return false}
+    private func dismiss() { dismissed.insert(id); stop() }
+    func windowShouldClose(_ sender:NSWindow)->Bool { dismiss(); return false }
     func stop(){expiry?.invalidate();panel.orderOut(nil)}
 }
 
@@ -73,6 +77,7 @@ struct BlipReceiveNoticeView:View {
     let id:String
     let openTransfers:()->Void
     var fixturePreview:BlipFilePreview?=nil
+    var onCopy: () -> Void = {}
     var body:some View {
         VStack(alignment:.leading,spacing:7) {
             if let transfer=receiver.transfers.first(where:{$0.id==id}) {
@@ -81,7 +86,7 @@ struct BlipReceiveNoticeView:View {
                     Spacer(minLength:0)
                     Text(transfer.has_error ? "Needs attention" : transfer.confirmed ? "Received" : receiver.receiving.contains(transfer.id) ? "Requesting…" : transfer.status=="Pending" ? "Connecting" : transfer.status).font(.system(size:11)).foregroundStyle(.secondary).lineLimit(1).fixedSize(horizontal:true,vertical:false)
                 }
-                BlipReceivedFileView(transfer:transfer,fixturePreview:fixturePreview).id(transfer.id)
+                BlipReceivedFileView(transfer:transfer,fixturePreview:fixturePreview,onCopy:onCopy).id(transfer.id)
                 if transfer.pending,let problem=receiver.problem {Text(problem).font(.system(size:11)).foregroundStyle(.red).lineLimit(3)}
                 if transfer.status=="Active" {
                     if let total=transfer.total_bytes,total>0,let progress=transfer.progress,progress>=0,progress<=total {

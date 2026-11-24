@@ -5,25 +5,44 @@ using Windows.Storage.Streams;
 using Windows.System;
 namespace MyDrive;
 
-internal enum BlipFileAction {Open,OpenWith,Copy,CopyPath,OpenFolder,ShowInFolder,CopyListedFiles,CopyListedPaths}
+internal enum BlipFileAction {Open,OpenWith,Copy,CopyFile,CopyPath,OpenFolder,ShowInFolder,CopyListedFiles,CopyListedPaths}
 internal static class BlipReceivedActions {
     private static string Require(BlipTransfer transfer,BlipReceivedItem item)=>BlipReceivedFiles.LocalPath(transfer,item)??throw new IOException("This received file is unavailable or has moved.");
     private static async Task<IStorageItem> StorageItem(BlipReceivedItem item,string path)=>item.IsDirectory?await StorageFolder.GetFolderFromPathAsync(path):await StorageFile.GetFileFromPathAsync(path);
+    internal static async Task<DataPackage> CopyData(BlipFileAction action, BlipTransfer transfer, BlipReceivedItem item, string path)
+    {
+        var data = new DataPackage { RequestedOperation = DataPackageOperation.Copy };
+        if (action == BlipFileAction.Copy && !item.IsDirectory &&
+            await BlipReceivedFiles.ClipboardTextAsync(path) is { } text)
+        {
+            data.SetText(text);
+            return data;
+        }
+
+        BlipReceivedItem[] chosen = action == BlipFileAction.CopyListedFiles ? transfer.ReceivedItems.Take(256).ToArray() : [item];
+        var items = new List<IStorageItem>();
+        foreach (var entry in chosen) items.Add(await StorageItem(entry, Require(transfer, entry)));
+        data.SetStorageItems(items);
+        if (chosen.Length == 1 && !item.IsDirectory)
+        {
+            var file = (StorageFile)items[0];
+            if (BlipReceivedFiles.IsImage(path)) data.SetBitmap(RandomAccessStreamReference.CreateFromFile(file));
+            if (BlipReceivedFiles.IsShortcut(path) && await BlipLinkOpener.ReadShortcutAsync(path) is { } url)
+            {
+                data.SetText(url.AbsoluteUri);
+                data.SetWebLink(url);
+            }
+        }
+        return data;
+    }
+
     public static async Task Execute(BlipFileAction action,BlipTransfer transfer,BlipReceivedItem item,nint owner) {
         string path=Require(transfer,item);
         if(action==BlipFileAction.CopyPath||action==BlipFileAction.CopyListedPaths) {
             var data=new DataPackage();data.SetText(action==BlipFileAction.CopyPath?path:string.Join(Environment.NewLine,transfer.ReceivedItems.Take(256).Select(i=>Require(transfer,i))));Clipboard.SetContent(data);Clipboard.Flush();return;
         }
-        if(action==BlipFileAction.Copy||action==BlipFileAction.CopyListedFiles) {
-            var chosen=action==BlipFileAction.Copy?new[]{item}:transfer.ReceivedItems.Take(256).ToArray();
-            var items=new List<IStorageItem>();foreach(var entry in chosen)items.Add(await StorageItem(entry,Require(transfer,entry)));
-            var data=new DataPackage{RequestedOperation=DataPackageOperation.Copy};data.SetStorageItems(items);
-            if(chosen.Length==1&&!item.IsDirectory) {
-                var file=(StorageFile)items[0];
-                if(BlipReceivedFiles.IsImage(path))data.SetBitmap(RandomAccessStreamReference.CreateFromFile(file));
-                if(BlipReceivedFiles.IsShortcut(path)&&await BlipLinkOpener.ReadShortcutAsync(path) is {} url){data.SetText(url.AbsoluteUri);data.SetWebLink(url);}
-            }
-            Clipboard.SetContent(data);Clipboard.Flush();return;
+        if(action is BlipFileAction.Copy or BlipFileAction.CopyFile or BlipFileAction.CopyListedFiles) {
+            Clipboard.SetContent(await CopyData(action,transfer,item,path));Clipboard.Flush();return;
         }
         if(action==BlipFileAction.Open) {
             bool opened;

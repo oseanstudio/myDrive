@@ -247,7 +247,17 @@ enum Diagnostics {
         try FileManager.default.createDirectory(at:root,withIntermediateDirectories:true)
         defer{try? FileManager.default.removeItem(at:root)}
         let text=root.appendingPathComponent("Generated document with a long name for overflow checking.txt")
-        try "Received document preview\nGenerated local fixture only\nNo clipboard or external app access".write(to:text,atomically:true,encoding:.utf8)
+        let content = "Received document preview\r\nGenerated local fixture only\r\n3\n4\n5\n6\n7\n  Café 雪 "
+        try content.write(to:text,atomically:true,encoding:.utf16)
+        let clipboard = NSPasteboard.withUniqueName()
+        defer { clipboard.releaseGlobally() }
+        guard let textToCopy = try BlipFileKind.clipboardText(text) else {
+            throw BlipReceiverError.message("Received text could not be read for copying.")
+        }
+        try BlipFileActions.writeText(textToCopy, clipboard: clipboard)
+        guard clipboard.string(forType: .string) == content, clipboard.string(forType: .fileURL) == nil else {
+            throw BlipReceiverError.message("Copy must put all of the received text on the pasteboard as plain text.")
+        }
         let picture=root.appendingPathComponent("Generated preview.png")
         guard let resource=Bundle.main.url(forResource:"myDrive",withExtension:"png") else{throw BlipReceiverError.message("Missing fixture image resource")}
         try FileManager.default.copyItem(at:resource,to:picture)
@@ -273,7 +283,7 @@ enum Diagnostics {
         renderReceiveNotice(BlipReceiveNoticeView(receiver: receiver, id: transfer.id, openTransfers: {},
             fixturePreview: BlipFilePreview(text: "Received document preview")), to: directory.appendingPathComponent("blip-received-multiple.png"))
         captures.append("blip-received-multiple.png")
-        return ["result":"pass","image_and_text_preview":true,"fixtures_only":true,"clipboard_or_launch":false]
+        return ["result":"pass","image_and_text_preview":true,"fixtures_only":true,"private_pasteboard_copy":true]
     }
 
     @MainActor

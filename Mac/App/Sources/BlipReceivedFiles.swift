@@ -16,6 +16,28 @@ enum BlipFileKind {
         let text=(data.starts(with:[0xff,0xfe])||data.starts(with:[0xfe,0xff])) ? String(data:data,encoding:.utf16):String(data:data,encoding:.utf8)
         guard let text,!text.contains("\0") else{return nil};return text.components(separatedBy:.newlines).prefix(6).joined(separator:"\n")
     }
+
+    static func clipboardText(_ url: URL) throws -> String? {
+        guard text(url) else { return nil }
+        let limit = 16 * 1024 * 1024
+        if let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize, size > limit { return nil }
+        let file = try FileHandle(forReadingFrom: url)
+        defer { try? file.close() }
+        var bytes = Data()
+        while let chunk = try file.read(upToCount: min(65536, limit + 1 - bytes.count)), !chunk.isEmpty {
+            bytes.append(chunk)
+            if bytes.count > limit { return nil }
+        }
+        let markers: [([UInt8], String.Encoding)] = [
+            ([0xff, 0xfe, 0, 0], .utf32LittleEndian), ([0, 0, 0xfe, 0xff], .utf32BigEndian),
+            ([0xff, 0xfe], .utf16LittleEndian), ([0xfe, 0xff], .utf16BigEndian),
+            ([0xef, 0xbb, 0xbf], .utf8)
+        ]
+        let marker = markers.first { bytes.starts(with: $0.0) }
+        guard let content = String(data: bytes.dropFirst(marker?.0.count ?? 0), encoding: marker?.1 ?? .utf8),
+              !content.contains("\0") else { return nil }
+        return content
+    }
 }
 struct BlipFilePreview {
     var image:NSImage?=nil
@@ -67,8 +89,12 @@ private final class BlipThumbnailReply:@unchecked Sendable {
         guard NSWorkspace.shared.open(target) else{throw BlipReceiverError.message("The default app could not open this item.")}
     }
     static func copy(_ items:[BlipReceivedItem],_ transfer:BlipTransfer,paths:Bool=false)throws {
-        let urls=try items.prefix(256).map{try url($0,transfer)};let clipboard=NSPasteboard.general
-        if paths {clipboard.clearContents();clipboard.setString(urls.map(\.path).joined(separator:"\n"),forType:.string);return}
+        let urls=try items.prefix(256).map{try url($0,transfer)}
+        let clipboard = NSPasteboard.general
+        if paths {
+            try writeText(urls.map(\.path).joined(separator: "\n"), clipboard: clipboard)
+            return
+        }
         let entries=urls.map {url->NSPasteboardItem in
             let entry=NSPasteboardItem();entry.setString(url.absoluteString,forType:.fileURL)
             if urls.count==1 {
@@ -78,6 +104,20 @@ private final class BlipThumbnailReply:@unchecked Sendable {
             };return entry
         }
         clipboard.clearContents();guard clipboard.writeObjects(entries) else{throw BlipReceiverError.message("The received item could not be copied.")}
+    }
+    static func copyItem(_ item: BlipReceivedItem, _ transfer: BlipTransfer) async throws {
+        let file = try url(item, transfer)
+        if !item.is_directory, let text = try await Task.detached(operation: { try BlipFileKind.clipboardText(file) }).value {
+            try writeText(text, clipboard: .general)
+        } else {
+            try copy([item], transfer)
+        }
+    }
+    static func writeText(_ text: String, clipboard: NSPasteboard) throws {
+        clipboard.clearContents()
+        guard clipboard.setString(text, forType: .string) else {
+            throw BlipReceiverError.message("The received text could not be copied.")
+        }
     }
     static func reveal(_ item:BlipReceivedItem,_ transfer:BlipTransfer)throws{NSWorkspace.shared.activateFileViewerSelecting([try url(item,transfer)])}
     static func folder(_ item:BlipReceivedItem,_ transfer:BlipTransfer)throws{let file=try url(item,transfer);guard NSWorkspace.shared.open(item.is_directory ? file:file.deletingLastPathComponent()) else{throw BlipReceiverError.message("The received folder could not open.")}}
@@ -91,13 +131,59 @@ private final class BlipThumbnailReply:@unchecked Sendable {
 @MainActor struct BlipReceivedFileView:View {
     let transfer:BlipTransfer
     var fixturePreview:BlipFilePreview?=nil
+    var onCopy: () -> Void = {}
     @State private var selection=""
     @State private var preview=BlipFilePreview()
     @State private var message=""
     private var items:[BlipReceivedItem]{transfer.direction=="Incoming"&&transfer.confirmed ? Array((transfer.received_items ?? []).prefix(256)).sorted{$0.name<$1.name}:[]}
     private var selected:BlipReceivedItem?{items.first{$0.path==selection} ?? items.first}
     private var file:URL?{selected.flatMap{BlipReceivedPath.url($0,in:transfer)}}
-    private func act(success:String="",_ action:()throws->Void){do{try action();message=success}catch{message=error.localizedDescription}}
+    private func act(after: () -> Void = {}, _ action: () throws -> Void) {
+        do { try action(); message = ""; after() }
+        catch { message = error.localizedDescription }
+    }
+    private func copy(_ item: BlipReceivedItem) {
+        Task {
+            do { try await BlipFileActions.copyItem(item, transfer); onCopy() }
+            catch { message = error.localizedDescription }
+        }
+    }
+    private func actionMenu(_ item: BlipReceivedItem) -> some View {
+        let location = file
+        let isShortcut = location.map(BlipFileKind.shortcut) == true
+        let isText = !item.is_directory && location.map(BlipFileKind.text) == true
+        return Menu {
+            Button("Open") { act { try BlipFileActions.open(item, transfer) } }
+            Menu("Open With") {
+                if let location {
+                    ForEach(NSWorkspace.shared.urlsForApplications(toOpen: location), id: \.self) { app in
+                        Button(app.deletingPathExtension().lastPathComponent) {
+                            act { try BlipFileActions.openWith(app, item: item, transfer: transfer) }
+                        }
+                    }
+                }
+                Button("Choose Application…") { act { try BlipFileActions.openWith(nil, item: item, transfer: transfer) } }
+            }.disabled(item.is_directory || isShortcut)
+            Button("Copy") { copy(item) }
+            if isText {
+                Button("Copy File") { act(after: onCopy) { try BlipFileActions.copy([item], transfer) } }
+            }
+            Button("Copy Path") { act(after: onCopy) { try BlipFileActions.copy([item], transfer, paths: true) } }
+            Divider()
+            Button("Open Folder") { act { try BlipFileActions.folder(item, transfer) } }
+            Button("Show in Finder") { act { try BlipFileActions.reveal(item, transfer) } }
+            Button("Quick Look") { if let location { BlipQuickLook.shared.show(location) } }.disabled(isShortcut)
+            if items.count > 1 {
+                Divider()
+                Button("Copy Listed Files") { act(after: onCopy) { try BlipFileActions.copy(items, transfer) } }
+                Button("Copy Listed Paths") { act(after: onCopy) { try BlipFileActions.copy(items, transfer, paths: true) } }
+            }
+        } label: {
+            Image(systemName: "chevron.down").font(.system(size: 10))
+        }
+        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+        .padding(.horizontal, 6).accessibilityLabel("Received file actions")
+    }
     private var itemLabel:String{let names=transfer.item_names ?? [];return names.isEmpty ? "Incoming transfer":names.joined(separator:", ")}
     var body:some View {
         VStack(alignment:.leading,spacing:6){
@@ -120,21 +206,8 @@ private final class BlipThumbnailReply:@unchecked Sendable {
             if transfer.confirmed,let selected {
                 HStack(spacing:0){
                     Button("Open"){act{try BlipFileActions.open(selected,transfer)}}
-                    Menu {
-                        Button("Open"){act{try BlipFileActions.open(selected,transfer)}}
-                        Menu("Open With"){
-                            if let file{ForEach(NSWorkspace.shared.urlsForApplications(toOpen:file),id:\.self){app in Button(app.deletingPathExtension().lastPathComponent){act{try BlipFileActions.openWith(app,item:selected,transfer:transfer)}}}}
-                            Button("Choose Application…"){act{try BlipFileActions.openWith(nil,item:selected,transfer:transfer)}}
-                        }.disabled(selected.is_directory||file.map(BlipFileKind.shortcut)==true)
-                        Button("Copy"){act(success:"Copied"){try BlipFileActions.copy([selected],transfer)}}
-                        Button("Copy Path"){act(success:"Path copied"){try BlipFileActions.copy([selected],transfer,paths:true)}}
-                        Divider()
-                        Button("Open Folder"){act{try BlipFileActions.folder(selected,transfer)}}
-                        Button("Show in Finder"){act{try BlipFileActions.reveal(selected,transfer)}}
-                        Button("Quick Look"){if let file{BlipQuickLook.shared.show(file)}}.disabled(file.map(BlipFileKind.shortcut)==true)
-                        if items.count>1{Divider();Button("Copy Listed Files"){act{try BlipFileActions.copy(items,transfer)}};Button("Copy Listed Paths"){act{try BlipFileActions.copy(items,transfer,paths:true)}}}
-                    }label:{Image(systemName:"chevron.down").font(.system(size:10))}.menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().padding(.horizontal,6).accessibilityLabel("Received file actions")
-                    Button("Copy"){act(success:"Copied"){try BlipFileActions.copy([selected],transfer)}}.padding(.leading,6)
+                    actionMenu(selected)
+                    Button("Copy") { copy(selected) }.padding(.leading, 6)
                 }.controlSize(.small).disabled(file==nil)
                 if file==nil{Text("File moved or unavailable").font(.system(size:11)).foregroundStyle(.secondary)}
             }

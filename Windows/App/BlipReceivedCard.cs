@@ -29,6 +29,7 @@ internal sealed class BlipReceivedCard:UserControl {
     public string PreviewKind {get;private set;}="placeholder";
     public IReadOnlyList<string> ActionLabels {get;private set;}=Array.Empty<string>();
     public event Action<bool>? MenuActive;
+    public event Action<string>? Copied;
     public BlipReceivedCard(Func<nint> owner,Func<BlipFileAction,BlipTransfer,BlipReceivedItem,Task>? execute=null) {
         this.owner=owner;this.execute=execute;
         var content=new StackPanel{Spacing=6};preview.Children.Add(icon);preview.Children.Add(image);preview.Children.Add(previewText);
@@ -76,14 +77,24 @@ internal sealed class BlipReceivedCard:UserControl {
         var menu=new MenuFlyout();var labels=new List<string>();
         void Add(string title,BlipFileAction action,bool enabled=true){var item=new MenuFlyoutItem{Text=title,IsEnabled=open.IsEnabled&&enabled};item.Click+=async(_,_)=>await Perform(action);menu.Items.Add(item);labels.Add(title);}
         Add("Open",BlipFileAction.Open);Add("Open with…",BlipFileAction.OpenWith,selected is {IsDirectory:false}&&!BlipReceivedFiles.IsShortcut(selected.Path));
-        Add("Copy",BlipFileAction.Copy);Add("Copy path",BlipFileAction.CopyPath);menu.Items.Add(new MenuFlyoutSeparator());
+        Add("Copy",BlipFileAction.Copy);
+        if (selected is { IsDirectory: false } && BlipReceivedFiles.IsText(selected.Path)) Add("Copy file", BlipFileAction.CopyFile);
+        Add("Copy path",BlipFileAction.CopyPath);menu.Items.Add(new MenuFlyoutSeparator());
         Add("Open folder",BlipFileAction.OpenFolder);Add("Show in folder",BlipFileAction.ShowInFolder);
         if(transfer?.ReceivedItems.Count>1){menu.Items.Add(new MenuFlyoutSeparator());Add("Copy listed files",BlipFileAction.CopyListedFiles);Add("Copy listed paths",BlipFileAction.CopyListedPaths);}
         menu.Opening+=(_,_)=>MenuActive?.Invoke(true);menu.Closed+=(_,_)=>MenuActive?.Invoke(false);open.Flyout=menu;ActionLabels=labels;
     }
     internal async Task Perform(BlipFileAction action) {
-        if(transfer==null||selected==null)return;
-        try{if(execute!=null)await execute(action,transfer,selected);else await BlipReceivedActions.Execute(action,transfer,selected,owner());feedback.Text=action is BlipFileAction.Copy or BlipFileAction.CopyListedFiles?"Copied":action is BlipFileAction.CopyPath or BlipFileAction.CopyListedPaths?"Path copied":"";}
+        if (transfer is not { } value || selected is not { } item) return;
+        try
+        {
+            if (execute != null) await execute(action, value, item);
+            else await BlipReceivedActions.Execute(action, value, item, owner());
+            if (action is BlipFileAction.Copy or BlipFileAction.CopyFile or BlipFileAction.CopyListedFiles
+                or BlipFileAction.CopyPath or BlipFileAction.CopyListedPaths)
+                Copied?.Invoke(value.Id);
+            feedback.Text = "";
+        }
         catch{feedback.Text="This file action is unavailable. The item may have moved.";}
         feedback.Visibility=feedback.Text.Length>0?Visibility.Visible:Visibility.Collapsed;
     }
