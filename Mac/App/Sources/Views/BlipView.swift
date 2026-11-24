@@ -185,28 +185,36 @@ struct BlipView: View {
         names.compactMap { $0 }.first { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } ?? "Device"
     }
 
+    private func sendAction(_ name: String, peer: BlipPeer, detail: String?) -> some View {
+        let availability = receiver.deviceAvailability(peer)
+        let hint = detail.map { $0 + ", " + availability } ?? availability
+        let tooltip = name + " · " + (detail ?? availability)
+        return Button { receiver.chooseFiles(to: peer) } label: {
+            HStack(spacing: 7) {
+                Circle()
+                    .fill(peer.online == true ? Color.green : Color.secondary.opacity(peer.online == nil ? 0.26 : 0.52))
+                    .frame(width: 6, height: 6)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(name).lineLimit(1)
+                    if let detail { Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
+                }
+            }.frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .accessibilityLabel("Send files to " + name)
+        .accessibilityHint(hint)
+        .help(tooltip)
+        .buttonStyle(.plain)
+        .disabled(receiver.sending || receiver.preparingSend)
+        .contextMenu { Button("Paste and send") { receiver.pasteAndSend(to: peer) } }
+    }
+
     private func recipientRow(_ name: String, peer: BlipPeer?, removing: String? = nil,
                               nickname: String? = nil, person: Bool = false, deviceShortcut: Bool = false,
                               detail: String? = nil) -> some View {
         HStack(spacing: 4) {
             if let peer {
-                Button { receiver.chooseFiles(to: peer) } label: {
-                    HStack(spacing: 7) {
-                        Circle()
-                            .fill(peer.online == true ? Color.green : Color.secondary.opacity(peer.online == nil ? 0.26 : 0.52))
-                            .frame(width: 6, height: 6)
-                            .accessibilityHidden(true)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(name).lineLimit(1)
-                            if let detail { Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
-                        }
-                    }.frame(maxWidth: .infinity, alignment: .leading)
-                }.accessibilityLabel("Send files to " + name)
-                    .accessibilityHint([detail, receiver.deviceAvailability(peer)].compactMap { $0 }.joined(separator: ", "))
-                    .help(detail.map { name + " · " + $0 } ?? name + " · " + receiver.deviceAvailability(peer))
-                    .buttonStyle(.plain)
-                    .disabled(receiver.sending || receiver.preparingSend)
-                    .contextMenu { Button("Paste and send") { receiver.pasteAndSend(to: peer) } }
+                sendAction(name, peer: peer, detail: detail)
             } else {
                 Text(name).fontWeight(person ? .semibold : .regular)
                     .lineLimit(1).help(name).frame(maxWidth: .infinity, alignment: .leading)
