@@ -177,31 +177,33 @@ enum Diagnostics {
         let email = "fixture@example.test"
         let board = NSPasteboard.withUniqueName()
         defer { board.releaseGlobally() }
-        board.setString(email, forType: .string)
+        guard board.setString(email, forType: .string) else {
+            throw BlipReceiverError.message("The sign-in clipboard fixture could not be prepared.")
+        }
         let alert = NSAlert()
         alert.messageText = "Sign in to Blip"
         alert.addButton(withTitle: "Send code")
         let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
         alert.accessoryView = input
-        let sendKey = Timer(timeInterval: 0.1, repeats: false) { _ in
-            if let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command,
+        alert.layout()
+        let window = alert.window
+        window.initialFirstResponder = input
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil) }
+        input.selectText(nil)
+        guard let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command,
                                            timestamp: ProcessInfo.processInfo.systemUptime,
-                                           windowNumber: alert.window.windowNumber, context: nil,
+                                           windowNumber: window.windowNumber, context: nil,
                                            characters: "v", charactersIgnoringModifiers: "v",
-                                           isARepeat: false, keyCode: 9) {
-                NSApp.postEvent(event, atStart: true)
-            }
+                                           isARepeat: false, keyCode: 9) else {
+            throw BlipReceiverError.message("The sign-in key event fixture could not be prepared.")
         }
-        let timeout = Timer(timeInterval: 3, repeats: false) { _ in NSApp.abortModal() }
-        RunLoop.main.add(sendKey, forMode: .modalPanel)
-        RunLoop.main.add(timeout, forMode: .modalPanel)
-        defer { sendKey.invalidate(); timeout.invalidate() }
         var pasted = false
-        let result = BlipReceiver.runSignInPrompt(alert, field: input) { editor in
+        let handled = BlipReceiver.handleSignInPaste(event, in: window, field: input) { editor in
             pasted = editor.readSelection(from: board, type: .string) && editor.string == email
-            NSApp.stopModal(withCode: .alertFirstButtonReturn)
         }
-        guard result == .alertFirstButtonReturn, pasted else {
+        guard handled, pasted else {
             throw BlipReceiverError.message("Command-V did not paste the fixture email into the sign-in field.")
         }
     }

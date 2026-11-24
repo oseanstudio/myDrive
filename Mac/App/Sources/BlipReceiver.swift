@@ -633,22 +633,27 @@ struct BlipQueuedSend: Codable, Identifiable {
         }
     }
 
-    static func runSignInPrompt(_ prompt: NSAlert, field: NSTextField,
-                                paste: @escaping (NSTextView) -> Void = { $0.paste(nil) }) -> NSApplication.ModalResponse {
+    static func runSignInPrompt(_ prompt: NSAlert, field: NSTextField) -> NSApplication.ModalResponse {
         prompt.layout()
         prompt.window.initialFirstResponder = field
+        prompt.window.makeFirstResponder(field)
         // The menu-bar app has no Edit menu to route Command-V to the alert's editor.
         let monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-            let modifiers = event.modifierFlags.intersection([.command, .option, .control, .shift])
-            guard event.window === prompt.window, modifiers == .command,
-                  event.charactersIgnoringModifiers?.lowercased() == "v",
-                  let editor = field.currentEditor() as? NSTextView,
-                  prompt.window.firstResponder === editor else { return event }
-            paste(editor)
-            return nil
+            Self.handleSignInPaste(event, in: prompt.window, field: field) ? nil : event
         }
         defer { if let monitor { NSEvent.removeMonitor(monitor) } }
         return prompt.runModal()
+    }
+
+    static func handleSignInPaste(_ event: NSEvent, in window: NSWindow, field: NSTextField,
+                                  paste: (NSTextView) -> Void = { $0.paste(nil) }) -> Bool {
+        guard window.windowNumber > 0, event.windowNumber == window.windowNumber,
+              AppDelegate.textEditAction(for: event) == #selector(NSText.paste(_:)),
+              let editor = field.currentEditor() as? NSTextView, window.firstResponder === editor else {
+            return false
+        }
+        paste(editor)
+        return true
     }
     func setTrusted(_ peer: BlipPeer, _ enabled: Bool,files:Bool=false) {
         guard canSavePolicy, UUID(uuidString:account) != nil, BlipPolicy.exactPeer(peer.peer) else { return }
