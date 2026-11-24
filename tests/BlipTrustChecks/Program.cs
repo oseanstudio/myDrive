@@ -33,7 +33,8 @@ var phones=catalog.Merge(status,new[]{new BlipDevice{Peer=peer,Name="Phone"},new
 Check(phones.Count==2&&phones.Select(d=>d.Peer).Distinct().Count()==2,"separate phone identities are retained without duplicate rows");
 catalog.SetNicknames(account,new[]{(peer,"Phone"),(phonePeer,"Phone")});
 phones=catalog.Merge(status,Array.Empty<BlipDevice>(),Array.Empty<BlipTransfer>(),Array.Empty<string>());
-Check(phones.Select(d=>d.DisplayName).Distinct().Count()==2,"identically named devices remain distinguishable in recipient selection");
+Check(phones.All(d => d.DisplayName == "Phone") && phones.Select(d => d.Peer).Distinct().Count() == 2,
+    "identical names keep distinct destinations without displaying ID suffixes");
 var namedPhone = new BlipDevice { Peer = phonePeer, Kind = "Phone", Name = "Studio Pixel 9", NameKnown = true, UserName = "Studio tester" };
 Check(namedPhone.RecipientCaption(account, namedPhone.DisplayName, namedPhone.ContactName, false) == "Studio tester",
     "a remote person is shown by their Blip username");

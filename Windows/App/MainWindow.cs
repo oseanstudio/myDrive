@@ -2,6 +2,7 @@ using Microsoft.UI;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Automation;
 using Windows.Storage.Pickers;
@@ -46,7 +47,7 @@ public sealed partial class MainWindow : Window
     private int nativePickerDepth;
     private readonly PopupInput popupInput;
     private readonly Grid quickHeader=new(){Padding=new Thickness(10,6,10,6),ColumnSpacing=4};
-    private readonly DropDownButton quickViews=new(){Content=SendViewName,FontSize=12,Padding=new Thickness(7,2,7,2),MinHeight=28,Height=28,MinWidth=0};
+    private readonly Dictionary<string, ToggleButton> quickTabs = new();
     private Border? statusFooter;
     private StackPanel? branding;
     internal static ElementTheme RequestedAppearance => Preferences.Current.Theme switch
@@ -61,7 +62,8 @@ public sealed partial class MainWindow : Window
     private readonly Dictionary<(ElementTheme,string),SolidColorBrush> themeBrushes=new();
     private Windows.Graphics.PointInt32? quickOrigin;
     private const string StorageViewName = "SMB Drives";
-    private const string SendViewName = "Send";
+    private const string SendViewName = "Blip";
+    private const string SyncViewName = "Syncthing";
     private static string DisplayVersion => typeof(MainWindow).Assembly.GetName().Version?.ToString(3) ?? "";
 
     private SolidColorBrush Brush(string resource)
@@ -87,7 +89,7 @@ public sealed partial class MainWindow : Window
         branding=new StackPanel{Orientation=Orientation.Horizontal,Spacing=12,Margin=new Thickness(20,22,12,22)};
         branding.Children.Add(new Image{Source=new Microsoft.UI.Xaml.Media.Imaging.BitmapImage(new Uri(Path.Combine(AppContext.BaseDirectory,"Assets","myDrive.png"))),Width=38,Height=38});branding.Children.Add(Text("myDrive",22,true));navigation.PaneHeader=branding;
         navigation.MenuItems.Add(new NavigationViewItem{Content=SendViewName,Icon=new SymbolIcon(Symbol.Send),Tag="transfers"});
-        navigation.MenuItems.Add(new NavigationViewItem{Content="Sync",Icon=new SymbolIcon(Symbol.Switch),Tag="sync"});
+        navigation.MenuItems.Add(new NavigationViewItem{Content=SyncViewName,Icon=new SymbolIcon(Symbol.Switch),Tag="sync"});
         navigation.MenuItems.Add(new NavigationViewItem{Content=StorageViewName,Icon=new SymbolIcon(Symbol.World),Tag="connections"});
         navigation.MenuItems.Add(new NavigationViewItem{Content="Activity",Icon=new SymbolIcon(Symbol.Sync),Tag="activity"});
         navigation.PaneFooter=Text($"  myDrive {DisplayVersion}",12);

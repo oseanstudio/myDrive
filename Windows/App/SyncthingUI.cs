@@ -54,7 +54,7 @@ public sealed partial class MainWindow
     {
         syncRenderedSignature=SyncSignature();
         if(compact){RenderQuickSync();return;}
-        if(compact)page.Children.Add(Text("Sync",23,true));else Heading("Sync with your devices","Your existing Syncthing, with simple folder and file controls.");
+        if(compact)page.Children.Add(Text(SyncViewName,23,true));else Heading(SyncViewName,"");
         if(syncSnapshot==null)
         {
             var setup=new StackPanel{Spacing=12};setup.Children.Add(Text(syncFailure.Length>0?"Connect to Syncthing":"Connecting to Syncthing…",18,true));setup.Children.Add(Text(syncFailure.Length>0?syncFailure:"Starting the background sync engine. First-time setup may download Syncthing."));setup.Children.Add(Button("Refresh",()=>_=RefreshSyncthing(),true));setup.Children.Add(Button("Connection settings",()=>_=EditSyncthingConnection()));page.Children.Add(Card(setup));return;

@@ -159,7 +159,7 @@ public sealed partial class MainWindow
         if (!compact) Heading(SendViewName, "");
         bool running = BlipRunning, signedIn = blipSnapshot?.Status.Authenticated == true;
         var header = new Grid { ColumnSpacing = 6 }; header.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) }); header.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
-        var label = running ? signedIn ? BlipDesktop ? "Ready in the background" : blipSnapshot!.Status.ReceivePolicyVerified ? "Ready to send and receive" : "Checking receiving settings" : "Sign in to send or receive" : Preferences.Current.BlipAutoConnectDesktop ? "Preparing background Blip" : "Blip is disconnected";
+        var label = running ? signedIn ? BlipDesktop || blipSnapshot!.Status.ReceivePolicyVerified ? "Connected" : "Checking receiving settings" : "Sign in to send or receive" : Preferences.Current.BlipAutoConnectDesktop ? "Preparing background Blip" : "Blip is disconnected";
         header.Children.Add(QuickText(label, compact ? 13 : 18, true));
         var refresh = QuickIcon("\uE72C", "Refresh Blip transfers", () => _ = RefreshBlip()); refresh.IsEnabled = running && !busy;
         var options = QuickIcon("\uE713", "Blip options", () => { });
@@ -338,6 +338,7 @@ public sealed partial class MainWindow
                 }));
                 label.TextChanged += (_, _) => title.Text = string.IsNullOrWhiteSpace(label.Text) ? name : label.Text;
                 deviceCard.Children.Add(nameRow);
+                deviceCard.Children.Add(QuickText(BlipDeviceDetail(device), 11));
                 deviceCard.Children.Add(label);
                 var permissions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12 };
                 var files = new CheckBox { Content = "Auto-receive files", FontSize = 11, MinWidth = 0, MinHeight = 28,
@@ -446,15 +447,17 @@ public sealed partial class MainWindow
         Grid DestinationRow(BlipDevice device, bool grouped)
         {
             var title = QuickText(grouped ? BlipDeviceName(device) : BlipDeviceCaption(device), 13);
-            var send = QuickButton("", () => SelectDevice(device, paste: false));
-            send.Content = title;
+            var send = FlatBlipButton(QuickButton("", () => SelectDevice(device, paste: false)));
+            var detail = BlipDeviceDetail(device);
+            send.Content = BlipDestinationLabel(title, detail);
+            send.MinHeight = 36;
             send.HorizontalAlignment = HorizontalAlignment.Stretch;
             send.HorizontalContentAlignment = HorizontalAlignment.Left;
             send.Tag = device;
-            var paste = QuickIcon("\uE77F", "Paste and send to " + title.Text,
-                () => SelectDevice(device, paste: true));
-            var rename = QuickIcon("\uE70F", "Rename " + BlipDeviceName(device), () =>
-                EditRecipientName(dialog, content, localPeer, device, title, send, paste, grouped));
+            var paste = FlatBlipButton(QuickIcon("\uE77F", "Paste and send to " + title.Text + ", " + detail,
+                () => SelectDevice(device, paste: true)));
+            var rename = FlatBlipButton(QuickIcon("\uE70F", "Rename " + BlipDeviceName(device) + ", " + detail, () =>
+                EditRecipientName(dialog, content, localPeer, device, title, send, paste, grouped)));
             var row = new Grid { ColumnSpacing = 4 };
             row.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
             row.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
@@ -464,8 +467,8 @@ public sealed partial class MainWindow
             row.Children.Add(paste);
             Grid.SetColumn(rename, 2);
             row.Children.Add(rename);
-            AutomationProperties.SetName(send, "Send to " + title.Text);
-            ToolTipService.SetToolTip(send, title.Text);
+            AutomationProperties.SetName(send, "Send to " + title.Text + ", " + detail);
+            ToolTipService.SetToolTip(send, title.Text + " · " + detail);
             return row;
         }
         void AddDestination(UIElement row)
@@ -476,13 +479,10 @@ public sealed partial class MainWindow
         foreach (var group in BlipDevice.GroupDestinations(devices, blipSnapshot.Status.UserId))
         {
             var first = group.First();
-            if (group.Skip(1).Any() && BlipPersonName(first, first.Account) is { } contact)
-            {
-                var destinations = new StackPanel { Spacing = 3 };
-                foreach (var device in group) destinations.Children.Add(DestinationRow(device, grouped: true));
-                AddDestination(ContactExpander(contact, destinations));
-            }
-            else foreach (var device in group) AddDestination(DestinationRow(device, grouped: false));
+            var contact = group.Skip(1).Any() ? BlipPersonName(first, first.Account) : null;
+            if (contact != null) AddDestination(BlipContactHeading(contact, localPeer));
+            foreach (var device in group.OrderByDescending(d => d.Online == true))
+                AddDestination(DestinationRow(device, grouped: contact != null));
         }
         if (devices.Count > 0) content.Children.Add(recipients);
         else content.Children.Add(Text("No other Blip devices are available.", 12));

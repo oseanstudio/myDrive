@@ -8,7 +8,7 @@ Each participating computer needs the relay-capable myDrive build. Phones using 
 
 Waiting jobs survive reboot and resume when myDrive runs again. Send multiple files at once or queue separate sends over time. Folders keep their nested structure. Paste one web address per line to send up to 16 links together.
 
-Open the popup's view menu → **Send**, or **＋ → Send with Blip…**. The same controls are available in the full window.
+Open the **Blip** tab, or choose **＋ → Send with Blip…**. The same controls are available in the full window.
 
 1. myDrive can reuse the existing Blip device on the computer when its saved profile is available. The native helper keeps it available while myDrive runs. If the engine is missing on macOS or Linux, choose **Set up Blip…**. Windows can copy a compatible installed engine or use **Blip options → Add Blip engine…**.
 2. On a fresh profile, sign in from myDrive using your existing Blip email and the sign-in code. On Windows, select **Connect… → Start separately** to set up that profile. This creates a device in your Blip account.
@@ -26,9 +26,9 @@ After login, Blip manages its own account tokens and local logs in its separate 
 
 ## Sender permissions and live receiving
 
-In **Send**, type a name, email address or device name in **Find people & devices**. Known devices match as you type. Press Enter or click the search icon to look up a person through Blip, subject to their discovery settings. Recent recipients appear below the search field. Click one to choose files for that exact device, or use its menu for other send options. The **X** removes the shortcut from this account’s local recent list. A later send to that recipient adds it again.
+In **Blip**, use **Find people & devices** to search by name, email address or device name. Press Enter or click the search icon to look up a person through Blip. Click a device to choose files for that destination. Use **X** to archive a recipient and **Restore** to bring it back.
 
-In Send, choose **Senders…** (Windows) or expand **Sender permissions** (Mac). The list combines current Blip devices, senders from incoming transfers and locally saved names. myDrive shares this computer’s name through Blip when the device has a generic name. The picker, Send and Activity use the same display name for each device. Use the pencil to set a local nickname. Devices Blip has not named get a short, stable identifier. Approvals remain tied to the exact device and account.
+In **Blip**, choose **Senders…** on Windows or expand **Sender permissions** on Mac. Device rows show registered names when Blip supplies them, and a device type otherwise. Use the pencil to set a local nickname. Approvals remain tied to the exact device and account.
 
 An outgoing transfer has a **Cancel** button in Send. You can also cancel locally queued relay transfers before myDrive starts sending the payload. Transfers already held by another device remain with that device.
 

@@ -61,7 +61,7 @@ internal sealed class BlipIncomingWindow : Window
         string next=value.Id+":"+value.Status+":"+value.HasError;
         if(signature!=next)failure=null;
         state.Text=failure!=null||value.HasError?"Needs attention":value.ConfirmedComplete?"Received":automatic&&value.AwaitingAcceptance?"Requesting…":value.ProgressLabel;
-        ToolTipService.SetToolTip(state,state.Text);details.Text=failure??(value.HasError?"Transfer needs attention. Open the Send view for details.":"");details.Visibility=details.Text.Length>0?Visibility.Visible:Visibility.Collapsed;
+        ToolTipService.SetToolTip(state,state.Text);details.Text=failure??(value.HasError?"Transfer needs attention. Open the Blip tab for details.":"");details.Visibility=details.Text.Length>0?Visibility.Visible:Visibility.Collapsed;
         bool pending=value.AwaitingAcceptance&&!value.HasError;
         receive.Visibility=pending&&!automatic?Visibility.Visible:Visibility.Collapsed;
         progress.Visibility=value.Status is "Pending" or "Active" or "ResumeRequested"||automatic&&pending?Visibility.Visible:Visibility.Collapsed;

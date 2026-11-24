@@ -10,8 +10,8 @@ public sealed partial class MainWindow
         const string owner = "11111111-1111-4111-8111-111111111111";
         const string contactAccount = "22222222-2222-4222-8222-222222222222";
         var own = new BlipDevice { Peer = owner + ":" + Guid.NewGuid(), Name = "Studio Mac", NameKnown = true };
-        var first = new BlipDevice { Peer = contactAccount + ":" + Guid.NewGuid(), Kind = "Desktop", UserName = "Fixture contact" };
-        var second = new BlipDevice { Peer = contactAccount + ":" + Guid.NewGuid(), Kind = "Phone", UserName = "Fixture contact" };
+        var first = new BlipDevice { Peer = contactAccount + ":" + Guid.NewGuid(), Kind = "Desktop", UserName = "Fixture contact", Online = true };
+        var second = new BlipDevice { Peer = contactAccount + ":" + Guid.NewGuid(), Kind = "Desktop", UserName = "Fixture contact", Online = false };
         blipSnapshot = new(new() { UserId = owner, DeviceId = Guid.NewGuid().ToString(), Authenticated = true },
             [own, first, second], []);
         blipFixtureRunning = true;
@@ -19,26 +19,26 @@ public sealed partial class MainWindow
         Render();
         recentRecipients = [Recent(first)];
         RenderRecipientRows();
-        var mainGroup = recipientRows?.Children.OfType<Expander>().SingleOrDefault();
-        if (mainGroup?.Header is not Grid header ||
-            header.Children.OfType<TextBlock>().SingleOrDefault()?.Text != "Fixture contact" ||
-            header.Children.OfType<Button>().Count() != 2 || mainGroup.IsExpanded ||
-            mainGroup.Content is not StackPanel mainDevices || mainDevices.Children.Count != 2 ||
-            !recipientRows!.Children.OfType<Grid>().SelectMany(row => row.Children.OfType<Button>())
-                .Any(button => button.Content is TextBlock { Text: "Studio Mac" }))
-            throw new IOException("Send must show one contact above both devices and keep the owned device's registered name.");
+        var mainRows = recipientRows!.Children.OfType<Grid>().ToList();
+        var names = mainRows.SelectMany(row => row.Children.OfType<Button>()).Select(button => button.Content)
+            .OfType<StackPanel>().Select(panel => panel.Children.OfType<TextBlock>().Select(text => text.Text).ToArray()).ToList();
+        if (recipientRows.Children.OfType<Expander>().Any() ||
+            mainRows.Count(row => row.Children.OfType<TextBlock>().Any(text => text.Text == "Fixture contact")) != 1 ||
+            !names.Any(fields => fields.FirstOrDefault() == "Studio Mac") ||
+            !names.Any(fields => fields.SequenceEqual(new[] { "Desktop", "Online" })) ||
+            !names.Any(fields => fields.SequenceEqual(new[] { "Desktop", "Offline" })))
+            throw new IOException("Blip must show the contact and known device names with status and no ID suffixes or expanders.");
 
         var showing = ShowBlipSend();
         try
         {
             if (activeDialog?.Content is not StackPanel form ||
                 form.Children.OfType<ListView>().SingleOrDefault() is not { } picker ||
-                picker.Items.Count != 2 ||
-                picker.Items.OfType<ListViewItem>().Select(item => item.Content).OfType<Expander>().SingleOrDefault()
-                    is not { Header: TextBlock { Text: "Fixture contact" }, IsExpanded: false, Content: StackPanel rows } ||
-                !rows.Children.OfType<Grid>().SelectMany(row => row.Children.OfType<Button>())
-                    .Where(button => button.Tag is BlipDevice).Select(button => button.Tag).SequenceEqual(new[] { first, second }))
-                throw new IOException("The send picker should show one contact heading and keep a distinct action for each exact device.");
+                picker.Items.Count != 4 ||
+                picker.Items.OfType<ListViewItem>().Any(item => item.Content is Expander) ||
+                !BlipPickerRows(picker).SelectMany(row => row.Children.OfType<Button>())
+                    .Where(button => button.Tag is BlipDevice).Select(button => button.Tag).SequenceEqual(new[] { own, first, second }))
+                throw new IOException("The Blip picker must keep a visible action for each exact device.");
         }
         finally
         {
@@ -46,6 +46,10 @@ public sealed partial class MainWindow
             await showing;
         }
     }
+
+    private static IEnumerable<Grid> BlipPickerRows(ListView list) =>
+        list.Items.OfType<ListViewItem>().Select(item => item.Content).OfType<Grid>()
+            .Where(row => row.Children.OfType<Button>().Any(button => button.Tag is BlipDevice));
 
     // Fixture-only native rendering. No account request, transfer, or production profile access.
     public async Task DiagnoseBlip(string directory)
@@ -86,16 +90,8 @@ public sealed partial class MainWindow
             Render();
             recentRecipients = blipSnapshot.Devices.Take(2).Select(Recent).ToList();
             RenderRecipientRows();
-            var contact = recipientRows?.Children.OfType<Expander>().SingleOrDefault();
-            if (contact?.Header is not Grid contactHeader ||
-                contactHeader.Children.OfType<TextBlock>().SingleOrDefault()?.Text != "Studio tester" ||
-                contact.Content is not StackPanel devices ||
-                devices.Children.Count != 4 || devices.Children.OfType<Grid>().Any(row =>
-                    row.Children.OfType<StackPanel>().Single().Children.OfType<Button>()
-                        .Select(button => Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(button).Split(' ')[0])
-                        .SequenceEqual(new[] { "Paste", "Rename", "Archive" }) == false))
-                throw new IOException("All contact devices must appear together with Paste, Rename, and Archive controls.");
-            contact.IsExpanded = true;
+            if (recipientRows?.Children.OfType<Grid>().Count() != 5 || recipientRows.Children.OfType<Expander>().Any())
+                throw new IOException("All four contact devices must appear below the contact heading.");
             await Capture(directory, "blip-recent-recipients.png");
             var own = new BlipDevice { Peer = blipSnapshot.Status.UserId + ":" + Guid.NewGuid(), Name = "Fixture spare", NameKnown = true, Online = false };
             var current = new BlipDevice { Peer = BlipOwner, Name = "Fixture current", NameKnown = true };
@@ -104,11 +100,12 @@ public sealed partial class MainWindow
             RenderRecipientRows();
             var devicesInSend = recipientRows?.Children.OfType<Grid>()
                 .Select(row => row.Children.OfType<Button>().FirstOrDefault()?.Content)
-                .OfType<TextBlock>().Select(text => text.Text).ToArray() ?? Array.Empty<string>();
+                .OfType<StackPanel>().Select(panel => panel.Children.OfType<TextBlock>().First().Text)
+                .ToArray() ?? Array.Empty<string>();
             var headings = recipientRows?.Children.OfType<TextBlock>().Select(text => text.Text).ToArray();
             if (headings?.SequenceEqual(new[] { "My devices", "Recent recipients" }) != true ||
                 devicesInSend.Count(name => name == "Fixture spare") != 1 ||
-                devicesInSend.Contains("Fixture current") || devicesInSend.Length != 1)
+                devicesInSend.Contains("Fixture current") || devicesInSend.Length != 5)
                 throw new IOException("Send must show each registered destination once, including offline devices.");
             blipSnapshot.Devices.Remove(own);
             blipSnapshot.Devices.Remove(current);
@@ -128,8 +125,8 @@ public sealed partial class MainWindow
                 await Task.Delay(350);
                 if (activeDialog?.Content is not StackPanel form || form.Children.OfType<ListView>().SingleOrDefault() is not { } list ||
                     list.SelectedIndex != -1 ||
-                    PickerRows(list).Count() != blipSnapshot.Devices.Count ||
-                    PickerRows(list).Any(deviceRow =>
+                    BlipPickerRows(list).Count() != blipSnapshot.Devices.Count ||
+                    BlipPickerRows(list).Any(deviceRow =>
                         deviceRow.Children.OfType<Button>().Count() != 3 ||
                         !deviceRow.Children.OfType<Button>().Any(button =>
                             Grid.GetColumn(button) == 1 && button.IsEnabled &&
@@ -145,9 +142,6 @@ public sealed partial class MainWindow
                 activeDialog.Hide();
                 await showing;
             }
-            static IEnumerable<Grid> PickerRows(ListView list) => list.Items.OfType<ListViewItem>().SelectMany(item =>
-                item.Content is Grid row ? new[] { row } :
-                item.Content is Expander { Content: StackPanel group } ? group.Children.OfType<Grid>() : []);
             await CheckRecipientList("blip-send-devices.png");
             await CheckRecipientList("blip-paste-send.png", clipboardLink.Paths, clipboardLink.Description);
             await CheckRecipientList("blip-drop-send.png", clipboardLink.Paths, "Dropped file");

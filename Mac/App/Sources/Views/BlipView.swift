@@ -214,8 +214,12 @@ struct BlipView: View {
         HStack(spacing: 4) {
             if let peer {
                 Button { receiver.chooseFiles(to: peer) } label: {
-                    Text(name).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(name).lineLimit(1)
+                        Text(receiver.deviceAvailability(peer)).font(.caption2).foregroundStyle(.secondary)
+                    }.frame(maxWidth: .infinity, alignment: .leading)
                 }.accessibilityLabel("Send files to " + name)
+                    .accessibilityHint(receiver.deviceAvailability(peer))
                     .help(name)
                     .disabled(receiver.sending || receiver.preparingSend)
                     .contextMenu { Button("Paste and send") { receiver.pasteAndSend(to: peer) } }

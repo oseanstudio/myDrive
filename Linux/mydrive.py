@@ -81,7 +81,7 @@ class MyDrive(Gtk.Application):
         if self.window:
             was_visible = self.window.get_visible()
             if not was_visible and not self.file_picker_depth:
-                self.view_picker.set_selected(0)
+                self.stack.set_visible_child_name("Send")
             self.window.present()
             if was_visible:
                 self.check_for_updates()
@@ -99,13 +99,10 @@ class MyDrive(Gtk.Application):
         if self.desktop_appearance:
             self.desktop_appearance.connect("changed::color-scheme", lambda *_: self.apply_appearance())
         self.apply_appearance()
-        titles = ["Send", "Sync", "SMB Drives", "Activity", "Settings"]
-        view = Gtk.DropDown.new_from_strings(titles)
-        self.view_picker = view
-        view.set_selected(0)
+        titles = {"Send": "Blip", "Sync": "Syncthing", "SMB Drives": "SMB Drives",
+                  "Activity": "Activity", "Settings": "Settings"}
         header_content = Gtk.Box(spacing=7)
         header_content.append(label(f"myDrive {VERSION}", "heading"))
-        header_content.append(view)
         header.set_title_widget(header_content)
         controls = Gtk.Box(spacing=4)
         controls.append(menu([("Sync a folder…", self.share_folder), ("Quit myDrive", self.quit)]))
@@ -125,6 +122,8 @@ class MyDrive(Gtk.Application):
         header.pack_end(controls)
         content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=7)
         self.window.set_child(content)
+        tabs = Gtk.StackSwitcher(halign=Gtk.Align.CENTER, margin_top=6, margin_start=6, margin_end=6)
+        content.append(tabs)
         drop = Gtk.DropTarget.new(Gdk.FileList.__gtype__, Gdk.DragAction.COPY)
         drop.connect("drop", self.dropped)
         self.file_drop = drop
@@ -143,15 +142,17 @@ class MyDrive(Gtk.Application):
         self.stack = Gtk.Stack(vhomogeneous=False, vexpand=True)
         content.append(self.stack)
         self.pages = {}
-        for title in titles:
+        for title, caption in titles.items():
             page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, margin_bottom=8, margin_start=8, margin_end=8)
             scroll = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER, child=page)
             self.pages[title] = page
-            self.stack.add_named(scroll, title)
-        self.stack.set_visible_child_name(titles[view.get_selected()])
-        def show_view(dropdown, *_):
-            title = titles[dropdown.get_selected()]
-            self.stack.set_visible_child_name(title)
+            tab = self.stack.add_titled(scroll, title, caption)
+            if title in ("Activity", "Settings"):
+                tab.set_icon_name("document-open-recent-symbolic" if title == "Activity" else "emblem-system-symbolic")
+        self.stack.set_visible_child_name("Send")
+        tabs.set_stack(self.stack)
+        def show_view(stack, *_):
+            title = stack.get_visible_child_name()
             if title == "Sync" and not self.fixture:
                 self.refresh_background_sync(force=True)
             if title == "SMB Drives" and not self.fixture:
@@ -160,7 +161,7 @@ class MyDrive(Gtk.Application):
                 self.change_startup("startup.status")
             if title == "Activity" and not self.fixture:
                 self.refresh_send_activity()
-        view.connect("notify::selected", show_view)
+        self.stack.connect("notify::visible-child-name", show_view)
         self.storage_view = StorageView(self, self.pages["SMB Drives"])
         if not self.fixture:
             def check_visible_storage(window, _property):
@@ -174,7 +175,9 @@ class MyDrive(Gtk.Application):
         if self.fixture:
             assert header.get_decoration_layout() == ":close" and controls.get_last_child() == expand
             assert expand.get_icon_name() == "view-fullscreen-symbolic" and content.get_last_child() == self.stack
-            assert view.get_model().get_item(0).get_string() == self.stack.get_visible_child_name() == "Send"
+            assert self.stack.get_visible_child_name() == "Send" and tabs.get_stack() == self.stack
+            assert self.stack.get_pages().get_item(0).get_title() == "Blip"
+            assert self.stack.get_pages().get_item(1).get_title() == "Syncthing"
             self.run_fixture()
             return
         self.tray = Tray(self.window, ROOT / f"{APP_ID}.png")
@@ -200,7 +203,7 @@ class MyDrive(Gtk.Application):
         if not paths:
             self.announce("Choose an available file or folder.")
             return
-        self.view_picker.set_selected(0)
+        self.stack.set_visible_child_name("Send")
         self.transfer_view.send_dropped(paths)
 
     def do_shutdown(self):
@@ -1162,7 +1165,7 @@ class MyDrive(Gtk.Application):
             other_owned = recipient.get_next_sibling()
             other_heading = other_owned.get_next_sibling()
             assert heading.get_label() == "My devices"
-            assert other_owned.get_first_child().get_child().get_label() == "Fixture studio"
+            assert other_owned.get_first_child().get_child().get_first_child().get_label() == "Fixture studio"
             assert other_heading.get_label() == "Other devices"
             assert other_heading.get_next_sibling() == view.recipient_rows.get_last_child()
             external = view.recipient_rows.get_last_child()
@@ -1217,7 +1220,7 @@ class MyDrive(Gtk.Application):
             if self.pending["blip-recipients"]:
                 return GLib.SOURCE_CONTINUE
             result = self.transfer_view.recipient_rows.get_first_child().get_first_child()
-            assert result.get_child().get_label() == "Remote person"
+            assert result.get_child().get_first_child().get_label() == "Remote person"
             view = self.transfer_view
             first = view.directory_recipients[0]
             account = first["peer"].partition(":")[0]

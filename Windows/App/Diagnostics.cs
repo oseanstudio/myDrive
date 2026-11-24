@@ -12,9 +12,9 @@ public sealed partial class MainWindow
         object result;
         try
         {
-            if (currentView != "transfers" || quickViews.Content?.ToString() != "Send" ||
+            if (currentView != "transfers" || quickTabs["transfers"].IsChecked != true ||
                 navigation.SelectedItem != navigation.MenuItems[0])
-                throw new IOException("The app must open to Send by default.");
+                throw new IOException("The app must open to Blip by default.");
             if (!PopupInput.IsClick(new(100, 100), new(103, 104)) ||
                 PopupInput.IsClick(new(100, 100), new(140, 130)))
                 throw new IOException("An outside click and a file drag were not distinguished.");
@@ -30,11 +30,11 @@ public sealed partial class MainWindow
             SetMode(true);
             await Task.Delay(400);
             root.UpdateLayout();
-            if(quickViews.Flyout is not Microsoft.UI.Xaml.Controls.MenuFlyout viewMenu||
-                viewMenu.Items.FirstOrDefault() is not Microsoft.UI.Xaml.Controls.MenuFlyoutItem { Text: "Send" })
-                throw new IOException("The view picker must start with Send.");
-            if (viewMenu.Placement != Microsoft.UI.Xaml.Controls.Primitives.FlyoutPlacementMode.BottomEdgeAlignedRight)
-                throw new IOException("The view picker must open below the header button.");
+            if (quickTabs.Keys.FirstOrDefault() != "transfers" ||
+                quickTabs["transfers"].Content?.ToString() != "Blip" ||
+                quickTabs["sync"].Content?.ToString() != "Syncthing" ||
+                quickTabs["sync"].IsChecked != true)
+                throw new IOException("The tabs must start with Blip and select Syncthing when its page opens.");
             var list=syncFolderList??throw new IOException("The compact Sync list did not load.");
             double top=list.TransformToVisual(root).TransformPoint(new Windows.Foundation.Point(0,0)).Y;
             double gap=root.ActualHeight-top-list.ActualHeight;
@@ -154,7 +154,7 @@ public sealed partial class MainWindow
             syncInfoFailure="";syncInfoLoading=false;
             syncInfoData=JsonSerializer.SerializeToElement(new{errors=new[]{new{path="Projects/a very long folder name/Project notes.txt",error="This file is in use. Close the app using it, then refresh."},new{path="Projects/second-file.txt",error="The folder is unavailable. Reconnect its drive, then refresh."}}});
             currentView="sync-info";Render();await Task.Delay(250);
-            if(activeDialog!=null||modalDepth!=0||quickViews.Content?.ToString()!="Sync")throw new IOException("Folder errors opened a dialog or lost the Sync header.");
+            if(activeDialog!=null||modalDepth!=0||quickTabs["sync"].IsChecked!=true)throw new IOException("Folder errors opened a dialog or lost the Syncthing tab.");
             CheckStable("in-place errors view");await Capture(directory,"quick-errors.png");
             var detailTheme=colorTheme;colorTheme=Microsoft.UI.Xaml.ElementTheme.Dark;root.RequestedTheme=colorTheme;root.Background=Brush("ApplicationPageBackgroundThemeBrush");Render();await Task.Delay(150);await Capture(directory,"quick-errors-dark.png");colorTheme=detailTheme;root.RequestedTheme=colorTheme;root.Background=Brush("ApplicationPageBackgroundThemeBrush");
             syncInfoData=JsonSerializer.SerializeToElement(new{errors=Array.Empty<object>()});Render();await Task.Delay(150);await Capture(directory,"quick-errors-empty.png");CheckStable("empty errors view");
@@ -162,9 +162,7 @@ public sealed partial class MainWindow
             SetMode(false);await Task.Delay(150);await Capture(directory,"full-errors.png");SetMode(true);
             BackFromSyncInfo();if(currentView!="sync"||activeDialog!=null)throw new IOException("Errors Back did not return to Sync.");
             NavigateQuick("connections");
-            if(quickViews.Content?.ToString()!="SMB Drives"||navigation.MenuItems.OfType<Microsoft.UI.Xaml.Controls.NavigationViewItem>().First(i=>i.Tag?.ToString()=="connections").Content?.ToString()!="SMB Drives")throw new IOException("SMB Drives navigation labels are inconsistent.");
-            var viewMenu=quickViews.Flyout as Microsoft.UI.Xaml.Controls.MenuFlyout;
-            if(viewMenu==null||!viewMenu.Items.OfType<Microsoft.UI.Xaml.Controls.MenuFlyoutItem>().Any(i=>i.Text=="SMB Drives")||viewMenu.Items.OfType<Microsoft.UI.Xaml.Controls.MenuFlyoutItem>().Any(i=>i.Text is "Storage" or "Connections"))throw new IOException("The view menu uses an inconsistent SMB Drives name.");
+            if(quickTabs["connections"].IsChecked!=true||quickTabs["connections"].Content?.ToString()!="SMB Drives"||navigation.MenuItems.OfType<Microsoft.UI.Xaml.Controls.NavigationViewItem>().First(i=>i.Tag?.ToString()=="connections").Content?.ToString()!="SMB Drives")throw new IOException("SMB Drives navigation labels are inconsistent.");
             await Task.Delay(150);await Capture(directory,"quick-storage.png");
             report["in_place_folder_details"]="pass: same popup/header; stable bounds; back to Sync; light/dark; empty/error states; full-window parity";
             report["storage_navigation_labels"]="pass: menu, compact header and full-window navigation agree";

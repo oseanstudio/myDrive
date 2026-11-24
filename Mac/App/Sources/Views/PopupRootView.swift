@@ -20,6 +20,21 @@ struct PopupRootView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
+            Picker("Sections", selection: Binding(get: { app.view.tab }, set: { app.view = $0 })) {
+                ForEach(PopupViewKind.tabs) { kind in
+                    switch kind {
+                    case .activity: Image(systemName: "clock").accessibilityLabel(kind.label).tag(kind)
+                    case .settings: Image(systemName: "gearshape").accessibilityLabel(kind.label).tag(kind)
+                    default: Text(kind.label).tag(kind)
+                    }
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.segmented)
+            .controlSize(.small)
+            .disabled(app.busy != nil || app.dialog != nil)
+            .padding(.horizontal, 10)
+            .padding(.bottom, 7)
             if let update = app.availableAppUpdate {
                 Button(app.updateOfferTitle(update)) {
                     app.installAppUpdate()
@@ -95,15 +110,6 @@ struct PopupRootView: View {
             }
             .fixedSize()
             Spacer(minLength: 4)
-            Menu(app.view.label) {
-                ForEach(PopupViewKind.pickerCases) { kind in
-                    Button(kind.label) { app.view = kind }
-                }
-            }
-            .menuStyle(.button)
-            .controlSize(.small)
-            .fixedSize()
-            .disabled(app.busy != nil)
             Button {
                 app.view = .transfers
                 app.blip.pasteAndSend()

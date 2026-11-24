@@ -24,7 +24,6 @@ public sealed class BlipDevice
     [JsonPropertyName("user_name")] public string UserName { get; set; }="";
     [JsonPropertyName("nickname")] public string Nickname { get; set; }="";
     [JsonIgnore] public string Account => Peer.Split(':', 2)[0];
-    [JsonIgnore] public string SelectionName { get; set; } = "";
     [JsonIgnore] public bool HasRegisteredName => NameKnown && !string.IsNullOrWhiteSpace(Name);
     [JsonIgnore] public bool HasDeviceName => HasRegisteredName || !string.IsNullOrWhiteSpace(Nickname);
     [JsonIgnore] public string ContactName => string.IsNullOrWhiteSpace(UserName) ? Contact : UserName;
@@ -38,8 +37,7 @@ public sealed class BlipDevice
             return kind is "Desktop" or "Laptop" or "Phone" or "Tablet" ? kind : "Device";
         }
     }
-    [JsonIgnore] public string DisplayName => SelectionName.Length > 0 ? SelectionName : BaseLabel;
-    public string DisambiguatedName(string name) => BlipDevice.FallbackName(Peer, name);
+    [JsonIgnore] public string DisplayName => BaseLabel;
 
     public string RecipientCaption(string account, string device, string? person, bool showDevice)
     {
@@ -53,12 +51,6 @@ public sealed class BlipDevice
         IEnumerable<BlipDevice> devices, string ownAccount) =>
         devices.GroupBy(device => device.Account.Equals(ownAccount, StringComparison.OrdinalIgnoreCase)
             ? device.Peer : device.Account, StringComparer.OrdinalIgnoreCase);
-    public static string FallbackName(string peer, string kind = "Device")
-    {
-        var parts = peer.Split(':', 2);
-        return parts.Length == 2 && Guid.TryParseExact(parts[1], "D", out _)
-            ? kind + " " + parts[1][^6..].ToUpperInvariant() : "Previous device";
-    }
     public override string ToString()
     {
         return RecipientCaption("", DisplayName, ContactName, HasDeviceName);

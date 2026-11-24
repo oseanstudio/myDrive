@@ -82,9 +82,9 @@ class TransferView:
     def fallback_name(peer, kind="Device"):
         if kind not in {"Desktop", "Laptop", "Phone", "Tablet"}:
             kind = "Device"
-        return f"{kind} {peer[-6:].upper()}" if exact_peer(peer) else "Previous device"
+        return kind if exact_peer(peer) else "Previous device"
 
-    def base_device_name(self, device, catalog):
+    def device_name(self, device, catalog):
         peer = device["peer"].lower()
         recent = {}
         if self.recipient_owner == self.owner(self.snapshot):
@@ -92,22 +92,25 @@ class TransferView:
         kind = device.get("kind")
         kind = kind if kind in {"Desktop", "Laptop", "Phone", "Tablet"} else "Device"
         saved = recent.get("device")
-        if saved == self.fallback_name(peer, kind):
-            saved = None
+        suffix = " " + peer[-6:].upper()
+        if saved and saved.endswith(suffix):
+            saved = saved.removesuffix(suffix)
         return (recent.get("nickname") or catalog.get(peer, {}).get("name")
                 or (device.get("name") if device.get("name_known") else None)
                 or saved or kind)
 
-    def device_name(self, device, catalog):
-        name = self.base_device_name(device, catalog)
-        peer = device["peer"].lower()
-        account = peer.partition(":")[0] + ":"
-        devices = self.snapshot.get("devices", []) + self.directory_recipients
-        duplicate = any(other["peer"].lower() != peer and other["peer"].lower().startswith(account)
-                        and not other.get("history")
-                        and self.base_device_name(other, catalog).casefold() == name.casefold()
-                        for other in devices if exact_peer(other.get("peer")))
-        return name + " " + peer[-6:].upper() if duplicate else name
+    def device_availability(self, peer):
+        known = next((item for item in self.snapshot.get("devices", []) + self.directory_recipients
+                      if str(item.get("peer", "")).lower() == peer.lower()), {})
+        if known.get("history"):
+            return "Previously seen"
+        return {True: "Online", False: "Offline"}.get(known.get("online"), "Status unknown")
+
+    def destination_label(self, name, peer):
+        details = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1)
+        details.append(label(name))
+        details.append(label(self.device_availability(peer), "dim-label"))
+        return details
 
     def person_name(self, device):
         prefix = device["peer"].lower().partition(":")[0] + ":"
@@ -524,8 +527,8 @@ class TransferView:
         controls = Gtk.Box(spacing=4, margin_start=12 if nested else 0)
         if peer:
             select = button(name, lambda: self.choose_files(peer=peer, owner=owner))
-            select.set_child(label(name))
-            select.set_tooltip_text("Send files to " + name)
+            select.set_child(self.destination_label(name, peer))
+            select.set_tooltip_text("Send files to " + name + " · " + self.device_availability(peer))
             select.set_hexpand(True)
             controls.append(select)
             actions = [("Send folder…", lambda: self.choose_files(folder=True, peer=peer, owner=owner))]
@@ -647,12 +650,13 @@ class TransferView:
         for peer, name in entries:
             controls = Gtk.Box(spacing=4, margin_top=1, margin_bottom=1)
             send = button(name, lambda peer=peer: activate(peer))
-            send.set_child(label(name))
+            send.set_child(self.destination_label(name, peer))
+            send.set_tooltip_text(name + " · " + self.device_availability(peer))
             send.set_hexpand(True)
             paste = Gtk.Button(icon_name="edit-paste-symbolic", tooltip_text="Paste and send to " + name)
             paste.connect("clicked", lambda _, peer=peer: activate(peer, paste=True))
-            def update_name(updated, send=send, paste=paste):
-                send.set_child(label(updated))
+            def update_name(updated, send=send, paste=paste, peer=peer):
+                send.set_child(self.destination_label(updated, peer))
                 paste.set_tooltip_text("Paste and send to " + updated)
             edit = self.rename_button(name, lambda peer=peer, name=name, updated=update_name: self.rename_device(
                 owner, peer, name, dialog, updated))

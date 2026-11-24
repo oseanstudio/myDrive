@@ -203,7 +203,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         let titles: [(String, Selector?)] = [
             ("Open myDrive \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "")", #selector(menuOpen(_:))),
             (PopupViewKind.transfers.label, #selector(menuTransfers(_:))),
-            ("Sync", #selector(menuSync(_:))),
+            (PopupViewKind.sync.label, #selector(menuSync(_:))),
             (PopupViewKind.connections.label, #selector(menuConnections(_:))),
             ("Activity", #selector(menuActivity(_:))),
             ("Settings", #selector(menuSettings(_:))),

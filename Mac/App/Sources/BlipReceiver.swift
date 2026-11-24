@@ -105,7 +105,7 @@ struct BlipQueuedSend: Codable, Identifiable {
     func send(_ payload: BlipSendPayload, to peer: BlipPeer) {
         guard !sending, connected, (recipients + directoryRecipients).contains(where: { $0.peer == peer.peer }) else {
             payload.discard()
-            reportSend("This device is unavailable. Refresh Blip in the Send view before sending.")
+            reportSend("This device is unavailable. Refresh the Blip tab before sending.")
             return
         }
         let sender = selfPeer
@@ -125,7 +125,7 @@ struct BlipQueuedSend: Codable, Identifiable {
                 }
                 await updateRecents("remember", owner: sender, peer: peer)
             } catch {
-                reportSend("Blip could not confirm the send. Refresh Blip in the Send view before retrying.")
+                reportSend("Blip could not confirm the send. Refresh the Blip tab before retrying.")
             }
             await refresh()
         }
@@ -625,7 +625,7 @@ struct BlipQueuedSend: Codable, Identifiable {
     }
     func isTrusted(_ peer: BlipPeer) -> Bool { policy.account.lowercased()==account.lowercased() && policy.peers.contains(peer.peer.lowercased()) }
     func isFileTrusted(_ peer:BlipPeer)->Bool {policy.account.lowercased()==account.lowercased() && policy.files.contains(peer.peer.lowercased())}
-    private func baseDeviceName(_ peer: BlipPeer) -> String {
+    func deviceName(_ peer: BlipPeer) -> String {
         let match = peers.first { $0.peer.caseInsensitiveCompare(peer.peer) == .orderedSame }
         let recent = recentOwner == selfPeer
             ? recentRecipients.first { $0.peer.caseInsensitiveCompare(peer.peer) == .orderedSame } : nil
@@ -635,15 +635,13 @@ struct BlipQueuedSend: Codable, Identifiable {
         if let match, match.hasDeviceName { return match.displayName }
         return recent?.device ?? match?.displayName ?? peer.displayName
     }
-    func deviceName(_ peer: BlipPeer) -> String {
-        let name = baseDeviceName(peer)
-        let account = peer.peer.split(separator: ":").first?.lowercased()
-        let duplicate = (peers + directoryRecipients).contains {
-            $0.peer.caseInsensitiveCompare(peer.peer) != .orderedSame &&
-            $0.peer.split(separator: ":").first?.lowercased() == account &&
-            baseDeviceName($0).caseInsensitiveCompare(name) == .orderedSame
+    func deviceAvailability(_ peer: BlipPeer) -> String {
+        if peer.history == true { return "Previously seen" }
+        switch peer.online {
+        case true?: return "Online"
+        case false?: return "Offline"
+        case nil: return "Status unknown"
         }
-        return duplicate ? BlipPeer.fallbackName(peer.peer, kind: name) : name
     }
     func recipientLabel(_ peer: BlipPeer) -> String {
         let label = deviceName(peer)

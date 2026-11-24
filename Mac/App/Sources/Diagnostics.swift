@@ -12,8 +12,8 @@ enum Diagnostics {
                 try FileManager.default.createDirectory(at:directory,withIntermediateDirectories:true)
                 var captures:[String]=[]
                 let layout=layoutCheck(directory:directory,captures:&captures)
-                guard PopupViewKind.pickerCases.first?.label == "Send" else {
-                    throw BlipReceiverError.message("The view picker must start with Send.")
+                guard PopupViewKind.tabs.prefix(2).map(\.label) == ["Blip", "Syncthing"] else {
+                    throw BlipReceiverError.message("The view tabs must start with Blip and Syncthing.")
                 }
                 try checkBlipSignInPaste()
                 let failedSync = Snapshot(from: ["folders": [

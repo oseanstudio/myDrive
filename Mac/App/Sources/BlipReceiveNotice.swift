@@ -56,7 +56,7 @@ struct BlipReceiveNoticeView:View {
                     if transfer.pending && !receiver.receiving.contains(transfer.id) {Button("Receive"){receiver.receive(transfer)}}
                     Button(PopupViewKind.transfers.label,action:openTransfers)
                 }.controlSize(.small)
-            } else {Text("Open the Send view for the current status.").font(.system(size:12));Button(PopupViewKind.transfers.label,action:openTransfers)}
+            } else {Text("Open the Blip tab for the current status.").font(.system(size:12));Button(PopupViewKind.transfers.label,action:openTransfers)}
         }.padding(14).frame(maxWidth:.infinity,alignment:.leading)}.background(Color(nsColor:.windowBackgroundColor))
     }
 }

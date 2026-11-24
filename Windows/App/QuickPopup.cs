@@ -39,28 +39,45 @@ public sealed partial class MainWindow
     private void BuildQuickHeader()
     {
         quickHeader.ColumnDefinitions.Add(new(){Width=new GridLength(1,GridUnitType.Star)});
-        for(int i=0;i<4;i++)quickHeader.ColumnDefinitions.Add(new(){Width=GridLength.Auto});
+        for(int i=0;i<3;i++)quickHeader.ColumnDefinitions.Add(new(){Width=GridLength.Auto});
+        quickHeader.RowDefinitions.Add(new() { Height = GridLength.Auto });
+        quickHeader.RowDefinitions.Add(new() { Height = GridLength.Auto });
         var identity = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4, VerticalAlignment = VerticalAlignment.Center };
         identity.Children.Add(QuickText("myDrive", 13, true));
         identity.Children.Add(new TextBlock { Text = DisplayVersion, FontSize = 10, Opacity = .73, VerticalAlignment = VerticalAlignment.Center });
         quickHeader.Children.Add(identity);
-        var views=new MenuFlyout { Placement = FlyoutPlacementMode.BottomEdgeAlignedRight };
-        foreach(var view in new[]{(SendViewName,"transfers"),("Sync","sync"),(StorageViewName,"connections"),("Activity","activity"),("Settings","settings")})
-            MenuAction(views,view.Item1,()=>NavigateQuick(view.Item2));
-        views.Items.Add(new MenuFlyoutSeparator());
-        MenuAction(views,"Hide to tray",DismissQuickPopup);
-        MenuAction(views,"Quit myDrive",Quit);
-        quickViews.Flyout=views;AutomationProperties.SetName(quickViews,"Choose myDrive view");Grid.SetColumn(quickViews,1);quickHeader.Children.Add(quickViews);
         var add=QuickIcon("\uE710","Add folder or connection",()=>{});var addMenu=new MenuFlyout();
         MenuAction(addMenu,"Sync a folder…",()=>_=ShowQuickShare());
         MenuAction(addMenu,"Send with Blip…",()=>{NavigateQuick("transfers");if(blipSnapshot?.Status.Authenticated==true)_=ShowBlipSend();});
         MenuAction(addMenu,"Paste and send…",()=>_=PasteAndSendBlip());
+        addMenu.Items.Add(new MenuFlyoutSeparator());
+        MenuAction(addMenu,"Hide to tray",DismissQuickPopup);
+        MenuAction(addMenu,"Quit myDrive",Quit);
         add.Flyout=addMenu;
-        Grid.SetColumn(add,2);quickHeader.Children.Add(add);
-        var paste=QuickIcon("\uE77F","Paste clipboard and send",()=>_=PasteAndSendBlip());Grid.SetColumn(paste,3);quickHeader.Children.Add(paste);
+        Grid.SetColumn(add,1);quickHeader.Children.Add(add);
+        var paste=QuickIcon("\uE77F","Paste clipboard and send",()=>_=PasteAndSendBlip());Grid.SetColumn(paste,2);quickHeader.Children.Add(paste);
         quickExpand = QuickIcon("\uE740", "Open full window", () => SetMode(false));
-        Grid.SetColumn(quickExpand, 4);
+        Grid.SetColumn(quickExpand, 3);
         quickHeader.Children.Add(quickExpand);
+        var tabs = new Grid { ColumnSpacing = 4, Margin = new Thickness(0, 6, 0, 0) };
+        foreach (var (key, name, icon) in new (string, string, string?)[]
+            { ("transfers", SendViewName, null), ("sync", SyncViewName, null), ("connections", StorageViewName, null),
+              ("activity", "Activity", "\uE9D9"), ("settings", "Settings", "\uE713") })
+        {
+            tabs.ColumnDefinitions.Add(new() { Width = icon == null ? new GridLength(1, GridUnitType.Star) : GridLength.Auto });
+            var tab = new ToggleButton { Content = icon == null ? name : new FontIcon { Glyph = icon, FontSize = 12 },
+                FontSize = 12, MinWidth = icon == null ? 0 : 29, Height = 28, Padding = new Thickness(4, 0, 4, 0),
+                HorizontalAlignment = HorizontalAlignment.Stretch };
+            AutomationProperties.SetName(tab, name);
+            ToolTipService.SetToolTip(tab, name);
+            tab.Click += (_, _) => NavigateQuick(key);
+            Grid.SetColumn(tab, quickTabs.Count);
+            quickTabs.Add(key, tab);
+            tabs.Children.Add(tab);
+        }
+        Grid.SetRow(tabs, 1);
+        Grid.SetColumnSpan(tabs, quickHeader.ColumnDefinitions.Count);
+        quickHeader.Children.Add(tabs);
     }
     private void NavigateQuick(string view)
     {
@@ -70,8 +87,17 @@ public sealed partial class MainWindow
     }
     private void UpdateQuickChrome()
     {
-        quickViews.Content=currentView switch{"sync" or "sync-files" or "sync-info" or "sync-attention"=>"Sync","transfers"=>SendViewName,"activity"=>"Activity","settings"=>"Settings",_=>StorageViewName};
-        quickViews.IsEnabled=!busy;
+        string section = currentView switch
+        {
+            "sync-files" or "sync-info" or "sync-attention" => "sync",
+            "files" => "connections",
+            _ => currentView
+        };
+        foreach (var (key, tab) in quickTabs)
+        {
+            tab.IsChecked = key == section;
+            tab.IsEnabled = !busy;
+        }
         quickExpand.IsEnabled = !busy;
         if(statusFooter!=null){statusFooter.Visibility=compact&&!busy?Visibility.Collapsed:Visibility.Visible;if(statusFooter.Child is Grid footer)footer.Padding=compact?new Thickness(10,5,10,5):new Thickness(24,10,24,10);}
         status.MaxWidth=compact?190:double.PositiveInfinity;

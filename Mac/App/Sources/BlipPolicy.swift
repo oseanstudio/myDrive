@@ -29,10 +29,6 @@ struct BlipPeer: Identifiable, Codable {
         return distinguish && person.localizedCaseInsensitiveCompare(device) != .orderedSame
             ? person + " · " + device : person
     }
-    static func fallbackName(_ peer: String, kind: String = "Device") -> String {
-        guard BlipPolicy.exactPeer(peer) else { return "Previous device" }
-        return kind + " " + peer.suffix(6).uppercased()
-    }
     var id: String { peer }
 }
 struct BlipReceivedItem:Identifiable,Codable,Equatable {

@@ -142,7 +142,7 @@ struct BlipSendPayload {
 
     private func canChooseRecipient() -> Bool {
         guard connected, !sending, recipients.contains(where: { !isArchived($0) }) else {
-            reportSend("Connect to Blip and wait for a recipient device to appear in the Send view.")
+            reportSend("Connect to Blip and wait for a recipient device to appear in the Blip tab.")
             return false
         }
         return true
@@ -152,11 +152,14 @@ struct BlipSendPayload {
         guard canChooseRecipient() else { return nil }
         var choices = recipients.filter { !isArchived($0) }
         let owner = recipientOwner
-        let picker = BlipRecipientPicker(labels: choices.map { recipientLabel($0) }, description: description,
+        let pickerLabel: (BlipPeer) -> String = { peer in
+            self.recipientLabel(peer) + (peer.online == nil ? "" : " · " + self.deviceAvailability(peer))
+        }
+        let picker = BlipRecipientPicker(labels: choices.map(pickerLabel), description: description,
             rename: { index in
                 guard self.recipientOwner == owner, let updated = self.rename(choices[index]) else { return nil }
                 choices[index] = updated
-                return self.recipientLabel(updated)
+                return pickerLabel(updated)
             })
         picker.window.appearance = AppDelegate.appearance(for: PrefStore.shared.preferences.appearance)
         guard let selected = picker.run(), recipientOwner == owner, choices.indices.contains(selected.row)

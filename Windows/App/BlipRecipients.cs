@@ -38,7 +38,6 @@ public sealed partial class MainWindow
     private string recentOwner = "", recipientQuery = "", searchedQuery = "", searchMessage = "";
     private bool searchingRecipients;
     private bool archivesExpanded;
-    private readonly HashSet<string> expandedContacts = new(StringComparer.OrdinalIgnoreCase);
     private TextBox? recipientInput;
     private StackPanel? recipientRows;
 
@@ -55,24 +54,50 @@ public sealed partial class MainWindow
     private RecentRecipient Recent(BlipDevice device) => new(device.Peer, BlipDeviceCaption(device),
         device.ContactName, device.HasDeviceName ? device.DisplayName : null);
 
-    private string BlipBaseDeviceName(BlipDevice device)
+    private string BlipDeviceName(BlipDevice device)
     {
         var recent = recentOwner == BlipOwner ? recentRecipients.Find(r =>
             r.peer.Equals(device.Peer, StringComparison.OrdinalIgnoreCase)) : null;
         var known = blipSnapshot?.Devices.Find(d => d.Peer.Equals(device.Peer, StringComparison.OrdinalIgnoreCase));
+        var saved = recent?.device;
+        if (saved != null && BlipTrustPolicy.ExactPeer(device.Peer) &&
+            saved.EndsWith(" " + device.Peer[^6..], StringComparison.OrdinalIgnoreCase))
+            saved = saved[..^7];
         return FirstName(recent?.nickname, known?.Nickname, device.HasDeviceName ? device.BaseLabel : null,
-            known?.HasRegisteredName == true ? known.Name : null, recent?.device, known?.BaseLabel, device.BaseLabel);
+            known?.HasRegisteredName == true ? known.Name : null, saved, known?.BaseLabel, device.BaseLabel);
     }
 
-    private string BlipDeviceName(BlipDevice device)
+    private string BlipDeviceDetail(BlipDevice device)
     {
-        var name = BlipBaseDeviceName(device);
-        var account = device.Peer.Split(':')[0] + ":";
-        bool duplicate = (blipSnapshot?.Devices ?? []).Concat(directoryRecipients).Any(other =>
-            !other.Peer.Equals(device.Peer, StringComparison.OrdinalIgnoreCase) &&
-            other.Peer.StartsWith(account, StringComparison.OrdinalIgnoreCase) &&
-            BlipBaseDeviceName(other).Equals(name, StringComparison.OrdinalIgnoreCase));
-        return duplicate ? device.DisambiguatedName(name) : name;
+        var status = device.History ? "Previously seen" : device.Online switch
+        {
+            true => "Online",
+            false => "Offline",
+            _ => "Status unknown"
+        };
+        var last = (blipSnapshot?.Transfers ?? []).Where(t => t.Direction == "Outgoing" && t.ConfirmedComplete &&
+                t.Peer.Equals(device.Peer, StringComparison.OrdinalIgnoreCase))
+            .Select(t => t.UpdatedAt).DefaultIfEmpty().Max();
+        return last is > 0 and <= 253402300799
+            ? status + " · Sent " + DateTimeOffset.FromUnixTimeSeconds(last).ToLocalTime().ToString("g")
+            : status;
+    }
+
+    private static StackPanel BlipDestinationLabel(TextBlock title, string detail)
+    {
+        var summary = QuickText(detail, 11);
+        summary.Opacity = .70;
+        var text = new StackPanel { Spacing = 1, IsHitTestVisible = false };
+        text.Children.Add(title);
+        text.Children.Add(summary);
+        return text;
+    }
+
+    private static Button FlatBlipButton(Button button)
+    {
+        button.Background = new Microsoft.UI.Xaml.Media.SolidColorBrush(Microsoft.UI.Colors.Transparent);
+        button.BorderThickness = new Thickness(0);
+        return button;
     }
 
     private string BlipDeviceCaption(BlipDevice device)
@@ -147,7 +172,6 @@ public sealed partial class MainWindow
             recentOwner = owner;
             recentRecipients = new();
             archivesExpanded = false;
-            expandedContacts.Clear();
             recipientQuery = searchedQuery = searchMessage = "";
             directoryRecipients = new();
             if (owner.Length > 0) _ = UpdateRecentRecipients("list", owner);
@@ -281,45 +305,37 @@ public sealed partial class MainWindow
         var first = group.First();
         var contact = BlipPersonName(first, first.Account);
         bool grouped = contact != null && group.Skip(1).Any();
-        var list = grouped ? new StackPanel { Spacing = 3 } : rows;
-        foreach (var device in group)
+        if (grouped && contact != null) rows.Children.Add(BlipContactHeading(contact, owner,
+            saved == null ? null : group.Select(d => saved.GetValueOrDefault(d.Peer)).FirstOrDefault(r => r != null)));
+        foreach (var device in group.OrderByDescending(d => d.Online == true))
         {
             var recent = saved?.GetValueOrDefault(device.Peer);
             var name = grouped ? BlipDeviceName(device) : BlipDeviceCaption(device);
-            AddRecipientRow(list, owner, name, device.History ? null : device, saved == null ? null : device.Peer,
+            AddRecipientRow(rows, owner, name, device, saved == null ? null : device.Peer,
                 recent?.nickname);
         }
-        if (!grouped || contact == null) return;
-
-        var expander = ContactExpander(contact, list);
-        expander.IsExpanded = expandedContacts.Contains(group.Key);
-        expander.Expanding += (_, _) => expandedContacts.Add(group.Key);
-        expander.Collapsed += (_, _) => expandedContacts.Remove(group.Key);
-        if (saved != null && group.Select(d => saved.GetValueOrDefault(d.Peer)).FirstOrDefault(r => r != null) is { } entry)
-        {
-            var header = new Grid { ColumnSpacing = 4 };
-            header.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
-            header.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
-            header.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
-            header.Children.Add(QuickText(contact, 12, true));
-            var rename = QuickIcon("\uE70F", "Rename contact " + contact,
-                () => _ = RenameRecentRecipient(owner, entry.Account, contact, entry.person_nickname, person: true));
-            var archive = QuickIcon("\uE711", "Archive recent devices for " + contact,
-                () => _ = UpdateRecentRecipients("archive", owner, target: entry.Account));
-            Grid.SetColumn(rename, 1);
-            Grid.SetColumn(archive, 2);
-            header.Children.Add(rename);
-            header.Children.Add(archive);
-            expander.Header = header;
-        }
-        rows.Children.Add(expander);
     }
 
-    private static Expander ContactExpander(string name, StackPanel devices) => new()
+    private Grid BlipContactHeading(string contact, string owner, RecentRecipient? entry = null)
     {
-        Header = QuickText(name, 12, true), Content = devices,
-        HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch
-    };
+        var header = new Grid { ColumnSpacing = 3, Padding = new Thickness(6, 1, 0, 0) };
+        header.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
+        header.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
+        header.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
+        var title = QuickText(contact, 13, true);
+        title.VerticalAlignment = VerticalAlignment.Center;
+        header.Children.Add(title);
+        if (entry == null) return header;
+        var rename = FlatBlipButton(QuickIcon("\uE70F", "Rename contact " + contact,
+            () => _ = RenameRecentRecipient(owner, entry.Account, contact, entry.person_nickname, person: true)));
+        var archive = FlatBlipButton(QuickIcon("\uE711", "Archive recent devices for " + contact,
+            () => _ = UpdateRecentRecipients("archive", owner, target: entry.Account)));
+        Grid.SetColumn(rename, 1);
+        Grid.SetColumn(archive, 2);
+        header.Children.Add(rename);
+        header.Children.Add(archive);
+        return header;
+    }
 
     private static string FirstName(params string?[] names) =>
         names.FirstOrDefault(name => !string.IsNullOrWhiteSpace(name)) ?? "Device";
@@ -359,22 +375,26 @@ public sealed partial class MainWindow
         catch (IOException error) { Error(error); }
     }
 
-    private void AddRecipientRow(StackPanel rows, string owner, string name, BlipDevice? device, string? remove,
+    private void AddRecipientRow(StackPanel rows, string owner, string name, BlipDevice device, string? remove,
                                  string? nickname = null, bool deviceShortcut = false)
     {
         var row = new Grid { ColumnSpacing = 4 };
         row.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
         row.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
-        if (device == null) row.Children.Add(QuickText(name, 12));
+        var detail = BlipDeviceDetail(device);
+        var title = BlipDestinationLabel(QuickText(name, 12), detail);
+        if (device.History) row.Children.Add(new Border { Child = title, Padding = new Thickness(7, 3, 0, 3) });
         else
         {
-            var send = QuickButton("", () => _ = SendToBlipRecipient(owner, device));
-            send.Content = QuickText(name, 12);
+            var send = FlatBlipButton(QuickButton("", () => _ = SendToBlipRecipient(owner, device)));
+            send.Content = title;
+            send.Padding = new Thickness(7, 2, 4, 2);
+            send.MinHeight = 36;
             send.HorizontalAlignment = HorizontalAlignment.Stretch;
             send.HorizontalContentAlignment = HorizontalAlignment.Left;
             send.IsEnabled = BlipRunning && !busy;
-            AutomationProperties.SetName(send, "Send files to " + name);
-            ToolTipService.SetToolTip(send, name);
+            AutomationProperties.SetName(send, "Send files to " + name + ", " + detail);
+            ToolTipService.SetToolTip(send, name + " · " + detail);
             var alternatives = new MenuFlyout();
             MenuAction(alternatives, "Send folder…", () => _ = SendToBlipRecipient(owner, device, folder: true));
             MenuAction(alternatives, "Paste and send", () => _ = SendToBlipRecipient(owner, device, paste: true));
@@ -383,15 +403,15 @@ public sealed partial class MainWindow
         }
         if (remove != null || deviceShortcut)
         {
-            var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 3 };
-            if (device != null)
+            var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 1, VerticalAlignment = VerticalAlignment.Center };
+            if (!device.History)
             {
                 var paste = QuickIcon("\uE77F", "Paste and send to " + name,
                     () => _ = SendToBlipRecipient(owner, device, paste: true));
                 paste.IsEnabled = BlipRunning && !busy;
                 actions.Children.Add(paste);
             }
-            if (deviceShortcut && device != null)
+            if (deviceShortcut && !device.History)
                 actions.Children.Add(QuickIcon("\uE70F", "Rename " + name,
                     () => _ = RenameBlipDevice(owner, name, device, nickname)));
             if (remove != null)
@@ -399,8 +419,9 @@ public sealed partial class MainWindow
                 actions.Children.Add(QuickIcon("\uE70F", "Rename " + name,
                     () => _ = RenameRecentRecipient(owner, remove, name, nickname, person: false)));
                 actions.Children.Add(QuickIcon("\uE711", "Archive " + name,
-                    () => _ = UpdateRecentRecipients("archive", owner, device, target: remove)));
+                    () => _ = UpdateRecentRecipients("archive", owner, device.History ? null : device, target: remove)));
             }
+            foreach (var action in actions.Children.OfType<Button>()) FlatBlipButton(action);
             Grid.SetColumn(actions, 1);
             row.Children.Add(actions);
         }
