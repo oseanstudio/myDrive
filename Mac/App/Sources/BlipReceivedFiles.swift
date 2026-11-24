@@ -101,16 +101,22 @@ private final class BlipThumbnailReply:@unchecked Sendable {
     private var itemLabel:String{let names=transfer.item_names ?? [];return names.isEmpty ? "Incoming transfer":names.joined(separator:", ")}
     var body:some View {
         VStack(alignment:.leading,spacing:6){
-            ZStack {
-                RoundedRectangle(cornerRadius:6).fill(Color.secondary.opacity(0.08))
-                let content=fixturePreview ?? preview
-                if let image=content.image{Image(nsImage:image).resizable().scaledToFit().padding(3)}
-                else if let text=content.text{Text(text).font(.system(size:11,design:.monospaced)).lineLimit(6).textSelection(.enabled).padding(8).frame(maxWidth:.infinity,alignment:.leading)}
-                else if let file{Image(nsImage:NSWorkspace.shared.icon(forFile:file.path)).resizable().scaledToFit().frame(width:48,height:48)}
-                else{Image(systemName:"doc").font(.system(size:32)).foregroundStyle(.secondary)}
-            }.frame(height:transfer.confirmed ? 200:80).accessibilityLabel("Received file preview")
+            let content = fixturePreview ?? preview
+            if let image = content.image {
+                Image(nsImage: image).resizable().scaledToFit()
+                    .frame(maxWidth: .infinity, maxHeight: 142)
+                    .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 6))
+                    .accessibilityLabel("Received file preview")
+            } else if let text = content.text {
+                Text(text).font(.system(size: 11, design: .monospaced)).lineLimit(4).textSelection(.enabled)
+                    .padding(6).frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 6))
+            }
             if items.count>1{Picker("Received file",selection:Binding(get:{selected?.path ?? ""},set:{selection=$0})){ForEach(items){Text($0.displayName).tag($0.path)}}.labelsHidden().frame(maxWidth:.infinity)}
-            else{Text(selected?.displayName ?? itemLabel).font(.system(size:12)).lineLimit(1).truncationMode(.middle).help(selected?.path ?? "")}
+            else {
+                Label(selected?.displayName ?? itemLabel, systemImage: transfer.link_only == true ? "link" : "doc")
+                    .font(.system(size:12)).lineLimit(1).truncationMode(.middle).help(selected?.path ?? "")
+            }
             if transfer.confirmed,let selected {
                 HStack(spacing:0){
                     Button("Open"){act{try BlipFileActions.open(selected,transfer)}}

@@ -4,6 +4,7 @@ import SwiftUI
 
 struct ConnectionsView: View {
     @EnvironmentObject var app: AppState
+    @State private var showsTailDevices = false
 
     var body: some View {
         if let state = app.storageBrowse {
@@ -27,16 +28,6 @@ struct ConnectionsView: View {
                 if !app.hostedSmbShares.isEmpty {
                     Button("Stop all sharing…") { app.managePrivateShares() }
                         .controlSize(.small).frame(maxWidth: .infinity, alignment: .leading)
-                }
-                if !app.smbTailDevices.isEmpty {
-                    Divider()
-                    sectionHeader("Tailscale devices")
-                    ForEach(app.smbTailDevices) { device in
-                        if let url = device.url {
-                            Link(device.online ? device.name : device.name + " · Offline", destination: url)
-                                .disabled(!device.online).frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                    }
                 }
                 Divider()
                 sectionHeader("Network drives")
@@ -62,6 +53,17 @@ struct ConnectionsView: View {
                     ForEach(shares) { bookmark in
                         BookmarkRow(bookmark: bookmark)
                     }
+                }
+                if !app.smbTailDevices.isEmpty {
+                    Divider()
+                    DisclosureGroup("Tailnet devices", isExpanded: $showsTailDevices) {
+                        ForEach(app.smbTailDevices) { device in
+                            if let url = device.url {
+                                Link(device.online ? device.name : device.name + " · Offline", destination: url)
+                                    .disabled(!device.online).frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                        }
+                    }.font(.system(size: 12))
                 }
             }
             .task {

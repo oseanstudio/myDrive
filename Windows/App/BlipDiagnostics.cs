@@ -17,6 +17,11 @@ public sealed partial class MainWindow
         blipFixtureRunning = true;
         currentView = "transfers";
         Render();
+        var invite = new BlipTransfer { Id = Guid.NewGuid().ToString(), Peer = first.Peer,
+            Direction = "Incoming", Status = "Invited" };
+        if (BlipTransferRow(invite) is not Grid receiveRow ||
+            !receiveRow.Children.OfType<Button>().Any(button => button.Content is "Receive" && button.IsEnabled))
+            throw new IOException("Manual Receive must be available while automatic setup is unconfirmed.");
         recentRecipients = [Recent(first)];
         RenderRecipientRows();
         var mainRows = recipientRows!.Children.OfType<Grid>().ToList();
@@ -74,7 +79,7 @@ public sealed partial class MainWindow
             await Task.Delay(200); Stable(); await Capture(directory, "blip-connection-choice.png", choice); choice.Hide(); await choosing;
             blipFixtureRunning = true; blipSnapshot = new(new(), new(), new()); Render(); await Task.Delay(150); Stable(); await Capture(directory, "blip-signin.png");
             string peer = "11111111-1111-4111-8111-111111111111:22222222-2222-4222-8222-222222222222";
-            blipSnapshot = new(new() { Authenticated = true, ReceivePolicyVerified = true },
+            blipSnapshot = new(new() { Authenticated = true, NativeAutoAcceptDisabled = true },
                 Enumerable.Range(0,4).Select(i=>new BlipDevice{Peer=i==0?peer:"11111111-1111-4111-8111-111111111111:"+Guid.NewGuid(),Name=new[]{"Studio desktop","Laptop","Phone","Tablet"}[i],Contact="studio@example.test",UserName="Studio tester",NameKnown=true}).ToList(),
                 Enumerable.Range(0, 12).Select(i => new BlipTransfer { Id = Guid.NewGuid().ToString(), Peer = peer, Direction = i % 2 == 0 ? "Incoming" : "Outgoing", Status = i == 0 ? "Pending" : i == 1 ? "Active" : i == 2 ? "Completed" : i == 3 ? "Paused" : "Invited", Completed = i == 2 }).ToList());
             Render(); await Task.Delay(250); Stable(); await Capture(directory, "blip-transfers-light.png");
@@ -82,7 +87,7 @@ public sealed partial class MainWindow
             if (identity.ActualWidth < identity.Children.OfType<TextBlock>().Sum(text => text.DesiredSize.Width) + identity.Spacing - 1)
                 throw new IOException("The popup title clips the application version");
             report["popup_version_visible"] = true;
-            blipSnapshot.Status.DesktopSession = true; blipSnapshot.Status.ReceivePolicyVerified = false;
+            blipSnapshot.Status.DesktopSession = true; blipSnapshot.Status.NativeAutoAcceptDisabled = false;
             Render(); await Task.Delay(200); Stable(); await Capture(directory, "blip-desktop-session.png");
             blipSnapshot.Status.Authenticated = false; Render(); await Task.Delay(150); Stable(); await Capture(directory, "blip-desktop-signedout.png");
             blipSnapshot.Status.Authenticated = true;

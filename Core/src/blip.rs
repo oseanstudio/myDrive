@@ -348,7 +348,7 @@ impl Session {
         if self.desktop {
             return Ok(());
         }
-        let verified = snapshot.status["receive_policy_verified"] == true;
+        let verified = snapshot.status["native_auto_accept_disabled"] == true;
         if snapshot.status["authenticated"] != true || verified {
             policy.verification_deadline = None;
         }
@@ -420,28 +420,12 @@ impl Session {
                 );
             }
             if waiting(item) {
-                #[cfg(target_os = "macos")]
-                if !self.desktop && initial.status["receive_policy_verified"] != true {
-                    mac::configure_receive(self)?;
-                    let deadline = Instant::now() + Duration::from_secs(2);
-                    loop {
-                        let status = self.snapshot()?.status;
-                        if status["user_id"] != initial.status["user_id"]
-                            || status["device_id"] != initial.status["device_id"]
-                        {
-                            return Err("sign_in_required");
-                        }
-                        if status["receive_policy_verified"] == true {
-                            break;
-                        }
-                        if Instant::now() >= deadline {
-                            return Err("receive_policy_unconfirmed");
-                        }
-                        thread::sleep(Duration::from_millis(125));
-                    }
-                }
-                #[cfg(not(target_os = "macos"))]
-                if !self.desktop && initial.status["receive_policy_verified"] != true {
+                // A manual Receive confirms this invitation. It uses its own
+                // checked directory and does not depend on automatic setup.
+                if args.command == "accept"
+                    && !self.desktop
+                    && initial.status["native_auto_accept_disabled"] != true
+                {
                     return Err("receive_policy_unconfirmed");
                 }
                 self.request_acceptance(id)?;
@@ -934,7 +918,7 @@ fn client_command(
         "retry" if authenticated => activity::retry(session, args, snapshot)?,
         "cancel" if authenticated => session.cancel_send(args, &snapshot)?,
         "publish-name" if authenticated => session.publish_name(args, &snapshot)?,
-        "accept" if authenticated => session.accept(args, snapshot)?,
+        "accept" | "accept-manual" if authenticated => session.accept(args, snapshot)?,
         "search" if authenticated => session.search(&snapshot.status, input)?,
         "search-clear" if authenticated => {
             session.dispatch("AbandonSearch", string(1, RECIPIENT_SEARCH))?;
@@ -942,8 +926,8 @@ fn client_command(
         }
         "login" => session.registration(false, snapshot, input)?,
         "verify" => session.registration(true, snapshot, input)?,
-        "send" | "accept" | "search" | "search-clear" | "activity" | "retry" | "cancel"
-        | "publish-name" => return Err("sign_in_required"),
+        "send" | "accept" | "accept-manual" | "search" | "search-clear" | "activity" | "retry"
+        | "cancel" | "publish-name" => return Err("sign_in_required"),
         _ => return Err("invalid_command"),
     };
     Ok(result)
@@ -1101,7 +1085,7 @@ pub(crate) fn error_message(error: &str) -> &'static str {
         "native_response_too_large" => "Blip’s local response was too large to read.",
         "native_request_rejected" => "The local Blip engine rejected the request.",
         "profile_unavailable" => "myDrive could not access the Blip profile or receiving folder.",
-        "receive_policy_unconfirmed" => "Blip has not confirmed the receiving settings yet.",
+        "receive_policy_unconfirmed" => "Blip hasn’t confirmed automatic receiving. Use Receive for this invitation.",
         "invalid_search" => "Enter a name or email address to search Blip.",
         "search_unavailable" => "Blip could not complete the search. Try again.",
         "host_already_running" => "The Blip profile is already running.",

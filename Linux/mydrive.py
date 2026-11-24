@@ -1122,7 +1122,10 @@ class MyDrive(Gtk.Application):
             self.quit()
             return GLib.SOURCE_REMOVE
 
+        self.storage_view.tail_devices = [{"name": "Fixture device", "address": "100.64.0.1", "online": True}]
         self.storage_view.render_bookmarks()
+        tailnet = self.pages["SMB Drives"].get_last_child()
+        assert tailnet.get_label() == "Tailnet devices" and not tailnet.get_expanded()
         self.transfer_view.render()
         self.stack.set_visible_child_name("Send")
         chosen = []
@@ -1170,12 +1173,14 @@ class MyDrive(Gtk.Application):
             assert other_heading.get_next_sibling() == view.recipient_rows.get_last_child()
             external = view.recipient_rows.get_last_child()
             archive = external.get_last_child()
-            assert archive.get_icon_name() == "window-close-symbolic"
+            assert archive.get_icon_name() == "emblem-system-symbolic"
             external_peer = view.snapshot["devices"][-1]["peer"]
             requests = []
             update_recents = view.update_recents
             view.update_recents = lambda action, owner, **kwargs: requests.append((action, kwargs["target"]))
-            archive.emit("clicked")
+            remove_item = archive.get_popover().get_child().get_last_child()
+            assert remove_item.get_label() == "Remove"
+            remove_item.emit("clicked")
             view.recent_recipients.append({"peer": external_peer, "label": "Fixture external", "archived": "other"})
             view.render_recipient_rows()
             assert external_peer not in view.visible_recipients()
@@ -1195,9 +1200,11 @@ class MyDrive(Gtk.Application):
             recipient.get_first_child().emit("clicked")
             edit = recipient.get_last_child()
             paste = edit.get_prev_sibling()
-            assert edit.get_icon_name() == "document-edit-symbolic"
+            assert edit.get_icon_name() == "emblem-system-symbolic"
             paste.emit("clicked")
-            edit.emit("clicked")
+            edit_item = edit.get_popover().get_child().get_last_child()
+            assert edit_item.get_label() == "Edit name…"
+            edit_item.emit("clicked")
             assert calls == [{"peer": peer, "owner": view.recipient_owner},
                              ("paste", peer, view.recipient_owner),
                              ("rename", view.recipient_owner, peer, "Fixture laptop", "Fixture laptop", False)]

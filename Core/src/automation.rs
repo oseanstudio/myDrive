@@ -479,7 +479,7 @@ fn blip_action(command: &str, arguments: &Value) -> Result<Value, String> {
                 arguments["transfer_id"].as_str().unwrap().into(),
                 "--execute".into(),
             ]);
-            "accept"
+            "accept-manual"
         }
         _ => "poll",
     };

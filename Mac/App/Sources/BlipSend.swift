@@ -152,14 +152,12 @@ struct BlipSendPayload {
         guard canChooseRecipient() else { return nil }
         var choices = recipients.filter { !isArchived($0) }
         let owner = recipientOwner
-        let pickerLabel: (BlipPeer) -> String = { peer in
-            self.recipientLabel(peer) + (peer.online == nil ? "" : " · " + self.deviceAvailability(peer))
-        }
-        let picker = BlipRecipientPicker(labels: choices.map(pickerLabel), description: description,
+        let picker = BlipRecipientPicker(labels: choices.map { recipientLabel($0) }, description: description,
+            availability: choices.map(\.online),
             rename: { index in
                 guard self.recipientOwner == owner, let updated = self.rename(choices[index]) else { return nil }
                 choices[index] = updated
-                return pickerLabel(updated)
+                return self.recipientLabel(updated)
             })
         picker.window.appearance = AppDelegate.appearance(for: PrefStore.shared.preferences.appearance)
         guard let selected = picker.run(), recipientOwner == owner, choices.indices.contains(selected.row)
@@ -186,11 +184,13 @@ struct BlipSendPayload {
     let scroll = NSScrollView()
     let cancelButton = NSButton(title: "Cancel", target: nil, action: nil)
     private var labels: [String]
+    private let availability: [Bool?]
     private var choice: (row: Int, paste: Bool)?
     private let rename: ((Int) -> String?)?
 
-    init(labels: [String], description: String?, rename: ((Int) -> String?)? = nil) {
+    init(labels: [String], description: String?, availability: [Bool?] = [], rename: ((Int) -> String?)? = nil) {
         self.labels = labels
+        self.availability = availability
         self.rename = rename
         let listHeight = CGFloat(max(1, min(labels.count, 6)) * 30 + 2)
         let height = listHeight + (description == nil ? 49 : 70)
@@ -277,6 +277,12 @@ struct BlipSendPayload {
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         let label = labels[row]
         let cell = NSTableCellView()
+        let online = availability.indices.contains(row) ? availability[row] : nil
+        let dot = NSImageView()
+        dot.image = NSImage(systemSymbolName: "circle.fill", accessibilityDescription: nil)
+        dot.contentTintColor = online == true ? .systemGreen : .tertiaryLabelColor
+        dot.translatesAutoresizingMaskIntoConstraints = false
+        cell.addSubview(dot)
         let send = NSButton(title: label, target: self, action: #selector(choseDevice(_:)))
         send.isBordered = false
         send.alignment = .left
@@ -287,7 +293,8 @@ struct BlipSendPayload {
         send.lineBreakMode = .byTruncatingTail
         send.tag = row
         send.toolTip = label
-        send.setAccessibilityLabel("Send to " + label)
+        let state = online.map { $0 ? "Online" : "Offline" } ?? "Status unknown"
+        send.setAccessibilityLabel("Send to " + label + ", " + state)
         send.translatesAutoresizingMaskIntoConstraints = false
         cell.addSubview(send)
         let paste = NSButton(title: "", target: self, action: #selector(pasteToDevice(_:)))
@@ -298,16 +305,20 @@ struct BlipSendPayload {
         paste.setAccessibilityLabel("Paste and send to " + label)
         paste.translatesAutoresizingMaskIntoConstraints = false
         cell.addSubview(paste)
-        let edit = NSButton(title: "", target: self, action: #selector(renameDevice(_:)))
-        edit.image = NSImage(systemSymbolName: "pencil", accessibilityDescription: nil)
+        let edit = NSButton(title: "", target: self, action: #selector(showOptions(_:)))
+        edit.image = NSImage(systemSymbolName: "gearshape", accessibilityDescription: nil)
         edit.isBordered = false
         edit.tag = row
-        edit.toolTip = "Rename " + label
-        edit.setAccessibilityLabel("Rename " + label)
+        edit.toolTip = "Options for " + label
+        edit.setAccessibilityLabel("Options for " + label)
         edit.translatesAutoresizingMaskIntoConstraints = false
         cell.addSubview(edit)
         NSLayoutConstraint.activate([
-            send.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 5),
+            dot.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 5),
+            dot.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+            dot.widthAnchor.constraint(equalToConstant: 6),
+            dot.heightAnchor.constraint(equalToConstant: 6),
+            send.leadingAnchor.constraint(equalTo: dot.trailingAnchor, constant: 6),
             send.trailingAnchor.constraint(equalTo: paste.leadingAnchor, constant: -4),
             send.topAnchor.constraint(equalTo: cell.topAnchor),
             send.bottomAnchor.constraint(equalTo: cell.bottomAnchor),
@@ -331,7 +342,16 @@ struct BlipSendPayload {
         activate(sender.tag, paste: true)
     }
 
-    @objc private func renameDevice(_ sender: NSButton) {
+    @objc private func showOptions(_ sender: NSButton) {
+        let menu = NSMenu()
+        let item = NSMenuItem(title: "Edit Name…", action: #selector(renameDevice(_:)), keyEquivalent: "")
+        item.target = self
+        item.tag = sender.tag
+        menu.addItem(item)
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.minY), in: sender)
+    }
+
+    @objc private func renameDevice(_ sender: NSMenuItem) {
         let row = sender.tag
         guard labels.indices.contains(row), let updated = rename?(row) else { return }
         labels[row] = updated

@@ -99,7 +99,8 @@ public sealed partial class MainWindow
                 var pending = snapshot.Transfers.Where(t=>t.AwaitingAcceptance).ToList();
                 foreach(var id in blipAutoAccepted.Keys.Where(id=>!pending.Any(t=>t.Id==id)))blipAutoAccepted.TryRemove(id,out _);
                 foreach(var request in pending)
-                    if (ShouldAutoReceive(snapshot.Status,request) && !blipAutoAccepted.ContainsKey(request.Id) && ReceiveLedger.TryClaim(snapshot.Status.UserId,request.Id) && blipAutoAccepted.TryAdd(request.Id,0)) {
+                    if ((snapshot.Status.DesktopSession || snapshot.Status.NativeAutoAcceptDisabled) &&
+                        ShouldAutoReceive(snapshot.Status,request) && !blipAutoAccepted.ContainsKey(request.Id) && ReceiveLedger.TryClaim(snapshot.Status.UserId,request.Id) && blipAutoAccepted.TryAdd(request.Id,0)) {
 
                         try {await blip.AcceptAsync(request.Id,timeout.Token).ConfigureAwait(false);}
                         catch(Exception error){
@@ -148,9 +149,10 @@ public sealed partial class MainWindow
     }
     private async Task ReceiveFromBlipNotice(BlipTransfer transfer) {
         if(diagnosticMode||!transfer.AwaitingAcceptance||!blipAutoAccepted.TryAdd(transfer.Id,0))return;
+        var account = blipSnapshot?.Status.UserId ?? "";
         blipIncomingWindow?.ClearFailure();
         UpdateIncomingBlip(transfer,false);
-        try{ReceiveLedger.TryClaim(blipSnapshot?.Status.UserId??"",transfer.Id);using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(15));await blip.AcceptAsync(transfer.Id,timeout.Token);}
+        try{using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(15));await blip.AcceptAsync(transfer.Id,timeout.Token,manual:true);ReceiveLedger.TryClaim(account,transfer.Id);}
         catch(Exception error){blipAutoAccepted.TryRemove(transfer.Id,out _);blipIncomingWindow?.ShowFailure(error.Message);}
         await RefreshBlip();
     }
@@ -159,8 +161,9 @@ public sealed partial class MainWindow
         if (!compact) Heading(SendViewName, "");
         bool running = BlipRunning, signedIn = blipSnapshot?.Status.Authenticated == true;
         var header = new Grid { ColumnSpacing = 6 }; header.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) }); header.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
-        var label = running ? signedIn ? BlipDesktop || blipSnapshot!.Status.ReceivePolicyVerified ? "Connected" : "Checking receiving settings" : "Sign in to send or receive" : Preferences.Current.BlipAutoConnectDesktop ? "Preparing background Blip" : "Blip is disconnected";
-        header.Children.Add(QuickText(label, compact ? 13 : 18, true));
+        var label = running ? signedIn ? "Checking automatic receiving" : "Sign in to send or receive" : Preferences.Current.BlipAutoConnectDesktop ? "Preparing background Blip" : "Blip is disconnected";
+        if (!running || !signedIn || (!BlipDesktop && blipSnapshot?.Status.NativeAutoAcceptDisabled != true))
+            page.Children.Add(QuickText(label, compact ? 12 : 16));
         var refresh = QuickIcon("\uE72C", "Refresh Blip transfers", () => _ = RefreshBlip()); refresh.IsEnabled = running && !busy;
         var options = QuickIcon("\uE713", "Blip options", () => { });
         var menu = new MenuFlyout();
@@ -174,7 +177,11 @@ public sealed partial class MainWindow
         var senders = new MenuFlyoutItem { Text = "Sender permissions…", IsEnabled = signedIn };
         senders.Click += (_,_) => _ = ChooseLinkSenders(); menu.Items.Add(senders);
         if (running) MenuAction(menu, BlipDesktop ? "Disconnect Blip" : "Stop Blip", () => _ = StopBlip());
-        var tools = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 2 }; tools.Children.Add(options); tools.Children.Add(refresh); Grid.SetColumn(tools, 1); header.Children.Add(tools); page.Children.Add(header);
+        var tools = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 2 };
+        tools.Children.Add(FlatBlipButton(options));
+        tools.Children.Add(FlatBlipButton(refresh));
+        Grid.SetColumn(tools, 1);
+        header.Children.Add(tools);
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
         if (!running) actions.Children.Add(QuickButton("Connect…", () => _ = ChooseBlipConnection(), true));
         else
@@ -183,7 +190,9 @@ public sealed partial class MainWindow
             if (!signedIn && !BlipDesktop) actions.Children.Add(QuickButton(blipSnapshot?.Status.Registration == "CODE_SENT" ? "Enter code…" : "Connect Blip…", () => _ = ConnectBlip()));
         }
         if(signedIn)actions.Children.Add(QuickButton("Senders…",()=>_=ChooseLinkSenders()));
-        actions.Children.Add(QuickButton("Received files", OpenBlipDownloads)); page.Children.Add(actions);
+        actions.Children.Add(QuickButton("Received files", OpenBlipDownloads));
+        header.Children.Add(actions);
+        page.Children.Add(header);
         AddLiveBlipTransfers("Outgoing");
         if (signedIn)
             foreach (var queued in blipRelayQueued)
@@ -197,7 +206,6 @@ public sealed partial class MainWindow
         if (!running) page.Children.Add(Text(Preferences.Current.BlipAutoConnectDesktop ? "myDrive keeps this computer's existing Blip device available. Sign in in Blip once if needed." : "Reuse the account in desktop Blip, or start a separate Blip device for headless use.", 12));
         if (running && BlipDesktop && !signedIn) page.Children.Add(Text("Sign in in the Blip desktop app, then refresh here.", 12));
         if (running && !signedIn && !BlipDesktop) page.Children.Add(Text("Use your Blip account to connect this computer as a separate device. Sign-in starts only when you choose Connect Blip.", 12));
-        if (running && signedIn && !BlipDesktop && blipSnapshot?.Status.ReceivePolicyVerified != true) page.Children.Add(Text("Wait for receiving settings to verify before sending files to this computer.", 12));
         AddLiveBlipTransfers("Incoming");
     }
 
@@ -232,7 +240,7 @@ public sealed partial class MainWindow
         }
         else if (transfer.AwaitingAcceptance)
         {
-            var accept = QuickButton("Receive", () => _ = AcceptBlip(transfer)); accept.IsEnabled = BlipRunning && blipSnapshot?.Status.Authenticated == true && (BlipDesktop || blipSnapshot.Status.ReceivePolicyVerified) && !busy; Grid.SetColumn(accept, 1); row.Children.Add(accept);
+            var accept = QuickButton("Receive", () => _ = AcceptBlip(transfer)); accept.IsEnabled = BlipRunning && blipSnapshot?.Status.Authenticated == true && !busy; Grid.SetColumn(accept, 1); row.Children.Add(accept);
         }
         else if (outgoing)
         {
@@ -456,8 +464,8 @@ public sealed partial class MainWindow
             send.Tag = device;
             var paste = FlatBlipButton(QuickIcon("\uE77F", "Paste and send to " + title.Text + ", " + detail,
                 () => SelectDevice(device, paste: true)));
-            var rename = FlatBlipButton(QuickIcon("\uE70F", "Rename " + BlipDeviceName(device) + ", " + detail, () =>
-                EditRecipientName(dialog, content, localPeer, device, title, send, paste, grouped)));
+            var rename = BlipRecipientOptions(BlipDeviceName(device) + ", " + detail, () =>
+                EditRecipientName(dialog, content, localPeer, device, title, send, paste, grouped));
             var row = new Grid { ColumnSpacing = 4 };
             row.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
             row.ColumnDefinitions.Add(new() { Width = GridLength.Auto });

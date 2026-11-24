@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct BlipView: View {
@@ -10,15 +11,17 @@ struct BlipView: View {
 
     var body: some View {
         LazyVStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text(receiver.state).font(.system(size: 13, weight: .semibold))
-                Spacer()
-                Button("Refresh") { Task { await receiver.refreshConnection() } }.controlSize(.small)
+            if !receiver.connected {
+                Text(receiver.state).font(.system(size: 12)).foregroundStyle(.secondary)
             }
-            HStack {
+            HStack(spacing: 9) {
                 Button("Send…") { receiver.chooseFilesToSend() }
                     .disabled(receiver.preparingSend || receiver.sending)
-                Button("Received files") { receiver.openReceived() }
+                Button("Received Files") { receiver.openReceived() }
+                Spacer(minLength: 0)
+                Button { Task { await receiver.refreshConnection() } } label: {
+                    Image(systemName: "arrow.clockwise").frame(width: 24, height: 24)
+                }.buttonStyle(.plain).help("Refresh Blip").accessibilityLabel("Refresh Blip")
                 Menu {
                     Toggle("Keep Blip available in the background",
                            isOn: Binding(get: { receiver.backgroundEnabled }, set: receiver.setBackground))
@@ -76,15 +79,7 @@ struct BlipView: View {
 
     private var recipientPanel: some View {
         VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 4) {
-                TextField("Find people & devices", text: $query)
-                    .accessibilityLabel("Find people & devices")
-                    .onSubmit(search)
-                Button(action: search) { Image(systemName: "magnifyingglass") }
-                    .accessibilityLabel("Search Blip for a person")
-                    .help("Search Blip for a person")
-                    .disabled(searching || query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }.controlSize(.small)
+            BlipSearchField(text: $query, submit: search).frame(height: 24)
             let term = query.trimmingCharacters(in: .whitespacesAndNewlines)
             let available = receiver.recipients.filter { !receiver.isArchived($0) }
             if !term.isEmpty {
@@ -214,13 +209,17 @@ struct BlipView: View {
         HStack(spacing: 4) {
             if let peer {
                 Button { receiver.chooseFiles(to: peer) } label: {
-                    VStack(alignment: .leading, spacing: 1) {
+                    HStack(spacing: 7) {
+                        Circle()
+                            .fill(peer.online == true ? Color.green : Color.secondary.opacity(peer.online == nil ? 0.26 : 0.52))
+                            .frame(width: 6, height: 6)
+                            .accessibilityHidden(true)
                         Text(name).lineLimit(1)
-                        Text(receiver.deviceAvailability(peer)).font(.caption2).foregroundStyle(.secondary)
                     }.frame(maxWidth: .infinity, alignment: .leading)
                 }.accessibilityLabel("Send files to " + name)
                     .accessibilityHint(receiver.deviceAvailability(peer))
-                    .help(name)
+                    .help(name + " · " + receiver.deviceAvailability(peer))
+                    .buttonStyle(.plain)
                     .disabled(receiver.sending || receiver.preparingSend)
                     .contextMenu { Button("Paste and send") { receiver.pasteAndSend(to: peer) } }
             } else {
@@ -233,27 +232,23 @@ struct BlipView: View {
                     .help("Paste and send")
                     .disabled(receiver.sending || receiver.preparingSend)
             }
-            if deviceShortcut, let peer {
-                Button {
-                    receiver.rename(peer)
-                } label: { Image(systemName: "pencil") }
-                .accessibilityLabel("Rename " + name)
-                .help("Rename")
+            if deviceShortcut || removing != nil {
+                Menu {
+                    Button("Edit Name…") {
+                        if let peer { receiver.rename(peer) }
+                        else if let removing { receiver.renameRecent(removing, displayed: name, nickname: nickname, person: person) }
+                    }
+                    if let removing {
+                        Button("Remove") { receiver.archiveRecipient(removing, peer: peer) }
+                    }
+                } label: { Image(systemName: "gearshape").frame(width: 24, height: 24) }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .accessibilityLabel("Options for " + name)
+                .help("Options for " + name)
             }
-            if let removing {
-                Button {
-                    if let peer { receiver.rename(peer) }
-                    else { receiver.renameRecent(removing, displayed: name, nickname: nickname, person: person) }
-                } label: {
-                    Image(systemName: "pencil")
-                }
-                .accessibilityLabel("Rename " + name)
-                .help("Rename")
-                Button { receiver.archiveRecipient(removing, peer: peer) } label: { Image(systemName: "xmark") }
-                    .accessibilityLabel("Archive " + name)
-                    .help("Archive " + name)
-            }
-        }.controlSize(.small).font(.system(size: 12))
+        }.controlSize(.small).font(.system(size: 12)).frame(minHeight: 27)
     }
 
     private func liveTransfer(_ transfer: BlipTransfer) -> some View {
@@ -277,6 +272,46 @@ struct BlipView: View {
                 }.controlSize(.small).disabled(receiver.cancellingSends.contains(transfer.id))
             }
         }.frame(minHeight: 44)
+    }
+}
+
+private struct BlipSearchField: NSViewRepresentable {
+    @Binding var text: String
+    var submit: () -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
+
+    func makeNSView(context: Context) -> NSSearchField {
+        let field = NSSearchField()
+        field.placeholderString = "Find people & devices"
+        field.setAccessibilityLabel("Find people & devices")
+        field.delegate = context.coordinator
+        field.target = context.coordinator
+        field.action = #selector(Coordinator.search(_:))
+        if let cell = field.cell as? NSSearchFieldCell {
+            cell.sendsSearchStringImmediately = false
+            cell.sendsWholeSearchString = true
+        }
+        return field
+    }
+
+    func updateNSView(_ field: NSSearchField, context: Context) {
+        context.coordinator.parent = self
+        if field.stringValue != text { field.stringValue = text }
+    }
+
+    final class Coordinator: NSObject, NSSearchFieldDelegate {
+        var parent: BlipSearchField
+        init(parent: BlipSearchField) { self.parent = parent }
+
+        func controlTextDidChange(_ notification: Notification) {
+            if let field = notification.object as? NSSearchField { parent.text = field.stringValue }
+        }
+
+        @objc func search(_ field: NSSearchField) {
+            parent.text = field.stringValue
+            parent.submit()
+        }
     }
 }
 

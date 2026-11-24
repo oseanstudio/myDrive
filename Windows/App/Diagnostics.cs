@@ -50,6 +50,9 @@ public sealed partial class MainWindow
             if(rowTop<top-2||rowTop+row.ActualHeight>root.ActualHeight+2)
                 throw new IOException("The last folder did not scroll fully into view.");
             await CheckBlipContactGrouping();
+            tailDevices = [new("Fixture device", "100.64.0.1", true)];
+            if (RenderTailDevices() is not { Header: "Tailnet devices", IsExpanded: false })
+                throw new IOException("Tailnet devices must start collapsed in SMB Drives.");
             result=new{ok=true,bottom_gap=gap,viewport_height=list.ActualHeight};
         }
         catch(Exception error){result=new{ok=false,error=error.ToString()};}

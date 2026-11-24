@@ -440,7 +440,7 @@ mod tests {
             ]
             .concat(),
         );
-        let state = move |complete| {
+        let state = move |complete, verified| {
             let archive = if complete {
                 [item.clone(), saved.clone()].concat()
             } else {
@@ -459,14 +459,14 @@ mod tests {
                 2,
                 &[
                     auth.clone(),
-                    config.clone(),
+                    if verified { config.clone() } else { Vec::new() },
                     field(600, &field(2, &transfer)),
                 ]
                 .concat(),
             )
         };
         let server = thread::spawn(move || {
-            for request in 0..6 {
+            for request in 0..7 {
                 let (mut stream, _) = listener.accept().unwrap();
                 stream
                     .set_read_timeout(Some(Duration::from_secs(2)))
@@ -486,7 +486,7 @@ mod tests {
                     stream.read_exact(&mut bytes).unwrap();
                     body.extend(bytes);
                 }
-                let response = if request == 3 {
+                let response = if request == 4 {
                     assert!(body.windows(ID.len()).any(|part| part == ID.as_bytes()));
                     assert!(body
                         .windows(accepted_path.len())
@@ -497,7 +497,7 @@ mod tests {
                     Vec::new()
                 } else {
                     assert!(body.ends_with(b"/rpc.Service/GetState"));
-                    state(request >= 4)
+                    state(request >= 5, request < 2)
                 };
                 // Split the native reply into two frames with one message ID.
                 let middle = response.len().min(64);
@@ -518,7 +518,7 @@ mod tests {
         assert_eq!(before["status"]["device_id"], DEVICE);
         assert_eq!(before["status"]["receive_policy_verified"], true);
         assert_eq!(before["transfers"][0]["link_only"], true);
-        let args = Arguments {
+        let mut args = Arguments {
             command: "accept".into(),
             profile: PathBuf::new(),
             desktop: false,
@@ -533,6 +533,11 @@ mod tests {
             Err("sign_in_required")
         );
         let owner = format!("{USER}:{DEVICE}");
+        assert_eq!(
+            client_command(&session, &args, None, Some(&owner)),
+            Err("receive_policy_unconfirmed")
+        );
+        args.command = "accept-manual".into();
         let result = client_command(&session, &args, None, Some(&owner)).unwrap();
         assert_eq!(result["phase"], "receiving_confirmed");
         assert!(destination.is_dir());

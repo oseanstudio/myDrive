@@ -32,8 +32,8 @@ def clear(box):
         box.remove(child)
 
 
-def menu(entries):
-    control = Gtk.MenuButton(icon_name="view-more-symbolic", tooltip_text="More actions")
+def menu(entries, icon="view-more-symbolic", title="More actions"):
+    control = Gtk.MenuButton(icon_name=icon, tooltip_text=title)
     popover = Gtk.Popover()
     items = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
     for title, command in entries:

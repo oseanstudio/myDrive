@@ -282,6 +282,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         if let monitor = NSEvent.addLocalMonitorForEvents(matching: clickEvents.union(.keyDown), handler: { [weak self] event in
             guard let self else { return event }
             if event.type == .keyDown {
+                if (event.window === self.popover.contentViewController?.view.window || event.window === self.fullWindow),
+                   let editor = event.window?.firstResponder as? NSTextView, editor.isFieldEditor,
+                   let action = Self.textEditAction(for: event), NSApp.sendAction(action, to: editor, from: nil) {
+                    return nil
+                }
                 if event.keyCode == 53, self.popover.isShown, NSApp.modalWindow == nil,
                    event.window === self.popover.contentViewController?.view.window {
                     self.popover.performClose(nil)
@@ -292,6 +297,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             }
             return event
         }) { eventMonitors.append(monitor) }
+    }
+
+    static func textEditAction(for event: NSEvent) -> Selector? {
+        let modifiers = event.modifierFlags.intersection([.command, .option, .control, .shift])
+        guard modifiers == .command else { return nil }
+        switch event.charactersIgnoringModifiers?.lowercased() {
+        case "a": return #selector(NSText.selectAll(_:))
+        case "x": return #selector(NSText.cut(_:))
+        case "c": return #selector(NSText.copy(_:))
+        case "v": return #selector(NSText.paste(_:))
+        default: return nil
+        }
     }
 
     private func observePopoverClick(_ event: NSEvent, isLocal: Bool) {

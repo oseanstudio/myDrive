@@ -199,10 +199,14 @@ public sealed partial class MainWindow : Window
     private void RenderConnections()
     {
         page.Children.Add(RenderSmbOverview());
-        if(compact){RenderQuickConnections();return;}
-        var line=new Grid();line.ColumnDefinitions.Add(new(){Width=new GridLength(1,GridUnitType.Star)});line.ColumnDefinitions.Add(new(){Width=new GridLength(260)});line.Children.Add(Text("Saved SMB shares",18,true));
-        var filter=new AutoSuggestBox{PlaceholderText="Find SMB shares",Text=search};filter.TextChanged+=(_,_)=>{search=filter.Text;RenderConnectionList();};Grid.SetColumn(filter,1);line.Children.Add(filter);page.Children.Add(line);
-        connectionsPanel=new StackPanel{Spacing=10};page.Children.Add(connectionsPanel);RenderConnectionList();
+        if (compact) RenderQuickConnections();
+        else
+        {
+            var line=new Grid();line.ColumnDefinitions.Add(new(){Width=new GridLength(1,GridUnitType.Star)});line.ColumnDefinitions.Add(new(){Width=new GridLength(260)});line.Children.Add(Text("Saved SMB shares",18,true));
+            var filter=new AutoSuggestBox{PlaceholderText="Find SMB shares",Text=search};filter.TextChanged+=(_,_)=>{search=filter.Text;RenderConnectionList();};Grid.SetColumn(filter,1);line.Children.Add(filter);page.Children.Add(line);
+            connectionsPanel=new StackPanel{Spacing=10};page.Children.Add(connectionsPanel);RenderConnectionList();
+        }
+        if (RenderTailDevices() is { } devices) page.Children.Add(devices);
     }
     private StackPanel? connectionsPanel;
     private void RenderConnectionList()

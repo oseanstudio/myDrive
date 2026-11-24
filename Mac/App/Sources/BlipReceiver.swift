@@ -463,7 +463,7 @@ struct BlipQueuedSend: Codable, Identifiable {
         do {
             let status = value.dict("status")
             let managed = !status.bool("desktop_session")
-            receiveReady = !managed || status.bool("receive_policy_verified")
+            receiveReady = !managed || status.bool("native_auto_accept_disabled")
             provisioning = false
             needsSignIn = managed && !status.bool("authenticated")
             if !signingIn { registrationCodeSent = needsSignIn && status.str("registration") == "CODE_SENT" }
@@ -484,7 +484,7 @@ struct BlipQueuedSend: Codable, Identifiable {
                 nextReceiveAttempt.removeAll()
             }
             if receiveReady { receiveSetupProblem = nil }
-            if managed, !receiveReady, Date() >= nextReceiveSetup {
+            if managed, !status.bool("receive_policy_verified"), Date() >= nextReceiveSetup {
                 nextReceiveSetup = Date().addingTimeInterval(30)
                 do {
                     _ = try await BlipMacClient.request("configure-receive", [:])
@@ -706,7 +706,7 @@ struct BlipQueuedSend: Codable, Identifiable {
               BlipPolicy.exactPeer(transfer.peer), receiving.insert(transfer.id).inserted else { return }
         Task {
             do {
-                _ = try await BlipMacClient.request("accept", ["id": transfer.id, "owner": owner])
+                _ = try await BlipMacClient.request("accept-manual", ["id": transfer.id, "owner": owner])
                 try claims?.claim(owner + ":accept:" + transfer.id)
                 await refresh()
             } catch {

@@ -68,6 +68,7 @@ class StorageView:
         self.bookmarks = []
         self.shared_here = []
         self.tail_devices = []
+        self.tail_devices_expanded = False
         self.current = None
         self.path = ""
         self.health = {}
@@ -200,14 +201,6 @@ class StorageView:
             self.page.append(row(share["name"], "Read-only", menu([("Stop sharing…", lambda s=share: self.stop_share(s))])))
         if not self.shared_here:
             self.page.append(label("No folders shared from this computer."))
-        if self.tail_devices:
-            self.page.append(label("Tailscale devices", "heading"))
-        for device in self.tail_devices:
-            address = device["address"]
-            host = f"[{address}]" if ":" in address else address
-            browse = button("Browse", lambda h=host: self.app.open_uri(f"smb://{h}/"))
-            browse.set_sensitive(device["online"])
-            self.page.append(row(device["name"], "Tailscale" if device["online"] else "Offline", browse))
         shares = [bookmark for bookmark in self.bookmarks if bookmark["protocol"] == "smb"]
         self.page.append(label("Saved SMB shares", "heading"))
         if not shares:
@@ -221,6 +214,17 @@ class StorageView:
             self.health_labels[bookmark["id"]] = detail
             self.set_health_label(detail, bookmark)
             self.page.append(share_row)
+        if self.tail_devices:
+            devices = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+            for device in self.tail_devices:
+                address = device["address"]
+                host = f"[{address}]" if ":" in address else address
+                browse = button("Browse", lambda h=host: self.app.open_uri(f"smb://{h}/"))
+                browse.set_sensitive(device["online"])
+                devices.append(row(device["name"], "Online" if device["online"] else "Offline", browse))
+            section = Gtk.Expander(label="Tailnet devices", child=devices, expanded=self.tail_devices_expanded)
+            section.connect("notify::expanded", lambda row, _: setattr(self, "tail_devices_expanded", row.get_expanded()))
+            self.page.append(section)
 
     def stop_share(self, share):
         name = share["name"]

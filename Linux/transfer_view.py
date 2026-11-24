@@ -191,6 +191,8 @@ class TransferView:
                 except (OSError, RuntimeError):
                     pass
             permissions = self.catalog(identity)
+            status = snapshot["status"]
+            auto_receive_ready = status.get("desktop_session") or status.get("native_auto_accept_disabled")
             receipts = set(read_settings("blip-receipts.json", []))
             urls, notices = [], []
             account = identity.partition(":")[0]
@@ -248,7 +250,7 @@ class TransferView:
                 ):
                     notices.append(transfer)
                 self.notice_states[transfer_id] = state
-                if state == "Invited" and not transfer.get("has_error") and (
+                if auto_receive_ready and state == "Invited" and not transfer.get("has_error") and (
                     permission.get("files") or links and transfer.get("link_only")
                 ) and claim("accept", transfer_id):
                     self.blip.request("accept", transfer["transfer_id"])
@@ -290,8 +292,6 @@ class TransferView:
             self.page.remove(self.recipient_rows)
         clear(self.page)
         identity = self.owner(self.snapshot)
-        self.page.append(row("Blip", "Ready" if identity and not self.error else "Connection needed",
-                             button("Refresh", lambda: self.refresh(quiet=False))))
         if self.error:
             self.page.append(Gtk.Label(label=self.error, xalign=0, wrap=True, max_width_chars=38))
         if self.error and getattr(self.blip, "arguments", None) is None:
@@ -305,6 +305,7 @@ class TransferView:
         actions.append(button("Send…", self.choose_files))
         actions.append(button("Paste and send", self.paste))
         actions.append(menu([("Send folder…", lambda: self.choose_files(folder=True)),
+                             ("Refresh Blip", lambda: self.refresh(quiet=False)),
                              ("Sender permissions…", self.permissions),
                              ("Received files", lambda: self.app.open_path(self.blip.inbox))]))
         self.page.append(actions)
@@ -525,16 +526,16 @@ class TransferView:
     def add_recipient_row(self, owner, name, peer=None, remove=None, nickname=None, person=False, nested=False,
                           device_shortcut=False):
         controls = Gtk.Box(spacing=4, margin_start=12 if nested else 0)
+        actions = []
         if peer:
             select = button(name, lambda: self.choose_files(peer=peer, owner=owner))
             select.set_child(self.destination_label(name, peer))
             select.set_tooltip_text("Send files to " + name + " · " + self.device_availability(peer))
             select.set_hexpand(True)
             controls.append(select)
-            actions = [("Send folder…", lambda: self.choose_files(folder=True, peer=peer, owner=owner))]
+            actions.append(("Send folder…", lambda: self.choose_files(folder=True, peer=peer, owner=owner)))
             if not (remove or device_shortcut):
                 actions.append(("Paste and send", lambda: self.paste(peer, owner)))
-            controls.append(menu(actions))
         else:
             name_label = label(name, "heading" if person else None)
             name_label.set_hexpand(True)
@@ -549,16 +550,17 @@ class TransferView:
                     self.rename_recent(owner, peer, name, nickname, False)
                 else:
                     self.rename_device(owner, peer, name, None, lambda _: None)
-            controls.append(self.rename_button(name, rename))
+            actions.append(("Edit name…", rename))
         if remove:
-            controls.append(self.rename_button(name, lambda: self.rename_recent(owner, remove, name, nickname, person)))
-            cross = Gtk.Button(icon_name="window-close-symbolic", tooltip_text="Archive " + name)
-            cross.connect("clicked", lambda *_: self.update_recents("archive", owner, peer=peer, title=name, target=remove))
-            controls.append(cross)
+            actions.append(("Edit name…", lambda: self.rename_recent(owner, remove, name, nickname, person)))
+            actions.append(("Remove", lambda: self.update_recents("archive", owner, peer=peer, title=name, target=remove)))
+        if actions:
+            controls.append(menu(actions, "emblem-system-symbolic" if remove or device_shortcut
+                                 else "view-more-symbolic", "Options for " + name))
         self.recipient_rows.append(controls)
 
     def accept(self, transfer):
-        self.app.work("blip", "Receive transfer", lambda: self.blip.request("accept", transfer["transfer_id"]),
+        self.app.work("blip", "Receive transfer", lambda: self.blip.request("accept-manual", transfer["transfer_id"]),
                       lambda _: self.refresh())
 
     def cancel_send(self, transfer, relay=False):

@@ -94,6 +94,7 @@ public sealed partial class MainWindow
     private sealed record TailDevice(string name, string address, bool online);
     private IReadOnlyList<SmbShareHost.Share> hostedShares = [];
     private IReadOnlyList<TailDevice> tailDevices = [];
+    private bool tailDevicesExpanded;
     private DateTime nextSmbInventory;
     private bool updatingSmbInventory;
 
@@ -111,17 +112,24 @@ public sealed partial class MainWindow
         }
         if (hostedShares.Count == 0) panel.Children.Add(Text("No folders shared from this computer.", 11));
         else panel.Children.Add(QuickButton("Stop all sharing…", () => _ = ManagePrivateShares()));
-        if (tailDevices.Count > 0)
-        {
-            panel.Children.Add(Text("Tailscale devices", 13, true));
-            foreach (var device in tailDevices)
-            {
-                var button = QuickButton(device.online ? device.name : device.name + " · Offline", () => OpenTailDevice(device));
-                button.IsEnabled = device.online;
-                panel.Children.Add(button);
-            }
-        }
         return panel;
+    }
+
+    private Expander? RenderTailDevices()
+    {
+        if (tailDevices.Count == 0) return null;
+        var devices = new StackPanel { Spacing = 4 };
+        foreach (var device in tailDevices)
+        {
+            var button = QuickButton(device.online ? device.name : device.name + " · Offline", () => OpenTailDevice(device));
+            button.IsEnabled = device.online;
+            devices.Children.Add(button);
+        }
+        var section = new Expander { Header = "Tailnet devices", Content = devices, IsExpanded = tailDevicesExpanded,
+            HorizontalAlignment = HorizontalAlignment.Stretch };
+        section.Expanding += (_, _) => tailDevicesExpanded = true;
+        section.Collapsed += (_, _) => tailDevicesExpanded = false;
+        return section;
     }
 
     private void OpenTailDevice(TailDevice device)

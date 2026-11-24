@@ -16,6 +16,7 @@ enum Diagnostics {
                     throw BlipReceiverError.message("The view tabs must start with Blip and Syncthing.")
                 }
                 try checkBlipSignInPaste()
+                try checkFieldEditShortcuts()
                 let failedSync = Snapshot(from: ["folders": [
                     ["id": "moved-folder", "label": "Moved folder", "path": "/tmp/mydrive-old-folder",
                      "status": ["pullErrors": 1]]
@@ -79,7 +80,13 @@ enum Diagnostics {
                       closeButton.frame.width >= standardClose.frame.width else {
                     throw BlipReceiverError.message("The receive notice does not use the standard close control")
                 }
-                if let transfer=receiver.transfers.first {let file="blip-receive-notice.png";render(BlipReceiveNoticeView(receiver:receiver,id:transfer.id,openTransfers:{}),height:340,to:directory.appendingPathComponent(file));captures.append(file)}
+                if let transfer = receiver.transfers.first {
+                    let file = "blip-receive-notice.png"
+                    let height = renderReceiveNotice(BlipReceiveNoticeView(receiver: receiver, id: transfer.id, openTransfers: {}),
+                        to: directory.appendingPathComponent(file))
+                    guard height < 150 else { throw BlipReceiverError.message("A pending invitation is taller than its content.") }
+                    captures.append(file)
+                }
                 let labels = ["Studio desktop", "Travel laptop", "A very long registered phone name for checking how recipient rows handle truncation"] +
                     (1...8).map { "Studio contact · Laptop \($0)" }
                 let picker = BlipRecipientPicker(labels: labels, description: "Click a device to send.")
@@ -93,8 +100,8 @@ enum Diagnostics {
                 let firstRow = picker.tableView(picker.table, viewFor: picker.table.tableColumns[0], row: 0)
                 let actions = firstRow?.subviews.compactMap { $0 as? NSButton } ?? []
                 guard actions.count == 3, actions[1].toolTip == "Paste and send to Studio desktop",
-                      actions[2].toolTip == "Rename Studio desktop" else {
-                    throw BlipReceiverError.message("The recipient row must have Paste beside Rename.")
+                      actions[2].toolTip == "Options for Studio desktop" else {
+                    throw BlipReceiverError.message("The recipient row must have Paste beside its options.")
                 }
                 picker.table.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
                 if let content = picker.window.contentView,
@@ -153,6 +160,17 @@ enum Diagnostics {
             } catch { print("Layout diagnostics failed: \(error.localizedDescription)");exit(1) }
         }
         exit(0)
+    }
+
+    @MainActor private static func checkFieldEditShortcuts() throws {
+        for (key, action) in [("a", "selectAll:"), ("x", "cut:"), ("c", "copy:"), ("v", "paste:")] {
+            guard let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command,
+                timestamp: 0, windowNumber: 0, context: nil, characters: key, charactersIgnoringModifiers: key,
+                isARepeat: false, keyCode: 0),
+                AppDelegate.textEditAction(for: event) == NSSelectorFromString(action) else {
+                throw BlipReceiverError.message("A standard text editing shortcut did not route to the field editor.")
+            }
+        }
     }
 
     @MainActor private static func checkBlipSignInPaste() throws {
@@ -243,12 +261,18 @@ enum Diagnostics {
             for scheme in [ColorScheme.light,.dark] {
                 let name="blip-received-\(label)-\(scheme == .light ? "light":"dark").png"
                 let receiver=BlipReceiver(root:root.appendingPathComponent("unused-profile"));receiver.peers=[BlipPeer(peer:peer,name:"Studio laptop",name_known:true)];receiver.transfers=[transfer]
-                render(BlipReceiveNoticeView(receiver:receiver,id:transfer.id,openTransfers:{},fixturePreview:preview).environment(\.colorScheme,scheme),height:340,to:directory.appendingPathComponent(name),scheme:scheme);captures.append(name)
+                let height = renderReceiveNotice(BlipReceiveNoticeView(receiver: receiver, id: transfer.id,
+                    openTransfers: {}, fixturePreview: preview).environment(\.colorScheme, scheme),
+                    to: directory.appendingPathComponent(name), scheme: scheme)
+                guard height < 270 else { throw BlipReceiverError.message("The preview leaves excess space in the notice.") }
+                captures.append(name)
             }
         }
         transfer.received_items=[textItem,imageItem]
         let receiver=BlipReceiver(root:root.appendingPathComponent("unused-profile"));receiver.peers=[BlipPeer(peer:peer,name:"Studio laptop",name_known:true)];receiver.transfers=[transfer]
-        render(BlipReceiveNoticeView(receiver:receiver,id:transfer.id,openTransfers:{},fixturePreview:BlipFilePreview(text:"Received document preview")),height:340,to:directory.appendingPathComponent("blip-received-multiple.png"));captures.append("blip-received-multiple.png")
+        renderReceiveNotice(BlipReceiveNoticeView(receiver: receiver, id: transfer.id, openTransfers: {},
+            fixturePreview: BlipFilePreview(text: "Received document preview")), to: directory.appendingPathComponent("blip-received-multiple.png"))
+        captures.append("blip-received-multiple.png")
         return ["result":"pass","image_and_text_preview":true,"fixtures_only":true,"clipboard_or_launch":false]
     }
 
@@ -488,8 +512,19 @@ enum Diagnostics {
     /// menu labels without an on-screen window, so the captures draw through
     /// NSHostingView at 2x instead.
     @MainActor
-    private static func render(_ view: some View, height: CGFloat, to url: URL,scheme:ColorScheme?=nil) {
-        let size = NSSize(width: PopupMetrics.width, height: max(height, 60))
+    @discardableResult
+    private static func renderReceiveNotice(_ view: some View, to url: URL, scheme: ColorScheme? = nil) -> CGFloat {
+        let width = BlipReceiveNotice.width
+        let fitting = NSHostingView(rootView: view.frame(width: width).fixedSize(horizontal: false, vertical: true))
+        let height = ceil(fitting.fittingSize.height)
+        render(view, height: height, to: url, scheme: scheme, width: width)
+        return height
+    }
+
+    @MainActor
+    private static func render(_ view: some View, height: CGFloat, to url: URL, scheme: ColorScheme? = nil,
+                               width: CGFloat = PopupMetrics.width) {
+        let size = NSSize(width: width, height: max(height, 60))
         let hosting = NSHostingView(rootView: view.frame(width: size.width, height: size.height))
         hosting.appearance=NSAppearance(named:scheme == .dark ? .darkAqua:.aqua)
         hosting.frame = NSRect(origin: .zero, size: size)

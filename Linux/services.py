@@ -294,7 +294,7 @@ class Blip:
 
     def request(self, command, *values):
         self.prepare()
-        if command == "accept":
+        if command in {"accept", "accept-manual"}:
             return self.invoke(command, "--id", values[0], "--execute")
         if command == "activity":
             return self.invoke(command, input_text=values[0])

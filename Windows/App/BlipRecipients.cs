@@ -321,20 +321,26 @@ public sealed partial class MainWindow
         var header = new Grid { ColumnSpacing = 3, Padding = new Thickness(6, 1, 0, 0) };
         header.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
         header.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
-        header.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
         var title = QuickText(contact, 13, true);
         title.VerticalAlignment = VerticalAlignment.Center;
         header.Children.Add(title);
         if (entry == null) return header;
-        var rename = FlatBlipButton(QuickIcon("\uE70F", "Rename contact " + contact,
-            () => _ = RenameRecentRecipient(owner, entry.Account, contact, entry.person_nickname, person: true)));
-        var archive = FlatBlipButton(QuickIcon("\uE711", "Archive recent devices for " + contact,
-            () => _ = UpdateRecentRecipients("archive", owner, target: entry.Account)));
-        Grid.SetColumn(rename, 1);
-        Grid.SetColumn(archive, 2);
-        header.Children.Add(rename);
-        header.Children.Add(archive);
+        var options = BlipRecipientOptions(contact,
+            () => _ = RenameRecentRecipient(owner, entry.Account, contact, entry.person_nickname, person: true),
+            () => _ = UpdateRecentRecipients("archive", owner, target: entry.Account));
+        Grid.SetColumn(options, 1);
+        header.Children.Add(options);
         return header;
+    }
+
+    private static Button BlipRecipientOptions(string name, Action edit, Action? remove = null)
+    {
+        var options = FlatBlipButton(QuickIcon("\uE713", "Options for " + name, () => { }));
+        var menu = new MenuFlyout();
+        MenuAction(menu, "Edit name…", edit);
+        if (remove != null) MenuAction(menu, "Remove", remove);
+        options.Flyout = menu;
+        return options;
     }
 
     private static string FirstName(params string?[] names) =>
@@ -412,13 +418,12 @@ public sealed partial class MainWindow
                 actions.Children.Add(paste);
             }
             if (deviceShortcut && !device.History)
-                actions.Children.Add(QuickIcon("\uE70F", "Rename " + name,
+                actions.Children.Add(BlipRecipientOptions(name,
                     () => _ = RenameBlipDevice(owner, name, device, nickname)));
             if (remove != null)
             {
-                actions.Children.Add(QuickIcon("\uE70F", "Rename " + name,
-                    () => _ = RenameRecentRecipient(owner, remove, name, nickname, person: false)));
-                actions.Children.Add(QuickIcon("\uE711", "Archive " + name,
+                actions.Children.Add(BlipRecipientOptions(name,
+                    () => _ = RenameRecentRecipient(owner, remove, name, nickname, person: false),
                     () => _ = UpdateRecentRecipients("archive", owner, device.History ? null : device, target: remove)));
             }
             foreach (var action in actions.Children.OfType<Button>()) FlatBlipButton(action);

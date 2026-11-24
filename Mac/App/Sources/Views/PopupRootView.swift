@@ -20,21 +20,7 @@ struct PopupRootView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-            Picker("Sections", selection: Binding(get: { app.view.tab }, set: { app.view = $0 })) {
-                ForEach(PopupViewKind.tabs) { kind in
-                    switch kind {
-                    case .activity: Image(systemName: "clock").accessibilityLabel(kind.label).tag(kind)
-                    case .settings: Image(systemName: "gearshape").accessibilityLabel(kind.label).tag(kind)
-                    default: Text(kind.label).tag(kind)
-                    }
-                }
-            }
-            .labelsHidden()
-            .pickerStyle(.segmented)
-            .controlSize(.small)
-            .disabled(app.busy != nil || app.dialog != nil)
-            .padding(.horizontal, 10)
-            .padding(.bottom, 7)
+            sectionBar
             if let update = app.availableAppUpdate {
                 Button(app.updateOfferTitle(update)) {
                     app.installAppUpdate()
@@ -48,7 +34,6 @@ struct PopupRootView: View {
             if let banner = app.banner {
                 BannerRow(banner: banner) { app.banner = nil }
             }
-            Divider()
             if app.dialog != nil {
                 DialogContainer(dialog: app.dialog!) {
                     app.dialog = nil
@@ -56,8 +41,8 @@ struct PopupRootView: View {
             } else {
                 ScrollView {
                     content
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 6)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
                 }
                 .frame(maxHeight: .infinity)
             }
@@ -82,8 +67,41 @@ struct PopupRootView: View {
         .frame(width: fullWindow ? 560 : PopupMetrics.width)
         .frame(height: fullWindow ? nil : PopupMetrics.maxHeight)
         .frame(maxHeight: fullWindow ? .infinity : PopupMetrics.maxHeight)
-        .background(Color(nsColor: .windowBackgroundColor))
+        .background {
+            if fullWindow { Color(nsColor: .windowBackgroundColor) }
+        }
         .onDrop(of: [UTType.fileURL], isTargeted: nil, perform: app.receiveDropProviders)
+    }
+
+    private var sectionBar: some View {
+        HStack(spacing: 3) {
+            ForEach(PopupViewKind.tabs) { kind in
+                let selected = app.view.tab == kind
+                Button { app.view = kind } label: {
+                    Group {
+                        switch kind {
+                        case .activity: Image(systemName: "clock")
+                        case .settings: Image(systemName: "gearshape")
+                        default: Text(kind.label)
+                        }
+                    }
+                    .font(.system(size: 12, weight: selected ? .semibold : .medium))
+                    .foregroundStyle(selected ? Color.primary : Color.secondary)
+                    .padding(.horizontal, 9)
+                    .frame(height: 27)
+                    .background(selected ? Color.primary.opacity(0.08) : .clear, in: RoundedRectangle(cornerRadius: 7))
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(kind.label)
+                .accessibilityLabel(kind.label)
+                .accessibilityAddTraits(selected ? .isSelected : [])
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 10)
+        .padding(.bottom, 5)
+        .disabled(app.busy != nil || app.dialog != nil)
     }
 
     @ViewBuilder
@@ -143,7 +161,7 @@ struct PopupRootView: View {
             .disabled(!fullWindow && app.busy != nil)
         }
         .padding(.horizontal, 10)
-        .padding(.vertical, 8)
+        .padding(.vertical, 6)
     }
 }
 

@@ -22,9 +22,9 @@ def run(arguments):
         return
     if arguments == ["poll"]:
         result = bridge.request("poll")
-    elif len(arguments) == 4 and arguments[:2] == ["accept", "--id"] and arguments[3] == "--execute":
+    elif len(arguments) == 4 and arguments[:2] == ["accept-manual", "--id"] and arguments[3] == "--execute":
         UUID(arguments[2])
-        result = bridge.request("accept", arguments[2])
+        result = bridge.request("accept-manual", arguments[2])
     elif len(arguments) >= 6 and arguments[:2] == ["send", "--peer"] and arguments[3:5] == ["--execute", "--"]:
         result = bridge.send(arguments[2], arguments[5:])
     else:

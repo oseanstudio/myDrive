@@ -4,7 +4,7 @@ public sealed class BlipStatus
 {
     [JsonPropertyName("authenticated")] public bool Authenticated { get; set; }
     [JsonPropertyName("desktop_session")] public bool DesktopSession { get; set; }
-    [JsonPropertyName("receive_policy_verified")] public bool ReceivePolicyVerified { get; set; }
+    [JsonPropertyName("native_auto_accept_disabled")] public bool NativeAutoAcceptDisabled { get; set; }
     [JsonPropertyName("registration")] public string Registration { get; set; } = "NOT_STARTED";
     [JsonPropertyName("user_id")] public string UserId { get; set; } = "";
     [JsonPropertyName("device_id")] public string DeviceId { get; set; } = "";

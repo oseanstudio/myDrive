@@ -227,7 +227,6 @@ impl Snapshot {
         let config = state.message(100)?;
         let registration = state.message(200)?;
         let auto_accept_disabled = config.number(2) != 0;
-        let receive_path_configured = Path::new(config.text(4)) == inbox;
         let registration_name = match registration.number(1) {
             1 => "SENDING_CODE",
             2 => "CODE_SENT",
@@ -249,6 +248,7 @@ impl Snapshot {
             downloads: super::mac::home().map(|home| home.join("Downloads")),
             documents: super::mac::home().map(|home| home.join("Documents")),
         };
+        let receive_path_configured = paths.decode(config.text(4)).as_deref() == Some(inbox);
         let mut devices = BTreeMap::new();
         let mut own_device_name = None;
         let mut names = HashMap::new();
@@ -509,6 +509,32 @@ fn join_relative(root: &Path, suffix: &str) -> Option<PathBuf> {
 mod tests {
     use super::*;
     use crate::blip::rpc::{field, number, string};
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn verifies_local_download_alias_without_accepting_a_different_folder() {
+        let auth = field(
+            201,
+            &[
+                string(201, "fixture"),
+                string(202, "11111111-1111-4111-8111-111111111111"),
+                string(204, "22222222-2222-4222-8222-222222222222"),
+            ]
+            .concat(),
+        );
+        let inbox = super::super::mac::home().unwrap().join("Downloads/myDrive");
+        let verified = |location: &str| {
+            let config = field(100, &[number(2, 1), string(4, location)].concat());
+            Snapshot::decode(&field(2, &[auth.clone(), config].concat()), false, &inbox)
+                .unwrap()
+                .status["receive_policy_verified"]
+                == true
+        };
+        assert!(verified("downloads:myDrive"));
+        assert!(verified("downloads://myDrive"));
+        assert!(!verified("downloads:Other folder"));
+        assert!(!verified("downloads:../myDrive"));
+    }
 
     #[test]
     fn distinguishes_registered_computer_names_from_placeholders() {

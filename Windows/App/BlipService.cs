@@ -67,7 +67,7 @@ public sealed class BlipService : IAsyncDisposable
         };
         info.ArgumentList.Add(fixture ? Path.Combine(bundle, "cli.mjs") : "--blip-engine"); info.ArgumentList.Add(command);
         info.ArgumentList.Add("--profile"); info.ArgumentList.Add(profile);
-        if (attachedSocket != null && command is "status" or "devices" or "transfers" or "poll" or "send" or "accept" or "search" or "activity" or "retry" or "cancel" or "publish-name")
+        if (attachedSocket != null && command is "status" or "devices" or "transfers" or "poll" or "send" or "accept" or "accept-manual" or "search" or "activity" or "retry" or "cancel" or "publish-name")
         {
             if (fixture) { info.ArgumentList.Add("--socket"); info.ArgumentList.Add(attachedSocket); }
             else info.ArgumentList.Add("--desktop");
@@ -107,7 +107,7 @@ public sealed class BlipService : IAsyncDisposable
             string text = await stdout; await stderr;
             using var result = JsonDocument.Parse(text);
             var data = result.RootElement;
-            if(command=="accept")SaveReceiveResult(data);
+            if(command is "accept" or "accept-manual")SaveReceiveResult(data);
             if (process.ExitCode != 0 || !data.TryGetProperty("ok", out var ok) || ok.ValueKind != JsonValueKind.True)
                 throw new IOException(data.TryGetProperty("error", out var error) && error.ValueKind == JsonValueKind.String ? FriendlyError(error.GetString()) : "Blip could not confirm the request. Refresh before trying again.");
             return data.Clone();
@@ -370,10 +370,10 @@ public sealed class BlipService : IAsyncDisposable
     public Task<JsonElement> PublishNameAsync(string owner, CancellationToken token = default) =>
         CommandAsync("publish-name", new[] { "--name", Environment.MachineName }, owner, token);
 
-    public async Task AcceptAsync(string id, CancellationToken token = default)
+    public async Task AcceptAsync(string id, CancellationToken token = default, bool manual = false)
     {
         RequireRunning(); if (!Guid.TryParseExact(id, "D", out _)) throw new IOException("Select a pending incoming transfer.");
-        await CommandAsync("accept", new[] { "--id", id, "--execute" }, token: token);
+        await CommandAsync(manual ? "accept-manual" : "accept", new[] { "--id", id, "--execute" }, token: token);
     }
     public async Task TrustAsync(string peer, CancellationToken token = default)
     {
