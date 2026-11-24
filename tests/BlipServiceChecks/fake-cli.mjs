@@ -15,21 +15,22 @@ else if(command==='serve'||command==='desktop-serve'){
     if(line==='STOP'){fs.writeFileSync(file('clean-stop'),command);process.exit(0);}
     const request=/^POLL ([0-9a-f]{32})$/.exec(line);
     if(request)emit({ok:true,event:'poll_result',request_id:request[1],
-      status:{authenticated:desktop,desktop_session:desktop,receive_policy_verified:false},devices:[],transfers:[]});
+      status:{authenticated:desktop,desktop_session:desktop,native_auto_accept_disabled:false},devices:[],transfers:[]});
   });
   reader.on('close',()=>process.exit(0));
 }
 else if(command==='status'){
   if(fs.existsSync(file('stall-status')))setInterval(()=>{},1000);
-  else emit({ok:true,authenticated:process.argv.includes('--socket'),desktop_session:process.argv.includes('--socket'),receive_policy_verified:false,registration:'NOT_STARTED'});
+  else emit({ok:true,authenticated:process.argv.includes('--socket'),desktop_session:process.argv.includes('--socket'),native_auto_accept_disabled:false,registration:'NOT_STARTED'});
 }
 else if(command==='devices')emit({ok:true,devices:[]});
 else if(command==='transfers')emit({ok:true,transfers:[]});
 else if(command==='poll'){
   fs.writeFileSync(file('standalone-poll'), '');
-  emit({ok:true,status:{authenticated:process.argv.includes('--socket'),desktop_session:process.argv.includes('--socket'),receive_policy_verified:false},devices:[],transfers:[]});
+  emit({ok:true,status:{authenticated:process.argv.includes('--socket'),desktop_session:process.argv.includes('--socket'),native_auto_accept_disabled:false},devices:[],transfers:[]});
 }
-else if(command==='accept'){
+else if(command==='accept'||command==='accept-manual'){
+  fs.writeFileSync(file('last-accept-command'),command+':'+(process.argv.includes('--socket')?'desktop':'separate'));
   if(fs.existsSync(file('fail-accept'))){emit({ok:false,error:'acceptance_unconfirmed',native_status:'Invited'});process.exitCode=1;}
   else emit({ok:true,phase:'receiving_confirmed',native_status:'Pending'});
 }

@@ -28,7 +28,7 @@ await using(var attached=new BlipService(args[1],args[2],profile,args[0],socket)
   File.Delete(Path.Combine(profile,"host-pid"));File.Delete(Path.Combine(profile,"clean-stop"));
   await attached.UseDesktopAsync();
   Check(attached.IsRunning&&attached.UsesDesktopSession&&File.Exists(Path.Combine(profile,"host-pid")),"existing desktop account has a managed background helper");
-  var shared=await attached.SnapshotAsync();Check(shared.Status.Authenticated&&shared.Status.DesktopSession&&!shared.Status.ReceivePolicyVerified,"desktop queries use its existing session");
+  var shared=await attached.SnapshotAsync();Check(shared.Status.Authenticated&&shared.Status.DesktopSession&&!shared.Status.NativeAutoAcceptDisabled,"desktop queries use its existing session");
   var poll=await attached.PollAsync();Check(poll.Status.Authenticated&&poll.Status.DesktopSession&&poll.Transfers.Count==0,"background polling includes fresh auth and transfer state through the desktop socket");
   var concurrent = await Task.WhenAll(attached.PollAsync(), attached.PollAsync());
   Check(concurrent.All(result => result.Status.DesktopSession) && !File.Exists(Path.Combine(profile,"standalone-poll")),
@@ -38,6 +38,9 @@ await using(var attached=new BlipService(args[1],args[2],profile,args[0],socket)
   Check(acceptFailed&&attached.IsRunning&&attached.UsesDesktopSession,"unconfirmed receive preserves the desktop attachment");
   string receiveResult=File.ReadAllText(Path.Combine(profile,"last-receive-result.json"));Check(receiveResult.Contains("Invited")&&!receiveResult.Contains("ABCD1234"),"receive diagnostics retain status without transfer identity");
   File.Delete(Path.Combine(profile,"fail-accept"));
+  await attached.AcceptAsync("ABCD1234-EF56-4789-ABCD-123456789ABC",manual:true);
+  Check(File.ReadAllText(Path.Combine(profile,"last-accept-command"))=="accept-manual:desktop",
+      "the Receive button uses the explicit manual action on the existing session");
   bool separateRejected=false;try{await attached.StartAsync();}catch(IOException){separateRejected=true;}
   Check(separateRejected&&attached.UsesDesktopSession,"separate startup cannot silently reuse the existing desktop account");
   bool loginRejected=false,trustRejected=false;
