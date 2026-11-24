@@ -26,7 +26,7 @@ After login, Blip manages its own account tokens and local logs in its separate 
 
 ## Sender permissions and live receiving
 
-In **Blip**, use **Find people & devices** to search by name, email address or device name. Press Enter or click the search icon to look up a person through Blip. Click a device to choose files for that destination. Use **X** to archive a recipient and **Restore** to bring it back.
+In **Blip**, type a name, email address, or device name in **Find people & devices**. Contacts and devices appear as you type. Press Enter to search immediately. Click a device to choose files for that destination. To archive a recipient, open its gear menu and choose **Remove**. Use **Restore** in Archived to bring it back.
 
 In **Blip**, choose **Senders…** on Windows or expand **Sender permissions** on Mac. Device rows show registered names when Blip supplies them, and a device type otherwise. Use the pencil to set a local nickname. Approvals remain tied to the exact device and account.
 

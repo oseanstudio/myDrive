@@ -24,6 +24,12 @@ else if(command==='status'){
   else emit({ok:true,authenticated:process.argv.includes('--socket'),desktop_session:process.argv.includes('--socket'),native_auto_accept_disabled:false,registration:'NOT_STARTED'});
 }
 else if(command==='devices')emit({ok:true,devices:[]});
+else if(command==='search'){
+  const query=fs.readFileSync(0,'utf8').trim();
+  emit({ok:true,devices:query.toLowerCase()==='fixture@example.test'
+    ? [{peer:'33333333-3333-4333-8333-333333333333:44444444-4444-4444-8444-444444444444',
+        user_name:'Fixture contact', contact:'fixture@example.test'}] : []});
+}
 else if(command==='transfers')emit({ok:true,transfers:[]});
 else if(command==='poll'){
   fs.writeFileSync(file('standalone-poll'), '');

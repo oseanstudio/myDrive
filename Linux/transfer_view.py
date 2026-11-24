@@ -63,11 +63,13 @@ class TransferView:
         self.directory_recipients = []
         self.searched_query = ""
         self.search_status = ""
-        self.searching = False
+        self.search_lookup = None
+        self.active_search = None
+        self.search_timer = 0
         self.recipient_entry = Gtk.Entry(placeholder_text="Find people & devices", max_length=254, hexpand=True)
-        self.recipient_entry.set_tooltip_text("Find people & devices")
-        self.recipient_entry.connect("changed", lambda *_: self.render_recipient_rows())
-        self.recipient_entry.connect("activate", lambda *_: self.search_recipients())
+        self.recipient_entry.set_tooltip_text("Search by name, email address, or device name")
+        self.recipient_entry.connect("changed", lambda *_: self.search_recipients())
+        self.recipient_entry.connect("activate", lambda *_: self.search_recipients(immediate=True))
         self.recipient_rows = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         self.downloads = GLib.get_user_special_dir(GLib.UserDirectory.DIRECTORY_DOWNLOAD) or str(Path.home() / "Downloads")
         self.render()
@@ -334,13 +336,17 @@ class TransferView:
             self.recent_recipients = []
             self.directory_recipients = []
             self.searched_query = self.search_status = ""
+            self.search_lookup = None
+            if self.search_timer:
+                GLib.source_remove(self.search_timer)
+                self.search_timer = 0
             self.recipient_entry.set_text("")
             if identity and not self.app.fixture:
                 self.update_recents("list", identity)
         search = Gtk.Box(spacing=4)
         search.append(self.recipient_entry)
-        find = Gtk.Button(icon_name="system-search-symbolic", tooltip_text="Search Blip for a person")
-        find.connect("clicked", lambda *_: self.search_recipients())
+        find = Gtk.Button(icon_name="system-search-symbolic", tooltip_text="Search Blip by name or email")
+        find.connect("clicked", lambda *_: self.search_recipients(immediate=True))
         search.append(find)
         search.set_sensitive(bool(identity))
         self.page.append(search)
@@ -385,25 +391,49 @@ class TransferView:
         self.app.work("blip-recipients", "", lambda: core("blip.recents." + action, payload=payload),
                       loaded, quiet=True, queue=True, on_error=self.app.announce)
 
-    def search_recipients(self):
+    def search_recipients(self, immediate=False):
         term = self.recipient_entry.get_text().strip()
         owner = self.owner(self.snapshot)
-        if not owner or not term or self.searching:
+        if term.casefold() == self.searched_query.casefold() and (
+                not immediate or self.active_search is not None and self.search_lookup is self.active_search):
             return
-        self.searching = True
+        if self.search_timer:
+            GLib.source_remove(self.search_timer)
+            self.search_timer = 0
+        self.search_lookup = None
         self.searched_query = term
         self.directory_recipients = []
-        self.search_status = "Searching Blip…"
+        self.search_status = ""
+        if term and owner:
+            self.search_status = "Searching Blip…"
+            self.search_lookup = (owner, term)
+            if immediate:
+                self.start_recipient_search(self.search_lookup)
+            else:
+                self.search_timer = GLib.timeout_add(350, self.start_recipient_search, self.search_lookup)
         self.render_recipient_rows()
+
+    def start_recipient_search(self, lookup):
+        self.search_timer = 0
+        owner, term = lookup
+        if self.active_search is not None or self.search_lookup is not lookup or owner != self.recipient_owner:
+            return GLib.SOURCE_REMOVE
+        self.active_search = lookup
+
         def finish(devices, status):
-            self.searching = False
-            if owner == self.recipient_owner:
+            self.active_search = None
+            if self.search_lookup is lookup and owner == self.recipient_owner:
+                self.search_lookup = None
                 self.directory_recipients = devices
                 self.search_status = status
                 self.render_recipient_rows()
+            elif self.search_lookup is not None and not self.search_timer:
+                self.start_recipient_search(self.search_lookup)
+
         self.app.work("blip-recipients", "", lambda: self.blip.request("search", term),
                       lambda result: finish(result.get("devices", []), ""), quiet=True, queue=True,
                       on_error=lambda error: finish([], error))
+        return GLib.SOURCE_REMOVE
 
     def render_recipient_rows(self):
         clear(self.recipient_rows)
@@ -420,7 +450,7 @@ class TransferView:
                 if peer in known and any(term in str(device.get(field) or "").casefold()
                                          for field in ("contact", "user_name", "name")):
                     matched[peer] = known[peer]
-            searched = query == self.searched_query
+            searched = term == self.searched_query.casefold()
             if searched:
                 for peer, name in self.names(self.directory_recipients, self.catalog(owner)).items():
                     if peer != owner and not self.is_archived(peer):
@@ -430,7 +460,7 @@ class TransferView:
             if searched and self.search_status:
                 self.recipient_rows.append(label(self.search_status))
             elif not matched:
-                self.recipient_rows.append(label("No matching Blip devices." if searched else "Press Enter to search Blip."))
+                self.recipient_rows.append(label("No matching people or devices."))
             return
         details = self.recent_details(owner)
         catalog = self.catalog(owner)

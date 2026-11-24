@@ -5,9 +5,6 @@ struct BlipView: View {
     @ObservedObject var receiver: BlipReceiver
     @State var senders = false
     @State private var query = ""
-    @State private var submittedQuery = ""
-    @State private var searchStatus = ""
-    @State private var searching = false
 
     var body: some View {
         LazyVStack(alignment: .leading, spacing: 8) {
@@ -72,31 +69,30 @@ struct BlipView: View {
             }.font(.system(size: 12))
         }.onChange(of: receiver.recipientOwner) {
             query = ""
-            submittedQuery = ""
-            searchStatus = ""
-        }
+        }.onChange(of: query) { _, text in receiver.suggestRecipients(text) }
     }
 
     private var recipientPanel: some View {
         VStack(alignment: .leading, spacing: 4) {
-            BlipSearchField(text: $query, submit: search).frame(height: 24)
+            BlipSearchField(text: $query) { receiver.suggestRecipients(query, immediate: true) }
+                .frame(height: 24)
             let term = query.trimmingCharacters(in: .whitespacesAndNewlines)
             let available = receiver.recipients.filter { !receiver.isArchived($0) }
             if !term.isEmpty {
                 let known = available.filter {
-                    [$0.contactName, $0.contact, $0.name, $0.displayName].compactMap { $0 }
+                    [$0.contactName, $0.contact, $0.name, receiver.deviceName($0), receiver.personName($0)].compactMap { $0 }
                         .contains { $0.localizedStandardContains(term) }
                 }
-                let searched = term == submittedQuery
+                let searched = term.caseInsensitiveCompare(receiver.directoryQuery) == .orderedSame
                 let remote = searched ? receiver.directoryRecipients.filter { !receiver.isArchived($0) } : []
                 let matches = unique(known + remote)
                 ForEach(matches.prefix(30)) { peer in
                     recipientRow(receiver.recipientLabel(peer), peer: peer)
                 }
-                if searched && !searchStatus.isEmpty {
-                    Text(searchStatus).font(.caption).foregroundStyle(.secondary)
+                if searched && !receiver.directorySearchStatus.isEmpty {
+                    Text(receiver.directorySearchStatus).font(.caption).foregroundStyle(.secondary)
                 } else if matches.isEmpty {
-                    Text(searched ? "No matching Blip devices." : "Press Return to search Blip.")
+                    Text("No matching people or devices.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             } else {
@@ -168,24 +164,6 @@ struct BlipView: View {
                             .padding(.leading, grouped ? 12 : 0)
                     }
                 }
-            }
-        }
-    }
-
-    private func search() {
-        let term = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !searching, !term.isEmpty else { return }
-        let owner = receiver.recipientOwner
-        submittedQuery = term
-        searching = true
-        searchStatus = "Searching Blip…"
-        Task {
-            defer { searching = false }
-            do {
-                try await receiver.findRecipients(term)
-                if receiver.recipientOwner == owner { searchStatus = "" }
-            } catch {
-                if receiver.recipientOwner == owner { searchStatus = error.localizedDescription }
             }
         }
     }
@@ -284,6 +262,7 @@ private struct BlipSearchField: NSViewRepresentable {
     func makeNSView(context: Context) -> NSSearchField {
         let field = NSSearchField()
         field.placeholderString = "Find people & devices"
+        field.toolTip = "Search by name, email address, or device name"
         field.setAccessibilityLabel("Find people & devices")
         field.delegate = context.coordinator
         field.target = context.coordinator

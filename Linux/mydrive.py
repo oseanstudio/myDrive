@@ -9,6 +9,7 @@ import sys
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from pathlib import Path
+from threading import Event
 from time import monotonic
 
 import gi
@@ -1135,6 +1136,9 @@ class MyDrive(Gtk.Application):
         initial_size = self.window.get_default_size()
 
         class FixtureBlip:
+            searches = []
+            release_old_search = Event()
+
             def monitor(self, background):
                 assert background
                 return {"status": {"authenticated": True, "user_id": "00000000-0000-4000-8000-000000000001",
@@ -1143,9 +1147,16 @@ class MyDrive(Gtk.Application):
                                      "name": "Fixture laptop", "name_known": True, "user_name": "Fixture owner"}]}
 
             def request(self, action, query):
-                assert (action, query) == ("search", "Remote person")
+                assert action == "search"
+                self.searches.append(query)
+                if query == "Older query":
+                    assert self.release_old_search.wait(3)
+                    return {"devices": [{"peer": "00000000-0000-4000-8000-000000000004:00000000-0000-4000-8000-000000000005",
+                                         "user_name": "Stale result", "name": "Remote desktop", "name_known": True}]}
+                names = {"Remote person": "Remote person", "Fixture@Example.test": "Email match"}
                 return {"devices": [{"peer": "00000000-0000-4000-8000-000000000004:00000000-0000-4000-8000-000000000005",
-                                     "user_name": query, "name": "Remote desktop", "name_known": True}]}
+                                     "user_name": names[query], "contact": "fixture@example.test",
+                                     "name": "Remote desktop", "name_known": True}]}
 
         def verify_cold_send():
             view = self.transfer_view
@@ -1219,16 +1230,17 @@ class MyDrive(Gtk.Application):
             paste_action.emit("clicked")
             assert abandoned == [True] and chosen == ["3"]
             assert calls[3:] == [("paste", peer, view.recipient_owner)]
+            view.recipient_entry.set_text("Remote")
             view.recipient_entry.set_text("Remote person")
-            view.recipient_entry.emit("activate")
             GLib.timeout_add(25, verify_directory)
 
         def verify_directory():
-            if self.pending["blip-recipients"]:
-                return GLib.SOURCE_CONTINUE
-            result = self.transfer_view.recipient_rows.get_first_child().get_first_child()
-            assert result.get_child().get_first_child().get_label() == "Remote person"
             view = self.transfer_view
+            if view.active_search is not None or view.search_lookup is not None:
+                return GLib.SOURCE_CONTINUE
+            result = view.recipient_rows.get_first_child().get_first_child()
+            assert result.get_child().get_first_child().get_label() == "Remote person"
+            assert view.blip.searches == ["Remote person"]
             first = view.directory_recipients[0]
             account = first["peer"].partition(":")[0]
             second = {"peer": account + ":00000000-0000-4000-8000-000000000007",
@@ -1236,7 +1248,28 @@ class MyDrive(Gtk.Application):
             view.directory_recipients.append(second)
             labels = view.names(view.directory_recipients, view.catalog(view.recipient_owner))
             assert labels == {first["peer"]: "Remote person · Remote desktop", second["peer"]: "Remote person · Remote phone"}
-            print("Linux GTK directory lookup, grouped destinations and direct recipient controls passed", flush=True)
+            view.recipient_entry.set_text("Older query")
+            GLib.timeout_add(25, replace_directory_query)
+            return GLib.SOURCE_REMOVE
+
+        def replace_directory_query():
+            view = self.transfer_view
+            if not view.blip.searches or view.blip.searches[-1] != "Older query":
+                return GLib.SOURCE_CONTINUE
+            view.recipient_entry.set_text(" Fixture@Example.test ")
+            view.blip.release_old_search.set()
+            GLib.timeout_add(25, verify_email_directory)
+            return GLib.SOURCE_REMOVE
+
+        def verify_email_directory():
+            view = self.transfer_view
+            assert not any(device.get("user_name") == "Stale result" for device in view.directory_recipients)
+            if view.active_search is not None or view.search_lookup is not None:
+                return GLib.SOURCE_CONTINUE
+            result = view.recipient_rows.get_first_child().get_first_child()
+            assert result.get_child().get_first_child().get_label() == "Email match"
+            assert view.blip.searches == ["Remote person", "Older query", "Fixture@Example.test"]
+            print("Linux GTK type-ahead, email lookup, and stale result checks passed", flush=True)
             self.stack.set_visible_child_name("Sync")
             warning.emit("clicked")
             GLib.timeout_add(25, verify_attention)

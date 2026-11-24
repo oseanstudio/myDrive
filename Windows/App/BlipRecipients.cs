@@ -35,8 +35,10 @@ public sealed partial class MainWindow
     private List<RecentRecipient> recentRecipients = new();
     private List<BlipDevice> directoryRecipients = new();
     private readonly SemaphoreSlim recentGate = new(1, 1);
+    private readonly SemaphoreSlim recipientSearchGate = new(1, 1);
     private string recentOwner = "", recipientQuery = "", searchedQuery = "", searchMessage = "";
-    private bool searchingRecipients;
+    private CancellationTokenSource? recipientLookup;
+    private CancellationTokenSource? activeRecipientLookup;
     private bool archivesExpanded;
     private TextBox? recipientInput;
     private StackPanel? recipientRows;
@@ -174,6 +176,8 @@ public sealed partial class MainWindow
             archivesExpanded = false;
             recipientQuery = searchedQuery = searchMessage = "";
             directoryRecipients = new();
+            recipientLookup?.Cancel();
+            recipientLookup = null;
             if (owner.Length > 0) _ = UpdateRecentRecipients("list", owner);
         }
         bool focus = recipientInput?.FocusState is FocusState.Keyboard or FocusState.Pointer;
@@ -184,10 +188,10 @@ public sealed partial class MainWindow
         search.TextChanged += (_, _) =>
         {
             recipientQuery = search.Text;
-            RenderRecipientRows();
+            QueueRecipientLookup();
         };
-        search.KeyDown += (_, e) => { if (e.Key == VirtualKey.Enter) { e.Handled = true; _ = SearchBlipRecipients(); } };
-        var find = QuickIcon("\uE721", "Search Blip for a person", () => _ = SearchBlipRecipients());
+        search.KeyDown += (_, e) => { if (e.Key == VirtualKey.Enter) { e.Handled = true; QueueRecipientLookup(immediate: true); } };
+        var find = QuickIcon("\uE721", "Search Blip by name or email", () => QueueRecipientLookup(immediate: true));
         find.IsEnabled = search.IsEnabled;
         var input = new Grid { ColumnSpacing = 4 };
         input.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
@@ -195,6 +199,7 @@ public sealed partial class MainWindow
         input.Children.Add(search);
         Grid.SetColumn(find, 1);
         input.Children.Add(find);
+        ToolTipService.SetToolTip(search, "Search by name, email address, or device name");
         page.Children.Add(input);
         recipientRows = new StackPanel { Spacing = 3 };
         page.Children.Add(recipientRows);
@@ -202,22 +207,54 @@ public sealed partial class MainWindow
         if (focus && search.IsEnabled) { search.Focus(FocusState.Keyboard); search.SelectionStart = search.Text.Length; }
     }
 
-    private async Task SearchBlipRecipients()
+    private void QueueRecipientLookup(bool immediate = false)
     {
         string owner = BlipOwner, query = recipientQuery.Trim();
-        if (diagnosticMode || searchingRecipients || owner.Length == 0 || query.Length == 0) return;
-        searchingRecipients = true;
+        if (diagnosticMode) { RenderRecipientRows(); return; }
+        if (query.Equals(searchedQuery, StringComparison.OrdinalIgnoreCase) &&
+            (!immediate || recipientLookup != null && recipientLookup == activeRecipientLookup)) return;
+        recipientLookup?.Cancel();
+        recipientLookup = null;
         searchedQuery = query;
-        searchMessage = "Searching Blip…";
+        searchMessage = "";
         directoryRecipients = new();
+        if (owner.Length > 0 && query.Length > 0)
+        {
+            recipientLookup = new CancellationTokenSource();
+            searchMessage = "Searching Blip…";
+            _ = SearchBlipRecipients(owner, query, recipientLookup, immediate);
+        }
         RenderRecipientRows();
+    }
+
+    private async Task SearchBlipRecipients(string owner, string query, CancellationTokenSource lookup, bool immediate)
+    {
+        bool current() => lookup == recipientLookup && owner == BlipOwner && !quitting;
         try
         {
-            var matches = await blip.SearchAsync(query);
-            if (owner == BlipOwner) { directoryRecipients = matches; searchMessage = ""; }
+            if (!immediate) await Task.Delay(350, lookup.Token);
+            await recipientSearchGate.WaitAsync(lookup.Token);
+            try
+            {
+                if (!current()) return;
+                activeRecipientLookup = lookup;
+                var matches = await blip.SearchAsync(query);
+                if (current()) { directoryRecipients = matches; searchMessage = ""; }
+            }
+            finally
+            {
+                activeRecipientLookup = null;
+                recipientSearchGate.Release();
+            }
         }
-        catch (Exception error) { if (owner == BlipOwner) searchMessage = error.Message; }
-        finally { searchingRecipients = false; RenderRecipientRows(); }
+        catch (OperationCanceledException) when (lookup.IsCancellationRequested) { }
+        catch (Exception error) { if (current()) searchMessage = error.Message; }
+        finally
+        {
+            if (current()) RenderRecipientRows();
+            if (recipientLookup == lookup) recipientLookup = null;
+            lookup.Dispose();
+        }
     }
 
     private void RenderRecipientRows()
@@ -241,7 +278,7 @@ public sealed partial class MainWindow
             foreach (var group in BlipDevice.GroupDestinations(matches, owner.Split(':')[0]))
                 AddContactRows(rows, owner, group, null);
             if (searched && searchMessage.Length > 0) rows.Children.Add(QuickText(searchMessage, 12));
-            else if (matches.Count == 0) rows.Children.Add(QuickText(searched ? "No matching Blip devices." : "Press Enter to search Blip.", 12));
+            else if (matches.Count == 0) rows.Children.Add(QuickText("No matching people or devices.", 12));
             return;
         }
         var ownAccount = owner.Split(':')[0];

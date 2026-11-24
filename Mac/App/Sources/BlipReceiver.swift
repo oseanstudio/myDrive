@@ -54,6 +54,12 @@ struct BlipQueuedSend: Codable, Identifiable {
     @Published private(set) var receiving = Set<String>()
     @Published private(set) var recentRecipients: [BlipRecentRecipient] = []
     @Published private(set) var directoryRecipients: [BlipPeer] = []
+    @Published private(set) var directoryQuery = ""
+    @Published private(set) var directorySearchStatus = ""
+    private var directoryGeneration = 0
+    private var activeDirectoryGeneration: Int?
+    private var directoryDelay: Task<Void, Never>?
+    private var directoryRequest: Task<Void, Never>?
     private var recentOwner = ""
     private var recentUpdates: Task<Void, Never>?
     private let root: URL
@@ -131,14 +137,49 @@ struct BlipQueuedSend: Codable, Identifiable {
         }
     }
 
-    func findRecipients(_ query: String) async throws {
+    func suggestRecipients(_ text: String, immediate: Bool = false) {
+        let query = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let owner = selfPeer
-        guard !owner.isEmpty else { throw BlipReceiverError.message("Sign in to Blip to find recipients.") }
+        if query.caseInsensitiveCompare(directoryQuery) == .orderedSame,
+           !immediate || activeDirectoryGeneration == directoryGeneration { return }
+        directoryDelay?.cancel()
+        directoryGeneration &+= 1
+        let generation = directoryGeneration
+        directoryQuery = query
         directoryRecipients = []
-        let value = try await BlipMacClient.request("search", ["text": query, "owner": owner])
-        guard selfPeer == owner else { return }
-        let devices = try JSONDecoder().decode([BlipPeer].self, from: JSONSerialization.data(withJSONObject: value.array("devices")))
-        directoryRecipients = devices.filter { $0.peer.caseInsensitiveCompare(owner) != .orderedSame }
+        directorySearchStatus = ""
+        guard !owner.isEmpty, !query.isEmpty else { return }
+        directorySearchStatus = "Searching Blip…"
+        directoryDelay = Task { [weak self] in
+            if !immediate {
+                do { try await Task.sleep(for: .milliseconds(350)) }
+                catch { return }
+            }
+            guard let self, !Task.isCancelled, self.directoryGeneration == generation else { return }
+            let previous = self.directoryRequest
+            self.directoryRequest = Task { [weak self] in
+                await previous?.value
+                guard let self, self.isCurrentDirectoryLookup(generation, owner: owner) else { return }
+                self.activeDirectoryGeneration = generation
+                defer { self.activeDirectoryGeneration = nil }
+                do {
+                    let value = try await BlipMacClient.request("search", ["text": query, "owner": owner])
+                    guard self.isCurrentDirectoryLookup(generation, owner: owner) else { return }
+                    let devices = try JSONDecoder().decode([BlipPeer].self,
+                        from: JSONSerialization.data(withJSONObject: value.array("devices")))
+                    self.directoryRecipients = devices.filter { $0.peer.caseInsensitiveCompare(owner) != .orderedSame }
+                    self.directorySearchStatus = ""
+                } catch {
+                    if self.isCurrentDirectoryLookup(generation, owner: owner) {
+                        self.directorySearchStatus = error.localizedDescription
+                    }
+                }
+            }
+        }
+    }
+
+    private func isCurrentDirectoryLookup(_ generation: Int, owner: String) -> Bool {
+        directoryGeneration == generation && selfPeer == owner
     }
 
     func isArchived(_ peer: BlipPeer) -> Bool {
@@ -518,7 +559,7 @@ struct BlipQueuedSend: Codable, Identifiable {
             if recentOwner != identity {
                 recentOwner = identity
                 recentRecipients = []
-                directoryRecipients = []
+                suggestRecipients("")
                 await updateRecents("list", owner: identity)
             }
             guard let claims else { throw BlipReceiverError.message("Receive history is unavailable. Automatic actions are disabled.") }

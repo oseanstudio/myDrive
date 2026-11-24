@@ -30,6 +30,8 @@ await using(var attached=new BlipService(args[1],args[2],profile,args[0],socket)
   Check(attached.IsRunning&&attached.UsesDesktopSession&&File.Exists(Path.Combine(profile,"host-pid")),"existing desktop account has a managed background helper");
   var shared=await attached.SnapshotAsync();Check(shared.Status.Authenticated&&shared.Status.DesktopSession&&!shared.Status.NativeAutoAcceptDisabled,"desktop queries use its existing session");
   var poll=await attached.PollAsync();Check(poll.Status.Authenticated&&poll.Status.DesktopSession&&poll.Transfers.Count==0,"background polling includes fresh auth and transfer state through the desktop socket");
+  var emailMatches=await attached.SearchAsync("Fixture@Example.test");
+  Check(emailMatches.Single().UserName=="Fixture contact","directory lookup resolves a contact from their email");
   var concurrent = await Task.WhenAll(attached.PollAsync(), attached.PollAsync());
   Check(concurrent.All(result => result.Status.DesktopSession) && !File.Exists(Path.Combine(profile,"standalone-poll")),
       "concurrent status reads reuse the existing host without launching a process");
