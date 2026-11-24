@@ -56,13 +56,12 @@ public sealed partial class MainWindow
         first.UserName = email;
         if (BlipPersonName(first, first.Account) != second.UserName)
             throw new IOException("An email fallback hid the native Blip username.");
-        recipientInput!.Text = "person@";
-        await Task.Delay(100);
+        SetRecipientQuery("person@");
         bool showsSuggestion(string name) => recipientRows!.Children.OfType<Grid>()
             .SelectMany(row => row.Children.OfType<Button>())
             .Any(button => button.Content is StackPanel panel &&
                 panel.Children.OfType<TextBlock>().Any(label => label.Text == name));
-        if (!showsSuggestion(second.UserName))
+        if (recipientRows!.Children[0] is not TextBlock { Text: "Suggestions" } || !showsSuggestion(second.UserName))
             throw new IOException("Typing an email prefix did not show a local suggestion before submitting.");
         searchedQuery = recipientQuery.Trim();
         directoryRecipients = [new BlipDevice {
@@ -71,8 +70,7 @@ public sealed partial class MainWindow
         RenderRecipientRows();
         if (!showsSuggestion("Directory result"))
             throw new IOException("The reply from directory search did not appear in suggestions.");
-        recipientInput.Text = "";
-        await Task.Delay(100);
+        SetRecipientQuery("");
         searchedQuery = "";
         directoryRecipients.Clear();
 

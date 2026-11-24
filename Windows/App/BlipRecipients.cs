@@ -196,11 +196,7 @@ public sealed partial class MainWindow
             IsEnabled = owner.Length > 0, HorizontalAlignment = HorizontalAlignment.Stretch };
         recipientInput = search;
         AutomationProperties.SetName(search, "Find people & devices");
-        search.TextChanged += (_, _) =>
-        {
-            recipientQuery = search.Text;
-            QueueRecipientLookup();
-        };
+        search.TextChanged += (_, _) => SetRecipientQuery(search.Text);
         search.KeyDown += (_, e) =>
         {
             if (e.Key == VirtualKey.Enter) { e.Handled = true; QueueRecipientLookup(immediate: true); }
@@ -227,6 +223,12 @@ public sealed partial class MainWindow
         page.Children.Add(recipientRows);
         RenderRecipientRows();
         if (focus && search.IsEnabled) { search.Focus(FocusState.Keyboard); search.SelectionStart = search.Text.Length; }
+    }
+
+    private void SetRecipientQuery(string query)
+    {
+        recipientQuery = query;
+        QueueRecipientLookup();
     }
 
     private void QueueRecipientLookup(bool immediate = false)

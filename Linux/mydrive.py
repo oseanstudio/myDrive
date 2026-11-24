@@ -1239,7 +1239,9 @@ class MyDrive(Gtk.Application):
             view = self.transfer_view
             if view.active_search is not None or view.search_lookup is not None:
                 return GLib.SOURCE_CONTINUE
-            result = view.recipient_rows.get_first_child().get_first_child()
+            heading = view.recipient_rows.get_first_child()
+            assert heading.get_label() == "Suggestions"
+            result = heading.get_next_sibling().get_first_child()
             assert result.get_child().get_first_child().get_label() == "Remote person"
             assert view.blip.searches == ["Remote person"]
             first = view.directory_recipients[0]
@@ -1267,7 +1269,9 @@ class MyDrive(Gtk.Application):
             assert not any(device.get("user_name") == "Stale result" for device in view.directory_recipients)
             if view.active_search is not None or view.search_lookup is not None:
                 return GLib.SOURCE_CONTINUE
-            result = view.recipient_rows.get_first_child().get_first_child()
+            heading = view.recipient_rows.get_first_child()
+            assert heading.get_label() == "Suggestions"
+            result = heading.get_next_sibling().get_first_child()
             assert result.get_child().get_first_child().get_label() == "Email match"
             assert view.blip.searches == ["Remote person", "Older query", "Fixture@Example.test"]
             print("Linux GTK type-ahead, email lookup, and stale result checks passed", flush=True)
