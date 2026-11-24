@@ -63,7 +63,7 @@ import Foundation
     }
 
     nonisolated private static var invalidReply: CoreError {
-        CoreError(message: "Blip returned an unreadable response. Refresh Blip and try again.")
+        CoreError(message: "Blip returned an unreadable response. Wait a moment and try again.")
     }
 
     nonisolated private static func readReply(_ handle: FileHandle) throws -> Data {

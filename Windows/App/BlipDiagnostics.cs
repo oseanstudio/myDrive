@@ -30,8 +30,8 @@ public sealed partial class MainWindow
         if (recipientRows.Children.OfType<Expander>().Any() ||
             mainRows.Count(row => row.Children.OfType<TextBlock>().Any(text => text.Text == "Fixture contact")) != 1 ||
             !names.Any(fields => fields.FirstOrDefault() == "Studio Mac") ||
-            !names.Any(fields => fields.SequenceEqual(new[] { "Desktop", "Online" })) ||
-            !names.Any(fields => fields.SequenceEqual(new[] { "Desktop", "Offline" })))
+            !names.Any(fields => fields.SequenceEqual(new[] { "Fixture contact", "Desktop · Online" })) ||
+            !names.Any(fields => fields.SequenceEqual(new[] { "Fixture contact", "Desktop · Offline" })))
             throw new IOException("Blip must show the contact and known device names with status and no ID suffixes or expanders.");
 
         var showing = ShowBlipSend();

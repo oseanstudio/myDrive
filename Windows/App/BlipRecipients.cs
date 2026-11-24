@@ -69,7 +69,7 @@ public sealed partial class MainWindow
             known?.HasRegisteredName == true ? known.Name : null, saved, known?.BaseLabel, device.BaseLabel);
     }
 
-    private string BlipDeviceDetail(BlipDevice device)
+    private string BlipDeviceDetail(BlipDevice device, string? caption = null)
     {
         var status = device.History ? "Previously seen" : device.Online switch
         {
@@ -77,6 +77,12 @@ public sealed partial class MainWindow
             false => "Offline",
             _ => "Status unknown"
         };
+        if (caption != null && caption.Equals(BlipPersonName(device, device.Account), StringComparison.CurrentCultureIgnoreCase))
+        {
+            var deviceName = BlipDeviceName(device);
+            if (!caption.Equals(deviceName, StringComparison.CurrentCultureIgnoreCase))
+                status = deviceName + " · " + status;
+        }
         var last = (blipSnapshot?.Transfers ?? []).Where(t => t.Direction == "Outgoing" && t.ConfirmedComplete &&
                 t.Peer.Equals(device.Peer, StringComparison.OrdinalIgnoreCase))
             .Select(t => t.UpdatedAt).DefaultIfEmpty().Max();
@@ -116,6 +122,9 @@ public sealed partial class MainWindow
                 !IsRecipientArchived(BlipOwner, other.Peer)));
         return device.RecipientCaption(BlipOwner.Split(':')[0], name, person, distinguish);
     }
+
+    private string BlipGroupDeviceCaption(BlipDevice device, bool grouped) =>
+        grouped && device.HasDeviceName ? BlipDeviceName(device) : BlipDeviceCaption(device);
 
     private string? BlipPersonName(BlipDevice device, string account)
     {
@@ -369,7 +378,7 @@ public sealed partial class MainWindow
         foreach (var device in group.OrderByDescending(d => d.Online == true))
         {
             var recent = saved?.GetValueOrDefault(device.Peer);
-            var name = grouped ? BlipDeviceName(device) : BlipDeviceCaption(device);
+            var name = BlipGroupDeviceCaption(device, grouped);
             AddRecipientRow(rows, owner, name, device, saved == null ? null : device.Peer,
                 recent?.nickname);
         }
@@ -446,7 +455,8 @@ public sealed partial class MainWindow
         var row = new Grid { ColumnSpacing = 4 };
         row.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
         row.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
-        var detail = suggestionDetail == null ? BlipDeviceDetail(device) : suggestionDetail + " · " + BlipDeviceDetail(device);
+        var detail = BlipDeviceDetail(device, name);
+        if (suggestionDetail != null) detail = suggestionDetail + " · " + detail;
         var title = BlipDestinationLabel(QuickText(name, 12), detail);
         if (device.History) row.Children.Add(new Border { Child = title, Padding = new Thickness(7, 3, 0, 3) });
         else

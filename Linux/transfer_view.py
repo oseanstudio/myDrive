@@ -843,7 +843,7 @@ class TransferView:
         current = {**self.names(self.directory_recipients, self.catalog(sender)), **self.recipients()}
         if not sender or (expected_owner is not None and sender != expected_owner) or peer not in current:
             cancelled()
-            self.app.announce("Refresh Blip and choose the device again.")
+            self.app.announce("Wait for the Blip device list to update, then choose the device again.")
             return
         def dispatch():
             fresh = self.blip.request("poll")

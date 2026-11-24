@@ -136,7 +136,13 @@ public sealed partial class MainWindow
                 });
                 DispatcherQueue.TryEnqueue(() =>
                 {
-                    if (!quitting && blipViewVisible && modalDepth == 0 && signature != blipSignature) { blipSignature = signature; Render(); }
+                    if (quitting || !blipViewVisible || modalDepth != 0 || signature == blipSignature) return;
+                    // A live roster update must not replace the field during email entry.
+                    // The next background check redraws once the field loses focus.
+                    if (recentOwner == BlipOwner && recipientInput?.FocusState is FocusState.Keyboard or FocusState.Pointer)
+                        return;
+                    blipSignature = signature;
+                    Render();
                 });
             }
         }
@@ -470,9 +476,9 @@ public sealed partial class MainWindow
         }
         Grid DestinationRow(BlipDevice device, bool grouped)
         {
-            var title = QuickText(grouped ? BlipDeviceName(device) : BlipDeviceCaption(device), 13);
+            var title = QuickText(BlipGroupDeviceCaption(device, grouped), 13);
             var send = FlatBlipButton(QuickButton("", () => SelectDevice(device, paste: false)));
-            var detail = BlipDeviceDetail(device);
+            var detail = BlipDeviceDetail(device, title.Text);
             send.Content = BlipDestinationLabel(title, detail);
             send.MinHeight = 36;
             send.HorizontalAlignment = HorizontalAlignment.Stretch;
@@ -578,7 +584,9 @@ public sealed partial class MainWindow
             }
             try { SaveBlipDeviceName(status.UserId, device, input.Text); }
             catch (IOException error) { Error(error); return; }
-            name.Text = grouped ? BlipDeviceName(device) : BlipDeviceCaption(device);
+            name.Text = BlipGroupDeviceCaption(device, grouped);
+            if (send.Content is StackPanel label && label.Children[1] is TextBlock details)
+                details.Text = BlipDeviceDetail(device, name.Text);
             AutomationProperties.SetName(send, "Send to " + name.Text);
             ToolTipService.SetToolTip(send, name.Text);
             AutomationProperties.SetName(paste, "Paste and send to " + name.Text);
