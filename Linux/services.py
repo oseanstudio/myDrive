@@ -151,6 +151,16 @@ def exact_peer(value):
         return False
 
 
+def person_destination(value):
+    if not isinstance(value, str) or not value.endswith(":"):
+        return False
+    account = value[:-1]
+    try:
+        return str(UUID(account)) == account.lower()
+    except ValueError:
+        return False
+
+
 def link_url(location):
     try:
         uri = urlsplit(location)
@@ -385,6 +395,6 @@ class Blip:
         self.host_can_poll = None
 
     def send(self, peer, paths, request_id=None):
-        if not exact_peer(peer):
-            raise RuntimeError("Choose one exact Blip device.")
+        if not (exact_peer(peer) or person_destination(peer)):
+            raise RuntimeError("Choose a Blip person or device.")
         return self.request("send", peer, request_id or str(uuid4()), *paths)

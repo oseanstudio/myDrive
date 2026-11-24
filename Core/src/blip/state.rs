@@ -100,6 +100,10 @@ pub(super) fn peer_id(value: &str) -> Option<(&str, &str)> {
         .filter(|(user, device)| uuid(user) && uuid(device))
 }
 
+pub(crate) fn account_destination(value: &str) -> Option<&str> {
+    value.strip_suffix(':').filter(|user| uuid(user))
+}
+
 pub(super) fn email(value: &str) -> bool {
     value.len() <= 254
         && !value.chars().any(|c| c.is_whitespace() || c.is_control())
@@ -133,6 +137,7 @@ pub(super) fn registered_device_name(value: &str) -> bool {
 pub(super) struct Snapshot {
     pub status: Value,
     pub devices: Vec<Value>,
+    pub people: Vec<Value>,
     pub transfers: Vec<Value>,
     pub app_id_missing: bool,
     pub registration_failed: bool,
@@ -250,11 +255,28 @@ impl Snapshot {
         };
         let receive_path_configured = paths.decode(config.text(4)).as_deref() == Some(inbox);
         let mut devices = BTreeMap::new();
+        let mut people = BTreeMap::new();
         let mut own_device_name = None;
         let mut names = HashMap::new();
-        for entry in state.message(500)?.messages(1) {
-            let person = entry?.message(2)?;
-            let person_id = person.text(8);
+        let users = state.message(500)?;
+        let mut recent = std::collections::BTreeSet::new();
+        for entry in users.messages(3) {
+            let entry = entry?;
+            if entry.number(2) != 0 {
+                recent.insert(entry.text(1).to_ascii_lowercase());
+            }
+        }
+        for interaction in users.messages(4) {
+            recent.insert(interaction?.message(2)?.text(1).to_ascii_lowercase());
+        }
+        for entry in users.messages(1) {
+            let entry = entry?;
+            let person = entry.message(2)?;
+            let person_id = if uuid(person.text(8)) {
+                person.text(8)
+            } else {
+                entry.text(1)
+            };
             if !uuid(person_id) {
                 continue;
             }
@@ -263,9 +285,15 @@ impl Snapshot {
             let name = person.text(2).trim();
             let name = if safe_text(name, 100) { name } else { "" };
             names.insert(person_id, (contact, name));
+            let mut online = None;
             for entry in person.messages(7) {
-                let peer = entry?.message(2)?;
-                let peer_id = peer.text(1);
+                let entry = entry?;
+                let peer = entry.message(2)?;
+                let peer_id = if uuid(peer.text(1)) {
+                    peer.text(1)
+                } else {
+                    entry.text(1)
+                };
                 if !uuid(peer_id) {
                     continue;
                 }
@@ -288,9 +316,21 @@ impl Snapshot {
                     "name_known": name_known, "can_relay": matches!(kind, "Desktop" | "Laptop"),
                 });
                 if let Some(reach) = peer.bytes(4) {
-                    row["online"] = json!(Proto::parse(reach)?.number(1) != 0);
+                    let reachable = Proto::parse(reach)?.number(1) != 0;
+                    row["online"] = json!(reachable);
+                    online = Some(online.unwrap_or(false) || reachable);
                 }
                 devices.insert(destination, row);
+            }
+            if authenticated
+                && !person_id.eq_ignore_ascii_case(user)
+                && (!name.is_empty() || !contact.is_empty())
+            {
+                people.insert(person_id.to_ascii_lowercase(), json!({
+                    "peer": format!("{person_id}:"), "name": if name.is_empty() { contact } else { name },
+                    "user_name": name, "contact": contact, "online": online, "history": false,
+                    "recent": person.number(9) != 0 || recent.contains(&person_id.to_ascii_lowercase()),
+                }));
             }
         }
         let mut transfers = Vec::new();
@@ -362,6 +402,7 @@ impl Snapshot {
                 "transfer_count": transfers.len(),
             }),
             devices: devices.into_values().collect(),
+            people: people.into_values().collect(),
             transfers,
             app_id_missing: agent.text(300).is_empty(),
             registration_failed: registration.has(999),
@@ -373,9 +414,96 @@ impl Snapshot {
         self.transfers.iter().find(|item| item["transfer_id"] == id)
     }
 
-    pub(super) fn poll(self) -> Value {
-        json!({"ok": true, "status": self.status, "devices": self.devices, "transfers": self.transfers})
+    pub(super) fn destination(&self, selected: &str) -> Option<&str> {
+        let candidates = if account_destination(selected).is_some() {
+            &self.people
+        } else {
+            &self.devices
+        };
+        candidates.iter().find_map(|row| {
+            let peer = row["peer"].as_str()?;
+            (row["history"] == false && peer.eq_ignore_ascii_case(selected)).then_some(peer)
+        })
     }
+
+    pub(super) fn directory(self, results: &[(String, String)]) -> Value {
+        let devices: Vec<_> = self
+            .devices
+            .into_iter()
+            .filter(|device| {
+                device["history"] == false
+                    && device["peer"]
+                        .as_str()
+                        .is_some_and(|peer| matches_result(peer, results))
+            })
+            .collect();
+        let people: Vec<_> = self
+            .people
+            .into_iter()
+            .filter(|person| {
+                person["peer"]
+                    .as_str()
+                    .and_then(account_destination)
+                    .is_some_and(|id| {
+                        results.iter().any(|(user, device)| {
+                            user.eq_ignore_ascii_case(id) && device.is_empty()
+                        })
+                    })
+            })
+            .collect();
+        json!({"ok": true, "devices": devices, "people": people})
+    }
+
+    pub(super) fn poll(self) -> Value {
+        json!({"ok": true, "status": self.status, "devices": self.devices, "people": self.people, "transfers": self.transfers})
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn directory_keeps_a_person_with_no_devices_and_does_not_return_unmatched_accounts() {
+    use super::rpc::{field, string};
+    let owner = "19931140-4a2e-48c5-a362-190fb2bee500";
+    let own_device = "eced1da8-2269-44ae-9a56-a3681ab924a2";
+    let found = "6c434111-4674-453a-a194-15d3cba26547";
+    let ignored = "68f1d39a-a397-4765-9587-db4404557643";
+    let auth = field(
+        201,
+        &[
+            string(201, "fixture"),
+            string(202, owner),
+            string(204, own_device),
+        ]
+        .concat(),
+    );
+    let account = |id, email, name| {
+        field(
+            1,
+            &[
+                string(1, id),
+                field(2, &[string(1, email), string(2, name)].concat()),
+            ]
+            .concat(),
+        )
+    };
+    let users = field(
+        500,
+        &[
+            account(found, "new@example.test", "New person"),
+            account(ignored, "other@example.test", "Other person"),
+        ]
+        .concat(),
+    );
+    let data = field(2, &[auth, users].concat());
+    let snapshot = Snapshot::decode(&data, false, Path::new("inbox")).unwrap();
+    let selected = format!("{found}:");
+    assert_eq!(snapshot.destination(&selected), Some(selected.as_str()));
+    assert!(snapshot.destination(&format!("{owner}:")).is_none());
+    let result = snapshot.directory(&[(found.into(), String::new())]);
+    assert_eq!(result["devices"], json!([]));
+    assert_eq!(result["people"].as_array().unwrap().len(), 1);
+    assert_eq!(result["people"][0]["user_name"], "New person");
+    assert_eq!(result["people"][0]["contact"], "new@example.test");
 }
 
 #[derive(Default)]

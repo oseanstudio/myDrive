@@ -1154,9 +1154,11 @@ class MyDrive(Gtk.Application):
                     assert self.release_old_search.wait(3)
                     return {"devices": [{"peer": "00000000-0000-4000-8000-000000000004:00000000-0000-4000-8000-000000000005",
                                          "user_name": "Stale result", "name": "Remote desktop", "name_known": True}]}
-                names = {"Remote person": "Remote person", "Fixture@Example.test": "Email match"}
+                if query == "Fixture@Example.test":
+                    return {"people": [{"peer": "00000000-0000-4000-8000-000000000004:",
+                                        "user_name": "Email match", "contact": "fixture@example.test"}]}
                 return {"devices": [{"peer": "00000000-0000-4000-8000-000000000004:00000000-0000-4000-8000-000000000005",
-                                     "user_name": names[query], "contact": "fixture@example.test",
+                                     "user_name": "Remote person", "contact": "fixture@example.test",
                                      "name": "Remote desktop", "name_known": True}]}
 
         def verify_cold_send():
@@ -1273,6 +1275,7 @@ class MyDrive(Gtk.Application):
             assert heading.get_label() == "Suggestions"
             result = heading.get_next_sibling().get_first_child()
             assert result.get_child().get_first_child().get_label() == "Email match"
+            assert result.get_child().get_last_child().get_label().startswith("fixture@example.test")
             assert view.blip.searches == ["Remote person", "Older query", "Fixture@Example.test"]
             print("Linux GTK type-ahead, email lookup, and stale result checks passed", flush=True)
             self.stack.set_visible_child_name("Sync")

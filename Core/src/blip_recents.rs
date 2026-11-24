@@ -39,9 +39,13 @@ fn is_peer(peer: &str) -> bool {
     })
 }
 
+fn is_recipient(peer: &str) -> bool {
+    is_peer(peer) || crate::blip::account_destination(peer).is_some()
+}
+
 fn recipient(value: &Value) -> Option<Recipient> {
     let peer = value["peer"].as_str()?.to_ascii_lowercase();
-    if !is_peer(&peer) {
+    if !is_recipient(&peer) {
         return None;
     }
     let label = display_text(&value["label"], 240);
@@ -137,7 +141,7 @@ pub fn run(action: &str, data: &Path, payload: &Value) -> Result<Value, String> 
         }
         "archive" => {
             let target = target(payload);
-            if is_peer(&target) && target != owner {
+            if is_recipient(&target) && target != owner {
                 if let Some(saved) = history.iter_mut().find(|r| r.peer == target) {
                     saved.archived.get_or_insert(ArchiveSource::Recent);
                 } else {
@@ -160,7 +164,7 @@ pub fn run(action: &str, data: &Path, payload: &Value) -> Result<Value, String> 
         }
         "restore" => {
             let target = target(payload);
-            if !is_peer(&target) || target == owner {
+            if !is_recipient(&target) || target == owner {
                 return Err("Choose a valid archived device.".into());
             }
             if let Some(index) = history.iter().position(|r| r.peer == target) {
@@ -178,7 +182,7 @@ pub fn run(action: &str, data: &Path, payload: &Value) -> Result<Value, String> 
         }
         "remove" => {
             let target = target(payload);
-            if is_peer(&target) {
+            if is_recipient(&target) {
                 history.retain(|r| r.peer != target);
             } else if crate::automation::uuid(&target) {
                 history.retain(|r| r.account() != target);
@@ -188,7 +192,7 @@ pub fn run(action: &str, data: &Path, payload: &Value) -> Result<Value, String> 
         }
         "rename" => {
             let target = target(payload);
-            if !is_peer(&target) && !crate::automation::uuid(&target) {
+            if !is_recipient(&target) && !crate::automation::uuid(&target) {
                 return Err("Choose a valid recent recipient.".into());
             }
             let name = display_text(&payload["name"], 80);
@@ -203,7 +207,11 @@ pub fn run(action: &str, data: &Path, payload: &Value) -> Result<Value, String> 
                 }
             }
             if !found {
-                return Err("Choose a valid recent recipient.".into());
+                let mut saved = recipient(&payload["recipient"])
+                    .filter(|row| row.peer == target && row.peer != owner)
+                    .ok_or("Choose a valid recent recipient.")?;
+                saved.nickname = name;
+                history.push(saved);
             }
         }
         _ => return Err("Unknown Blip recipient action.".into()),

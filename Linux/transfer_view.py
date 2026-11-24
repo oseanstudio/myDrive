@@ -11,7 +11,7 @@ from uuid import UUID
 
 from gi.repository import Gdk, Gio, GLib, Gtk
 
-from services import DATA, core, exact_peer, link_url, read_settings, save_settings
+from services import DATA, core, exact_peer, link_url, person_destination, read_settings, save_settings
 from ui_widgets import button, clear, label, menu, row
 
 
@@ -118,7 +118,7 @@ class TransferView:
     def person_name(self, device):
         prefix = device["peer"].lower().partition(":")[0] + ":"
         saved = [entry for entry in self.recent_recipients if entry["peer"].startswith(prefix)]
-        known = [other for other in self.snapshot.get("devices", []) + self.directory_recipients
+        known = [other for other in self.snapshot.get("people", []) + self.snapshot.get("devices", []) + self.directory_recipients
                  if str(other.get("peer", "")).lower().startswith(prefix)]
         candidates = ([entry.get("person_nickname") for entry in saved] + [device.get("user_name")]
                       + [other.get("user_name") for other in known] + [entry.get("person") for entry in saved]
@@ -133,6 +133,8 @@ class TransferView:
         if owner and prefix == owner + ":":
             return device_name
         person = self.person_name(device)
+        if person_destination(peer):
+            return person or "Blip user"
         if not person:
             return device_name
         nickname = catalog.get(peer, {}).get("name") or next(
@@ -148,7 +150,7 @@ class TransferView:
         names = {}
         for device in devices:
             peer = device.get("peer")
-            if not exact_peer(peer):
+            if not (exact_peer(peer) or person_destination(peer)):
                 continue
             peer = peer.lower()
             names[peer] = self.recipient_name(device, catalog, show_device)
@@ -430,7 +432,7 @@ class TransferView:
                 self.start_recipient_search(self.search_lookup)
 
         self.app.work("blip-recipients", "", lambda: self.blip.request("search", term),
-                      lambda result: finish(result.get("devices", []), ""), quiet=True, queue=True,
+                      lambda result: finish(result.get("people", []) + result.get("devices", []), ""), quiet=True, queue=True,
                       on_error=lambda error: finish([], error))
         return GLib.SOURCE_REMOVE
 
@@ -458,6 +460,9 @@ class TransferView:
                 for peer, name in self.names(self.directory_recipients, self.catalog(owner)).items():
                     if peer != owner and not self.is_archived(peer):
                         matched[peer] = name
+            people = {peer.partition(":")[0] for peer in matched if person_destination(peer)}
+            matched = {peer: name for peer, name in matched.items()
+                       if person_destination(peer) or peer.partition(":")[0] not in people}
             if matched:
                 self.recipient_rows.append(label("Suggestions", "heading"))
             for peer, name in sorted(matched.items(),
@@ -850,9 +855,10 @@ class TransferView:
             identity = self.owner(fresh)
             own = identity.partition(":")[0]
             devices = [d for d in fresh.get("devices", []) if not d.get("history")]
-            target = next((d for d in devices if d.get("peer", "").lower() == peer), None)
+            destinations = fresh.get("people", []) if person_destination(peer) else devices
+            target = next((d for d in destinations if d.get("peer", "").lower() == peer), None)
             if identity != sender or not target:
-                raise RuntimeError("The selected Blip device is unavailable.")
+                raise RuntimeError("The selected Blip recipient is unavailable.")
             if target.get("online") is False and target.get("can_relay") and peer.startswith(own + ":"):
                 relays = [d["peer"] for d in devices if d.get("can_relay") and d.get("online") is True
                           and d["peer"].startswith(own + ":") and d["peer"] not in {identity, peer}]

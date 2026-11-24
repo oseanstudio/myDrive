@@ -12,8 +12,10 @@ public sealed partial class MainWindow
         var own = new BlipDevice { Peer = owner + ":" + Guid.NewGuid(), Name = "Studio Mac", NameKnown = true };
         var first = new BlipDevice { Peer = contactAccount + ":" + Guid.NewGuid(), Kind = "Desktop", UserName = "Fixture contact", Online = true };
         var second = new BlipDevice { Peer = contactAccount + ":" + Guid.NewGuid(), Kind = "Desktop", UserName = "Fixture contact", Online = false };
+        var person = new BlipDevice { Peer = contactAccount + ":", UserName = "Fixture contact",
+            Contact = "person@example.test", Online = true, Recent = true };
         blipSnapshot = new(new() { UserId = owner, DeviceId = Guid.NewGuid().ToString(), Authenticated = true },
-            [own, first, second], []);
+            [own, own, first, second], [], [person]);
         blipFixtureRunning = true;
         currentView = "transfers";
         Render();
@@ -22,17 +24,17 @@ public sealed partial class MainWindow
         if (BlipTransferRow(invite) is not Grid receiveRow ||
             !receiveRow.Children.OfType<Button>().Any(button => button.Content is "Receive" && button.IsEnabled))
             throw new IOException("Manual Receive must be available while automatic setup is unconfirmed.");
-        recentRecipients = [Recent(first)];
+        recentRecipients = [Recent(first), Recent(second)];
         RenderRecipientRows();
         var mainRows = recipientRows!.Children.OfType<Grid>().ToList();
         var names = mainRows.SelectMany(row => row.Children.OfType<Button>()).Select(button => button.Content)
             .OfType<StackPanel>().Select(panel => panel.Children.OfType<TextBlock>().Select(text => text.Text).ToArray()).ToList();
         if (recipientRows.Children.OfType<Expander>().Any() ||
-            mainRows.Count(row => row.Children.OfType<TextBlock>().Any(text => text.Text == "Fixture contact")) != 1 ||
-            !names.Any(fields => fields.FirstOrDefault() == "Studio Mac") ||
-            !names.Any(fields => fields.SequenceEqual(new[] { "Fixture contact", "Desktop · Online" })) ||
-            !names.Any(fields => fields.SequenceEqual(new[] { "Fixture contact", "Desktop · Offline" })))
-            throw new IOException("Blip must show the contact and known device names with status and no ID suffixes or expanders.");
+            names.Count(fields => fields.FirstOrDefault() == "Studio Mac") != 1 ||
+            names.Count(fields => fields.SequenceEqual(new[] { "Fixture contact", "Online" })) != 1 ||
+            mainRows.Count != 2)
+            throw new IOException("Blip must show the person once and the owned device once, despite duplicate history and device data.");
+        blipSnapshot.Devices.Remove(own);
 
         var showing = ShowBlipSend();
         try
@@ -65,7 +67,7 @@ public sealed partial class MainWindow
             throw new IOException("Typing an email prefix did not show a local suggestion before submitting.");
         searchedQuery = recipientQuery.Trim();
         directoryRecipients = [new BlipDevice {
-            Peer = $"{Guid.NewGuid()}:{Guid.NewGuid()}", UserName = "Directory result", Contact = email
+            Peer = $"{Guid.NewGuid()}:", UserName = "Directory result", Contact = email
         }];
         RenderRecipientRows();
         if (!showsSuggestion("Directory result"))
@@ -121,11 +123,14 @@ public sealed partial class MainWindow
             blipSnapshot.Status.Authenticated = false; Render(); await Task.Delay(150); Stable(); await Capture(directory, "blip-desktop-signedout.png");
             blipSnapshot.Status.Authenticated = true;
             blipSnapshot.Status.UserId="33333333-3333-4333-8333-333333333333";blipSnapshot.Status.DeviceId="44444444-4444-4444-8444-444444444444";
+            blipSnapshot = blipSnapshot with { People = [new BlipDevice {
+                Peer = "11111111-1111-4111-8111-111111111111:", UserName = "Studio tester", Recent = true
+            }] };
             Render();
             recentRecipients = blipSnapshot.Devices.Take(2).Select(Recent).ToList();
             RenderRecipientRows();
-            if (recipientRows?.Children.OfType<Grid>().Count() != 5 || recipientRows.Children.OfType<Expander>().Any())
-                throw new IOException("All four contact devices must appear below the contact heading.");
+            if (recipientRows?.Children.OfType<Grid>().Count() != 1 || recipientRows.Children.OfType<Expander>().Any())
+                throw new IOException("The four contact devices must appear as one recent person.");
             await Capture(directory, "blip-recent-recipients.png");
             var own = new BlipDevice { Peer = blipSnapshot.Status.UserId + ":" + Guid.NewGuid(), Name = "Fixture spare", NameKnown = true, Online = false };
             var current = new BlipDevice { Peer = BlipOwner, Name = "Fixture current", NameKnown = true };
@@ -139,7 +144,7 @@ public sealed partial class MainWindow
             var headings = recipientRows?.Children.OfType<TextBlock>().Select(text => text.Text).ToArray();
             if (headings?.SequenceEqual(new[] { "My devices", "Recent recipients" }) != true ||
                 devicesInSend.Count(name => name == "Fixture spare") != 1 ||
-                devicesInSend.Contains("Fixture current") || devicesInSend.Length != 5)
+                devicesInSend.Contains("Fixture current") || devicesInSend.Length != 2)
                 throw new IOException("Send must show each registered destination once, including offline devices.");
             blipSnapshot.Devices.Remove(own);
             blipSnapshot.Devices.Remove(current);

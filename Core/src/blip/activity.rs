@@ -229,7 +229,13 @@ fn native<'a>(entry: &Entry, snapshot: &'a Snapshot) -> Option<&'a Value> {
         row["direction"] == "Outgoing"
             && row["peer"]
                 .as_str()
-                .is_some_and(|peer| peer.eq_ignore_ascii_case(&entry.peer))
+                .is_some_and(|peer| {
+                    peer.eq_ignore_ascii_case(&entry.peer)
+                        || state::account_destination(&entry.peer).is_some_and(|account| {
+                            state::peer_id(peer)
+                                .is_some_and(|(user, _)| user.eq_ignore_ascii_case(account))
+                        })
+                })
     })
 }
 
@@ -239,12 +245,7 @@ fn retryable(entry: &Entry, snapshot: &Snapshot) -> bool {
         && !entry.files.is_empty()
         && native(entry, snapshot)
             .is_some_and(|row| row["status"] == "Cancelled" && row["completed"] != true)
-        && snapshot.devices.iter().any(|device| {
-            device["history"] == false
-                && device["peer"]
-                    .as_str()
-                    .is_some_and(|peer| peer.eq_ignore_ascii_case(&entry.peer))
-        })
+        && snapshot.destination(&entry.peer).is_some()
         && entry.files.iter().all(FileStamp::unchanged)
 }
 
@@ -364,6 +365,7 @@ mod tests {
         let mut snapshot = Snapshot {
             status: json!({"user_id":"same","device_id":"sender"}),
             devices: vec![json!({"peer":"same:receiver","history":false})],
+            people: vec![],
             transfers: vec![
                 json!({"transfer_id":"transfer","direction":"Outgoing","peer":"same:receiver","status":"Active","completed":false}),
             ],

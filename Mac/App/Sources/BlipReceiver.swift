@@ -41,6 +41,7 @@ struct BlipQueuedSend: Codable, Identifiable {
 @MainActor final class BlipReceiver: ObservableObject {
     @Published var state = "Connecting to Blip…"
     @Published var peers: [BlipPeer] = []
+    @Published private(set) var people: [BlipPeer] = []
     @Published var transfers: [BlipTransfer] = []
     @Published var problem: String?
     @Published private(set) var policy = BlipPolicy()
@@ -109,7 +110,7 @@ struct BlipQueuedSend: Codable, Identifiable {
     func reportSend(_ message: String) { sendMessage = message }
 
     func send(_ payload: BlipSendPayload, to peer: BlipPeer) {
-        guard !sending, connected, (recipients + directoryRecipients).contains(where: { $0.peer == peer.peer }) else {
+        guard !sending, connected, (recipients + people + directoryRecipients).contains(where: { $0.peer == peer.peer }) else {
             payload.discard()
             reportSend("This device is unavailable. Refresh the Blip tab before sending.")
             return
@@ -166,7 +167,7 @@ struct BlipQueuedSend: Codable, Identifiable {
                     let value = try await BlipMacClient.request("search", ["text": query, "owner": owner])
                     guard self.isCurrentDirectoryLookup(generation, owner: owner) else { return }
                     let devices = try JSONDecoder().decode([BlipPeer].self,
-                        from: JSONSerialization.data(withJSONObject: value.array("devices")))
+                        from: JSONSerialization.data(withJSONObject: value.array("people") + value.array("devices")))
                     self.directoryRecipients = devices.filter { $0.peer.caseInsensitiveCompare(owner) != .orderedSame }
                     self.directorySearchStatus = ""
                 } catch {
@@ -234,7 +235,7 @@ struct BlipQueuedSend: Codable, Identifiable {
 
     private func changeRecents(_ action: String, owner: String, peer: BlipPeer?, target: String?, name: String?) async {
         guard BlipPolicy.exactPeer(owner) else { return }
-        let labels = Dictionary(recipients.map { ($0.peer.lowercased(), recent($0)) },
+        let labels = Dictionary((recipients + people).map { ($0.peer.lowercased(), recent($0)) },
                                 uniquingKeysWith: { first, _ in first })
         var seen = Set<String>()
         let previous = transfers.filter {
@@ -504,7 +505,7 @@ struct BlipQueuedSend: Codable, Identifiable {
             guard status.bool("authenticated") else {
                 state = "Sign in to Blip"
                 problem = needsSignIn ? nil : "Set up a myDrive Blip profile to sign in here."
-                account="";session="";selfPeer="";peers=[];transfers=[];setActivity(false);return
+                account="";session="";selfPeer="";peers=[];people=[];transfers=[];setActivity(false);return
             }
             account = status.str("user_id"); guard UUID(uuidString:account) != nil else { throw BlipReceiverError.message("Blip identity could not be verified.") }
             let identity = account + ":" + status.str("device_id")
@@ -546,6 +547,7 @@ struct BlipQueuedSend: Codable, Identifiable {
             receiving.formIntersection(Set(transfers.filter(\.pending).map(\.id)))
             nextReceiveAttempt = nextReceiveAttempt.filter { key, _ in transfers.contains { $0.id == key && $0.pending } }
             let incomingPeers=try JSONDecoder().decode([BlipPeer].self, from: JSONSerialization.data(withJSONObject:value.array("devices")))
+            people = try JSONDecoder().decode([BlipPeer].self, from: JSONSerialization.data(withJSONObject:value.array("people")))
             selfPeer = identity
             connectedPeers = Set(incomingPeers.filter { $0.history != true }.map(\.peer))
             peers=try contacts?.merge(account:account,selfPeer:identity,peers:incomingPeers,transfers:transfers,approved:policy.account.lowercased()==account.lowercased() ? policy.peers.union(policy.files) : []) ?? incomingPeers
@@ -678,6 +680,7 @@ struct BlipQueuedSend: Codable, Identifiable {
         }
     }
     func recipientLabel(_ peer: BlipPeer) -> String {
+        if peer.isPerson { return personName(peer) ?? "Blip user" }
         let label = deviceName(peer)
         let target = peer.peer.split(separator: ":").first?.lowercased() ?? ""
         let recent = recentRecipients.first { $0.peer.caseInsensitiveCompare(peer.peer) == .orderedSame }
@@ -692,8 +695,9 @@ struct BlipQueuedSend: Codable, Identifiable {
     func personName(_ peer: BlipPeer) -> String? {
         let target = peer.peer.split(separator: ":").first?.lowercased() ?? ""
         let saved = recentRecipients.filter { $0.peer.lowercased().hasPrefix(target + ":") }
-        let known = (peers + directoryRecipients).filter { $0.peer.lowercased().hasPrefix(target + ":") }
-        var candidates = saved.map(\.person_nickname)
+        let known = (people + directoryRecipients + peers).filter { $0.peer.lowercased().hasPrefix(target + ":") }
+        var candidates = saved.filter { $0.peer.caseInsensitiveCompare(target + ":") == .orderedSame }.map(\.nickname)
+        candidates.append(contentsOf: saved.map(\.person_nickname))
         candidates.append(peer.user_name)
         candidates.append(contentsOf: known.map(\.user_name))
         candidates.append(contentsOf: saved.map(\.person))
@@ -702,7 +706,7 @@ struct BlipQueuedSend: Codable, Identifiable {
         return candidates.compactMap { $0 }.first { !$0.isEmpty }
     }
     func senderLabel(_ identity: String) -> String {
-        let peer = (peers + directoryRecipients).first { $0.peer.caseInsensitiveCompare(identity) == .orderedSame }
+        let peer = (peers + people + directoryRecipients).first { $0.peer.caseInsensitiveCompare(identity) == .orderedSame }
             ?? BlipPeer(peer: identity, name: "")
         return recipientLabel(peer)
     }

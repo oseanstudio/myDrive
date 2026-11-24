@@ -12,6 +12,10 @@ struct BlipPeer: Identifiable, Codable {
     var kind: String? = nil
     var user_name: String? = nil
     var nickname: String? = nil
+    var recent: Bool? = nil
+    var isPerson: Bool {
+        peer.hasSuffix(":") && UUID(uuidString: String(peer.dropLast())) != nil
+    }
     var hasRegisteredName: Bool {
         name_known == true && !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }

@@ -310,7 +310,8 @@ public sealed class BlipService : IAsyncDisposable
         var data = SupportsPolling(currentHost)
             ? await PollHostAsync(currentHost, token)
             : await CommandAsync("poll", token: token);
-        return new(data.GetProperty("status").Deserialize<BlipStatus>() ?? new(), data.TryGetProperty("devices",out var devices)?devices.Deserialize<List<BlipDevice>>()??new():new(), data.GetProperty("transfers").Deserialize<List<BlipTransfer>>() ?? new());
+        return new(data.GetProperty("status").Deserialize<BlipStatus>() ?? new(), Destinations(data, "devices"),
+            data.GetProperty("transfers").Deserialize<List<BlipTransfer>>() ?? new(), Destinations(data, "people"));
     }
     public async Task<BlipSnapshot> SnapshotAsync(CancellationToken token = default)
     {
@@ -342,11 +343,16 @@ public sealed class BlipService : IAsyncDisposable
     {
         RequireRunning();
         var result = await CommandAsync("search", input: query + "\n", token: token);
-        return result.GetProperty("devices").Deserialize<List<BlipDevice>>() ?? new();
+        return Destinations(result, "people").Concat(Destinations(result, "devices")).ToList();
     }
+
+    private static List<BlipDevice> Destinations(JsonElement data, string field) =>
+        data.TryGetProperty(field, out var rows) ? rows.Deserialize<List<BlipDevice>>() ?? [] : [];
     public async Task<string> SendAsync(string peer, IReadOnlyList<string> files, CancellationToken token = default, string? requestId = null)
     {
-        RequireRunning(); ValidatePeer(peer); if (files.Count == 0 || files.Any(p => !File.Exists(p) && !Directory.Exists(p))) throw new IOException("Select existing files or a folder.");
+        RequireRunning();
+        if (!(peer.EndsWith(':') && Guid.TryParseExact(peer[..^1], "D", out _))) ValidatePeer(peer);
+        if (files.Count == 0 || files.Any(p => !File.Exists(p) && !Directory.Exists(p))) throw new IOException("Select existing files or a folder.");
         // No automatic retries: interruption after dispatch has an uncertain outcome.
         var args = new List<string> { "--peer", peer, "--execute" };
         if (requestId != null) {

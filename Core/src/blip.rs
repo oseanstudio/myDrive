@@ -9,6 +9,7 @@ mod host;
 pub(crate) mod mac;
 mod rpc;
 mod state;
+pub(crate) use state::account_destination;
 
 use crate::automation::uuid;
 use rpc::{field, number, string, Result};
@@ -202,17 +203,7 @@ impl Session {
                     {
                         return Err("sign_in_required");
                     }
-                    let devices: Vec<_> = snapshot
-                        .devices
-                        .into_iter()
-                        .filter(|device| {
-                            device["history"] == false
-                                && device["peer"]
-                                    .as_str()
-                                    .is_some_and(|peer| state::matches_result(peer, &peers))
-                        })
-                        .collect();
-                    return Ok(json!({"ok": true, "devices": devices}));
+                    return Ok(snapshot.directory(&peers));
                 }
             }
             thread::sleep(Duration::from_millis(300));
@@ -539,17 +530,26 @@ impl Session {
     fn send(&self, args: &Arguments, snapshot: Snapshot) -> Result<Value> {
         let peer = args.peer.as_deref().ok_or("invalid_peer")?;
         let exact = snapshot
-            .devices
-            .iter()
-            .find_map(|item| {
-                let exact = item["peer"].as_str()?;
-                (item["history"] == false && exact.eq_ignore_ascii_case(peer)).then_some(exact)
-            })
+            .destination(peer)
             .ok_or("invalid_peer_or_selection")?;
-        let (user, device) = state::peer_id(exact).ok_or("invalid_peer")?;
+        let (user, device) = if let Some((user, device)) = state::peer_id(exact) {
+            (user, Some(device))
+        } else {
+            (
+                state::account_destination(exact).ok_or("invalid_peer")?,
+                None,
+            )
+        };
         if !args.execute
             || args.files.is_empty()
-            || (snapshot.status["user_id"] == user && snapshot.status["device_id"] == device)
+            || (snapshot.status["user_id"]
+                .as_str()
+                .is_some_and(|own| own.eq_ignore_ascii_case(user))
+                && device.is_none_or(|device| {
+                    snapshot.status["device_id"]
+                        .as_str()
+                        .is_some_and(|own| own.eq_ignore_ascii_case(device))
+                }))
         {
             return Err("invalid_peer_or_selection");
         }
@@ -566,11 +566,11 @@ impl Session {
             return Err("transfer_id_exists");
         }
         let base = string(1, &id);
-        let route = [
-            base.clone(),
-            field(2, &[string(1, user), string(2, device)].concat()),
-        ]
-        .concat();
+        let mut peer_fields = string(1, user);
+        if let Some(device) = device {
+            peer_fields.extend(string(2, device));
+        }
+        let route = [base.clone(), field(2, &peer_fields)].concat();
         let mut content = base;
         let mut paths = Vec::with_capacity(args.files.len());
         for path in &args.files {
@@ -1096,7 +1096,7 @@ pub(crate) fn error_message(error: &str) -> &'static str {
             "Blip has not confirmed acceptance. Check transfers before trying again."
         }
         "invalid_peer_or_selection" => {
-            "Select an exact available Blip device and existing files or folders."
+            "Select an available Blip person or device and existing files or folders."
         }
         _ => "Blip could not confirm the request. Refresh transfers before retrying.",
     }

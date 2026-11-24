@@ -23,7 +23,9 @@ public sealed class BlipDevice
     [JsonPropertyName("name_known")] public bool NameKnown { get; set; }
     [JsonPropertyName("user_name")] public string UserName { get; set; }="";
     [JsonPropertyName("nickname")] public string Nickname { get; set; }="";
+    [JsonPropertyName("recent")] public bool Recent { get; set; }
     [JsonIgnore] public string Account => Peer.Split(':', 2)[0];
+    [JsonIgnore] public bool IsPerson => Peer.EndsWith(':') && Guid.TryParseExact(Account, "D", out _);
     [JsonIgnore] public bool HasRegisteredName => NameKnown && !string.IsNullOrWhiteSpace(Name);
     [JsonIgnore] public bool HasDeviceName => HasRegisteredName || !string.IsNullOrWhiteSpace(Nickname);
     [JsonIgnore] public string ContactName => string.IsNullOrWhiteSpace(UserName) ? Contact : UserName;
@@ -91,4 +93,5 @@ public sealed class BlipReceivedItem {
     [JsonPropertyName("size")] public long Size {get;set;}
     public override string ToString()=>Name;
 }
-public sealed record BlipSnapshot(BlipStatus Status, List<BlipDevice> Devices, List<BlipTransfer> Transfers);
+public sealed record BlipSnapshot(BlipStatus Status, List<BlipDevice> Devices, List<BlipTransfer> Transfers,
+    List<BlipDevice>? People = null);

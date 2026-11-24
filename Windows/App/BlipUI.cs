@@ -131,7 +131,7 @@ public sealed partial class MainWindow
             {
                 var snapshot = blipSnapshot;
                 string signature = System.Text.Json.JsonSerializer.Serialize(new {
-                    running = BlipRunning, blipFailure, status = snapshot?.Status, devices = snapshot?.Devices,
+                    running = BlipRunning, blipFailure, status = snapshot?.Status, devices = snapshot?.Devices, people = snapshot?.People,
                     transfers = snapshot?.Transfers.Where(t => t.IsLive), blipRelayWaiting, blipRelayQueued,
                 });
                 DispatcherQueue.TryEnqueue(() =>
@@ -171,15 +171,9 @@ public sealed partial class MainWindow
         var label = running ? signedIn ? "Checking automatic receiving" : "Sign in to send or receive" : Preferences.Current.BlipAutoConnectDesktop ? "Preparing background Blip" : "Blip is disconnected";
         if (!running || !signedIn || (!BlipDesktop && blipSnapshot?.Status.NativeAutoAcceptDisabled != true))
             page.Children.Add(QuickText(label, compact ? 12 : 16));
-        var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
-        if (!running) actions.Children.Add(QuickButton("Connect…", () => _ = ChooseBlipConnection(), true));
-        else
-        {
-            if (signedIn) { var send = QuickButton("Send…", () => _ = ShowBlipSend(), true); send.IsEnabled = !busy; actions.Children.Add(send); }
-            if (!signedIn && !BlipDesktop) actions.Children.Add(QuickButton(blipSnapshot?.Status.Registration == "CODE_SENT" ? "Enter code…" : "Connect Blip…", () => _ = ConnectBlip()));
-        }
-        actions.Children.Add(QuickButton("Received files", OpenBlipDownloads));
-        page.Children.Add(actions);
+        if (!running) page.Children.Add(QuickButton("Connect…", () => _ = ChooseBlipConnection(), true));
+        else if (!signedIn && !BlipDesktop)
+            page.Children.Add(QuickButton(blipSnapshot?.Status.Registration == "CODE_SENT" ? "Enter code…" : "Connect Blip…", () => _ = ConnectBlip()));
         RenderBlipRecipients();
         AddLiveBlipTransfers("Outgoing");
         if (signedIn)
@@ -510,7 +504,7 @@ public sealed partial class MainWindow
         {
             var first = group.First();
             var contact = group.Skip(1).Any() ? BlipPersonName(first, first.Account) : null;
-            if (contact != null) AddDestination(BlipContactHeading(contact, localPeer));
+            if (contact != null) AddDestination(QuickText(contact, 13, true));
             foreach (var device in group.OrderByDescending(d => d.Online == true))
                 AddDestination(DestinationRow(device, grouped: contact != null));
         }

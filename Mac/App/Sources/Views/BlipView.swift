@@ -69,17 +69,18 @@ struct BlipView: View {
             let term = query.trimmingCharacters(in: .whitespacesAndNewlines)
             let available = receiver.recipients.filter { !receiver.isArchived($0) }
             if !term.isEmpty {
-                let known = available.filter {
+                let known = (receiver.people.filter { $0.recent == true && !receiver.isArchived($0) } + available).filter {
                     [$0.contactName, $0.contact, $0.name, receiver.deviceName($0), receiver.personName($0)].compactMap { $0 }
                         .contains { $0.localizedStandardContains(term) }
                 }
                 let searched = term.caseInsensitiveCompare(receiver.directoryQuery) == .orderedSame
                 let remote = searched ? receiver.directoryRecipients.filter { !receiver.isArchived($0) } : []
                 let matches = unique(remote + known, query: term)
+                let accounts = Set(matches.filter(\.isPerson).map { accountPart($0.peer) })
                 if !matches.isEmpty {
                     Text("Suggestions").font(.caption).fontWeight(.semibold)
                 }
-                ForEach(matches.prefix(30)) { peer in
+                ForEach(matches.filter { $0.isPerson || !accounts.contains(accountPart($0.peer)) }.prefix(30)) { peer in
                     let name = receiver.recipientLabel(peer)
                     let email = peer.contact
                     recipientRow(name, peer: peer,
@@ -105,7 +106,7 @@ struct BlipView: View {
                 }
                 let listed = Set(myDevices.map { $0.peer.lowercased() })
                 let recents = receiver.recentRecipients.filter { $0.archived == nil }
-                recentRows(recents.filter { !listed.contains($0.peer.lowercased()) }, available: available)
+                recentRows(recents.filter { !listed.contains($0.peer.lowercased()) }, available: available + receiver.people)
                 let seen = listed.union(recents.map { $0.peer.lowercased() })
                 let others = available.filter { !seen.contains($0.peer.lowercased()) }
                 if !others.isEmpty {
@@ -202,7 +203,7 @@ struct BlipView: View {
                     }.frame(maxWidth: .infinity, alignment: .leading)
                 }.accessibilityLabel("Send files to " + name)
                     .accessibilityHint([detail, receiver.deviceAvailability(peer)].compactMap { $0 }.joined(separator: ", "))
-                    .help(name + " · " + receiver.deviceAvailability(peer))
+                    .help(detail.map { name + " · " + $0 } ?? name + " · " + receiver.deviceAvailability(peer))
                     .buttonStyle(.plain)
                     .disabled(receiver.sending || receiver.preparingSend)
                     .contextMenu { Button("Paste and send") { receiver.pasteAndSend(to: peer) } }
@@ -219,7 +220,7 @@ struct BlipView: View {
             if deviceShortcut || removing != nil {
                 Menu {
                     Button("Edit Name…") {
-                        if let peer { receiver.rename(peer) }
+                        if let peer, !peer.isPerson { receiver.rename(peer) }
                         else if let removing { receiver.renameRecent(removing, displayed: name, nickname: nickname, person: person) }
                     }
                     if let removing {
