@@ -1027,6 +1027,7 @@ class MyDrive(Gtk.Application):
             switch = Gtk.Switch(active=self.preferences.get(key, True), valign=Gtk.Align.CENTER)
             switch.connect("notify::active", lambda s, _, key=key: self.change_preference(key, s.get_active()))
             page.append(row(title, "", switch))
+        page.append(button("Sender permissions…", self.transfer_view.permissions))
         automatic = Gtk.Switch(active=self.preferences.get("auto_install_updates", False), valign=Gtk.Align.CENTER)
         automatic.set_tooltip_text("Updates install when myDrive is in the background and idle.")
         def toggle_automatic(switch, _property):

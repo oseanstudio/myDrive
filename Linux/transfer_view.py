@@ -108,10 +108,11 @@ class TransferView:
             return "Previously seen"
         return {True: "Online", False: "Offline"}.get(known.get("online"), "Status unknown")
 
-    def destination_label(self, name, peer):
+    def destination_label(self, name, peer, email=""):
         details = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1)
         details.append(label(name))
-        details.append(label(self.device_availability(peer), "dim-label"))
+        status = self.device_availability(peer)
+        details.append(label(f"{email} · {status}" if email else status, "dim-label"))
         return details
 
     def person_name(self, device):
@@ -307,8 +308,6 @@ class TransferView:
         actions.append(button("Send…", self.choose_files))
         actions.append(button("Paste and send", self.paste))
         actions.append(menu([("Send folder…", lambda: self.choose_files(folder=True)),
-                             ("Refresh Blip", lambda: self.refresh(quiet=False)),
-                             ("Sender permissions…", self.permissions),
                              ("Received files", lambda: self.app.open_path(self.blip.inbox))]))
         self.page.append(actions)
         names = self.names(self.snapshot.get("devices", []), self.catalog(identity))
@@ -445,18 +444,26 @@ class TransferView:
         if query:
             term = query.casefold()
             matched = {peer: name for peer, name in known.items() if term in name.casefold()}
+            emails = {}
             for device in self.snapshot.get("devices", []):
                 peer = str(device.get("peer", "")).lower()
+                emails[peer] = device.get("contact") or ""
                 if peer in known and any(term in str(device.get(field) or "").casefold()
                                          for field in ("contact", "user_name", "name")):
                     matched[peer] = known[peer]
             searched = term == self.searched_query.casefold()
             if searched:
+                emails.update((device["peer"].lower(), device.get("contact") or "")
+                              for device in self.directory_recipients if device.get("peer"))
                 for peer, name in self.names(self.directory_recipients, self.catalog(owner)).items():
                     if peer != owner and not self.is_archived(peer):
-                        matched.setdefault(peer, name)
-            for peer, name in sorted(matched.items(), key=lambda item: item[1].casefold())[:30]:
-                self.add_recipient_row(owner, name, peer)
+                        matched[peer] = name
+            if matched:
+                self.recipient_rows.append(label("Suggestions", "heading"))
+            for peer, name in sorted(matched.items(),
+                                     key=lambda item: (emails.get(item[0], "").casefold() != term, item[1].casefold()))[:30]:
+                email = emails.get(peer, "")
+                self.add_recipient_row(owner, name, peer, email=email if "@" in email and email != name else "")
             if searched and self.search_status:
                 self.recipient_rows.append(label(self.search_status))
             elif not matched:
@@ -554,12 +561,12 @@ class TransferView:
                         lambda: self.update_recents("rename", owner, target=target, name=name.get_text()))
 
     def add_recipient_row(self, owner, name, peer=None, remove=None, nickname=None, person=False, nested=False,
-                          device_shortcut=False):
+                          device_shortcut=False, email=""):
         controls = Gtk.Box(spacing=4, margin_start=12 if nested else 0)
         actions = []
         if peer:
             select = button(name, lambda: self.choose_files(peer=peer, owner=owner))
-            select.set_child(self.destination_label(name, peer))
+            select.set_child(self.destination_label(name, peer, email))
             select.set_tooltip_text("Send files to " + name + " · " + self.device_availability(peer))
             select.set_hexpand(True)
             controls.append(select)

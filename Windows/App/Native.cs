@@ -152,7 +152,15 @@ public sealed class TrayIcon : IDisposable
         return loaded!=IntPtr.Zero?loaded:LoadImage(IntPtr.Zero,Path.Combine(AppContext.BaseDirectory,"Assets","myDrive.ico"),1,size,size,0x10);
     }
     public static double Scale(IntPtr hwnd)=>Math.Max(1,GetDpiForWindow(hwnd)/96d);
-    public Windows.Graphics.PointInt32 Anchor(){var id=new IconIdentifier{Size=(uint)Marshal.SizeOf<IconIdentifier>(),Hwnd=hwnd,Id=1};if(Shell_NotifyIconGetRect(ref id,out var r)==0)return new(r.Right,r.Top);GetCursorPos(out var p);return new(p.X,p.Y);}
+    public Windows.Graphics.RectInt32 AnchorBounds()
+    {
+        var id = new IconIdentifier { Size = (uint)Marshal.SizeOf<IconIdentifier>(), Hwnd = hwnd, Id = 1 };
+        if (Shell_NotifyIconGetRect(ref id, out var bounds) == 0)
+            return new(bounds.Left, bounds.Top, bounds.Right - bounds.Left, bounds.Bottom - bounds.Top);
+        GetCursorPos(out var point);
+        return new(point.X, point.Y, 1, 1);
+    }
+    public Windows.Graphics.PointInt32 Anchor() { var bounds = AnchorBounds(); return new(bounds.X + bounds.Width, bounds.Y); }
     public bool Contains(Windows.Graphics.PointInt32 point){var id=new IconIdentifier{Size=(uint)Marshal.SizeOf<IconIdentifier>(),Hwnd=hwnd,Id=1};return Shell_NotifyIconGetRect(ref id,out var r)==0&&point.X>=r.Left&&point.X<r.Right&&point.Y>=r.Top&&point.Y<r.Bottom;}
     public bool PointerInside()=>GetCursorPos(out var point)&&Contains(new(point.X,point.Y));
     private NotifyData Data()=>new(){Size=(uint)Marshal.SizeOf<NotifyData>(),Hwnd=hwnd,Id=1,Flags=7,Callback=Message,Icon=activeIcon,Tip=tip,Info="",Title=""};

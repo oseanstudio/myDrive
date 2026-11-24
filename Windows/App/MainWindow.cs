@@ -61,6 +61,7 @@ public sealed partial class MainWindow : Window
     private Window? detachedDialog;
     private readonly Dictionary<(ElementTheme,string),SolidColorBrush> themeBrushes=new();
     private Windows.Graphics.PointInt32? quickOrigin;
+    private Windows.Graphics.PointInt32 quickMonitorPoint;
     private const string StorageViewName = "SMB Drives";
     private const string SendViewName = "Blip";
     private const string SyncViewName = "Syncthing";
@@ -161,17 +162,29 @@ public sealed partial class MainWindow : Window
     }
     private int QuickWidth()=>344;
     private int QuickHeight()=>420;
+    private Windows.Graphics.RectInt32 TrayPopupAnchor()
+    {
+        if (tray is { } icon) return icon.AnchorBounds();
+        var position = AppWindow.Position;
+        return new(position.X + AppWindow.Size.Width, position.Y + AppWindow.Size.Height, 1, 1);
+    }
+
     private void SizeQuickMenu(bool placeOnOpen=false)
     {
-        if(!compact)return;var area=DisplayArea.GetFromWindowId(AppWindow.Id,DisplayAreaFallback.Nearest).WorkArea;var scale=TrayIcon.Scale(hwnd);
-        int width=Math.Min((int)(QuickWidth()*scale),area.Width-24),height=Math.Min((int)(QuickHeight()*scale),area.Height-24);
-        if(placeOnOpen||quickOrigin==null){var anchor=tray?.Anchor()??new Windows.Graphics.PointInt32(area.X+area.Width,area.Y+area.Height);quickOrigin=new(anchor.X-width,anchor.Y>area.Y+area.Height/2?anchor.Y-height-8:anchor.Y+32);}
-        // A redraw must never consult the cursor or tray again. Reposition only
-        // when opening, or if a changed work area would put the popup off-screen.
-        var origin=quickOrigin.Value;var position=new Windows.Graphics.PointInt32(Math.Clamp(origin.X,area.X+8,Math.Max(area.X+8,area.X+area.Width-width-8)),Math.Clamp(origin.Y,area.Y+8,Math.Max(area.Y+8,area.Y+area.Height-height-8)));
-        quickOrigin=position;
-        if(AppWindow.Size.Width!=width||AppWindow.Size.Height!=height)AppWindow.Resize(new(width,height));
-        if(AppWindow.Position.X!=position.X||AppWindow.Position.Y!=position.Y)AppWindow.Move(position);
+        if (!compact) return;
+        bool opening = placeOnOpen || quickOrigin == null;
+        var icon = opening ? TrayPopupAnchor() : default;
+        if (opening) quickMonitorPoint = TrayPopupPlacement.Center(icon);
+        var (area, scale) = TrayPopupPlacement.MonitorAt(quickMonitorPoint, hwnd);
+        int gap = (int)Math.Ceiling(4 * scale);
+        var size = new Windows.Graphics.SizeInt32(
+            Math.Min((int)(QuickWidth() * scale), area.Width - 2 * gap),
+            Math.Min((int)(QuickHeight() * scale), area.Height - 2 * gap));
+        var position = opening ? TrayPopupPlacement.Beside(icon, area, size, gap)
+            : TrayPopupPlacement.Fit(quickOrigin!.Value, area, size, gap);
+        quickOrigin = position;
+        if (AppWindow.Position.X != position.X || AppWindow.Position.Y != position.Y) AppWindow.Move(position);
+        if (AppWindow.Size.Width != size.Width || AppWindow.Size.Height != size.Height) AppWindow.Resize(size);
     }
     private async void Quit(){if(quitting)return;quitting=true;await DiscardPreparedUpdate();blipLinks?.ResetSession();await Task.WhenAll(blip.StopAsync(),SyncthingService.StopAsync());Close();Application.Current.Exit();}
     private async Task Initialize()
@@ -293,6 +306,7 @@ public sealed partial class MainWindow : Window
         page.Children.Add(StartupControl());
         page.Children.Add(AutoUpdateSetting());
         page.Children.Add(Button("Check for updates",()=>_=CheckForUpdate(showResult:true)));
+        RenderBlipSettings();
         var advanced=new DropDownButton{Content="Advanced"};var menu=new MenuFlyout();
         MenuAction(menu,"Syncthing settings…",()=>_=EditSyncthingConnection());
         MenuAction(menu,"Open app data folder",()=>{Directory.CreateDirectory(CoreBridge.DataDir);Process.Start(new ProcessStartInfo("explorer.exe"){ArgumentList={CoreBridge.DataDir},UseShellExecute=true});});

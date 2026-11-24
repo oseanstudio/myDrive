@@ -143,7 +143,9 @@ public sealed partial class MainWindow
     }
     private void UpdateIncomingBlip(BlipTransfer transfer,bool announce) {
         if(quitting)return;
-        blipIncomingWindow??=new BlipIncomingWindow(t=>_=ReceiveFromBlipNotice(t),()=>{currentView="transfers";SetMode(true);_=ChooseLinkSenders();},()=>tray?.Anchor()??AppWindow.Position);
+        blipIncomingWindow ??= new BlipIncomingWindow(t => _ = ReceiveFromBlipNotice(t),
+            () => { currentView = "settings"; SetMode(true); _ = ChooseLinkSenders(); },
+            TrayPopupAnchor);
         string name=BlipPeerCaption(transfer.Peer);
         blipIncomingWindow.Update(transfer,name,blipAutoAccepted.ContainsKey(transfer.Id),announce);
     }
@@ -160,28 +162,9 @@ public sealed partial class MainWindow
     {
         if (!compact) Heading(SendViewName, "");
         bool running = BlipRunning, signedIn = blipSnapshot?.Status.Authenticated == true;
-        var header = new Grid { ColumnSpacing = 6 }; header.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) }); header.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
         var label = running ? signedIn ? "Checking automatic receiving" : "Sign in to send or receive" : Preferences.Current.BlipAutoConnectDesktop ? "Preparing background Blip" : "Blip is disconnected";
         if (!running || !signedIn || (!BlipDesktop && blipSnapshot?.Status.NativeAutoAcceptDisabled != true))
             page.Children.Add(QuickText(label, compact ? 12 : 16));
-        var refresh = QuickIcon("\uE72C", "Refresh Blip transfers", () => _ = RefreshBlip()); refresh.IsEnabled = running && !busy;
-        var options = QuickIcon("\uE713", "Blip options", () => { });
-        var menu = new MenuFlyout();
-        var autoOpen = new ToggleMenuFlyoutItem { Text = "Open received links automatically", IsChecked = Preferences.Current.BlipAutoOpenLinks };
-        autoOpen.Click += (_, _) => { if (diagnosticMode) return; Preferences.Current.BlipAutoOpenLinks = autoOpen.IsChecked; Preferences.Save(); LinkOpener.ResetSession(); };
-        menu.Items.Add(autoOpen); options.Flyout = menu;
-        var autoConnect = new ToggleMenuFlyoutItem { Text = "Keep Blip available in the background", IsChecked = Preferences.Current.BlipAutoConnectDesktop };
-        autoConnect.Click += (_, _) => { if (diagnosticMode) return; Preferences.Current.BlipAutoConnectDesktop = autoConnect.IsChecked; Preferences.Save(); Interlocked.Exchange(ref nextDesktopBlipAttempt, 0); if (autoConnect.IsChecked) _ = RefreshBlip(); };
-        menu.Items.Add(autoConnect);
-        if (!running) MenuAction(menu, "Add Blip engine…", () => _ = ImportBlipEngine());
-        var senders = new MenuFlyoutItem { Text = "Sender permissions…", IsEnabled = signedIn };
-        senders.Click += (_,_) => _ = ChooseLinkSenders(); menu.Items.Add(senders);
-        if (running) MenuAction(menu, BlipDesktop ? "Disconnect Blip" : "Stop Blip", () => _ = StopBlip());
-        var tools = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 2 };
-        tools.Children.Add(FlatBlipButton(options));
-        tools.Children.Add(FlatBlipButton(refresh));
-        Grid.SetColumn(tools, 1);
-        header.Children.Add(tools);
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
         if (!running) actions.Children.Add(QuickButton("Connect…", () => _ = ChooseBlipConnection(), true));
         else
@@ -189,16 +172,14 @@ public sealed partial class MainWindow
             if (signedIn) { var send = QuickButton("Send…", () => _ = ShowBlipSend(), true); send.IsEnabled = !busy; actions.Children.Add(send); }
             if (!signedIn && !BlipDesktop) actions.Children.Add(QuickButton(blipSnapshot?.Status.Registration == "CODE_SENT" ? "Enter code…" : "Connect Blip…", () => _ = ConnectBlip()));
         }
-        if(signedIn)actions.Children.Add(QuickButton("Senders…",()=>_=ChooseLinkSenders()));
         actions.Children.Add(QuickButton("Received files", OpenBlipDownloads));
-        header.Children.Add(actions);
-        page.Children.Add(header);
+        page.Children.Add(actions);
+        RenderBlipRecipients();
         AddLiveBlipTransfers("Outgoing");
         if (signedIn)
             foreach (var queued in blipRelayQueued)
                 page.Children.Add(BlipTransferRow(new BlipTransfer { Id = queued.id, Peer = queued.peer,
                     ItemNames = [queued.label], Direction = "Outgoing", Status = "QueuedForRelay" }, queuedRelay: true));
-        RenderBlipRecipients();
         if (!blip.RuntimeAvailable && !diagnosticMode) page.Children.Add(Card(Text("The myDrive Blip helper is missing. Reinstall myDrive.", 12)));
         string failure = blipFailure.Length > 0 ? blipFailure : blip.LastError;
         if (blipRelayWaiting > 0) page.Children.Add(Text($"{blipRelayWaiting} waiting for relay or delivery", 11));
@@ -220,6 +201,41 @@ public sealed partial class MainWindow
             page.Children.Add(list);
         }
     }
+    private void RenderBlipSettings()
+    {
+        var settings = new StackPanel { Spacing = 4 };
+        settings.Children.Add(QuickText("Blip", 13, true));
+        var autoOpen = new CheckBox { Content = "Open approved senders’ links automatically",
+            IsChecked = Preferences.Current.BlipAutoOpenLinks };
+        autoOpen.Click += (_, _) =>
+        {
+            if (diagnosticMode) return;
+            Preferences.Current.BlipAutoOpenLinks = autoOpen.IsChecked == true;
+            Preferences.Save();
+            LinkOpener.ResetSession();
+        };
+        settings.Children.Add(autoOpen);
+        var background = new CheckBox { Content = "Keep Blip available in the background",
+            IsChecked = Preferences.Current.BlipAutoConnectDesktop };
+        background.Click += (_, _) =>
+        {
+            if (diagnosticMode) return;
+            Preferences.Current.BlipAutoConnectDesktop = background.IsChecked == true;
+            Preferences.Save();
+            Interlocked.Exchange(ref nextDesktopBlipAttempt, 0);
+            if (background.IsChecked == true) _ = RefreshBlip();
+        };
+        settings.Children.Add(background);
+        var senders = QuickButton("Sender permissions…", () => _ = ChooseLinkSenders());
+        senders.IsEnabled = blipSnapshot?.Status.Authenticated == true;
+        settings.Children.Add(senders);
+        if (BlipRunning)
+            settings.Children.Add(QuickButton(BlipDesktop ? "Disconnect Blip" : "Stop Blip", () => _ = StopBlip()));
+        else
+            settings.Children.Add(QuickButton("Add Blip engine…", () => _ = ImportBlipEngine()));
+        page.Children.Add(settings);
+    }
+
     private UIElement BlipTransferRow(BlipTransfer transfer, bool queuedRelay = false)
     {
         var row = new Grid { ColumnSpacing = 6, MinHeight = 44, Padding = new Thickness(0, 3, 0, 3) };
@@ -324,7 +340,7 @@ public sealed partial class MainWindow
         foreach(var group in devices.GroupBy(d=>d.Peer.Split(':')[0],StringComparer.OrdinalIgnoreCase)) {
             string person = group.Key.Equals(account, StringComparison.OrdinalIgnoreCase)
                 ? "Your devices"
-                : group.Select(d => d.ContactName).FirstOrDefault(n => !string.IsNullOrWhiteSpace(n)) ?? "Previous sender";
+                : BlipPersonName(group.First(), group.Key) ?? "Previous sender";
             var heading = QuickText(person, 13, true);
             ToolTipService.SetToolTip(heading, person);
             content.Children.Add(heading);

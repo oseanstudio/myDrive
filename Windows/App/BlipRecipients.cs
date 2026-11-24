@@ -120,14 +120,16 @@ public sealed partial class MainWindow
     private string? BlipPersonName(BlipDevice device, string account)
     {
         var saved = recentRecipients.Where(r => r.Account.Equals(account, StringComparison.OrdinalIgnoreCase));
-        var known = (blipSnapshot?.Devices ?? []).Concat(directoryRecipients).Where(other =>
-            other.Peer.StartsWith(account + ":", StringComparison.OrdinalIgnoreCase));
-        return saved.Select(r => r.person_nickname).Append(device.UserName)
-            .Concat(known.Select(other => other.UserName))
-            .Concat(saved.Select(r => r.person)).Append(device.Contact)
+        var known = new[] { device }.Concat(directoryRecipients).Concat(blipSnapshot?.Devices ?? [])
+            .Where(other => other.Account.Equals(account, StringComparison.OrdinalIgnoreCase)).ToArray();
+        var usernames = known.OrderBy(other => other.History).Select(other => other.UserName)
+            .Concat(saved.Select(r => r.person))
+            .Where(name => !string.IsNullOrWhiteSpace(name) &&
+                !known.Any(other => string.Equals(other.Contact, name, StringComparison.OrdinalIgnoreCase)));
+        return saved.Select(r => r.person_nickname).Concat(usernames)
             .Concat(known.Select(other => other.Contact))
-            .Concat(saved.Select(r => r.FallbackLabel).Where(label => label != "Device"))
-            .FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
+            .Concat(saved.Select(r => r.person ?? r.FallbackLabel).Where(label => label != "Device"))
+            .FirstOrDefault(value => !string.IsNullOrWhiteSpace(value))?.Trim();
     }
 
     private string BlipPeerCaption(string peer) => (blipSnapshot?.Devices ?? []).Concat(directoryRecipients)
@@ -190,7 +192,18 @@ public sealed partial class MainWindow
             recipientQuery = search.Text;
             QueueRecipientLookup();
         };
-        search.KeyDown += (_, e) => { if (e.Key == VirtualKey.Enter) { e.Handled = true; QueueRecipientLookup(immediate: true); } };
+        search.KeyDown += (_, e) =>
+        {
+            if (e.Key == VirtualKey.Enter) { e.Handled = true; QueueRecipientLookup(immediate: true); }
+            if (e.Key == VirtualKey.Escape && search.Text.Length > 0) { e.Handled = true; search.Text = ""; }
+            if (e.Key == VirtualKey.Down && recipientQuery.Trim().Length > 0 &&
+                recipientRows?.Children.OfType<Grid>().SelectMany(row => row.Children.OfType<Button>())
+                    .FirstOrDefault(button => button.IsEnabled) is { } suggestion)
+            {
+                e.Handled = true;
+                suggestion.Focus(FocusState.Keyboard);
+            }
+        };
         var find = QuickIcon("\uE721", "Search Blip by name or email", () => QueueRecipientLookup(immediate: true));
         find.IsEnabled = search.IsEnabled;
         var input = new Grid { ColumnSpacing = 4 };
@@ -267,16 +280,25 @@ public sealed partial class MainWindow
         if (query.Length > 0)
         {
             bool searched = query.Equals(searchedQuery, StringComparison.OrdinalIgnoreCase);
-            var matches = devices.Where(d => new[] { d.ContactName, d.Contact, BlipDeviceName(d), d.Name,
+            var matches = (searched ? directoryRecipients : []).Concat(devices.Where(d => new[] {
+                    d.ContactName, d.Contact, BlipDeviceName(d), d.Name,
                     BlipPersonName(d, d.Account) ?? "" }
-                .Any(text => text.Contains(query, StringComparison.CurrentCultureIgnoreCase)))
-                .Concat(searched ? directoryRecipients : new List<BlipDevice>())
+                .Any(text => text.Contains(query, StringComparison.CurrentCultureIgnoreCase))))
                 .Where(d => BlipTrustPolicy.ExactPeer(d.Peer) && !d.Peer.Equals(owner, StringComparison.OrdinalIgnoreCase)
                     && !IsRecipientArchived(owner, d.Peer))
                 .DistinctBy(d => d.Peer, StringComparer.OrdinalIgnoreCase)
-                .OrderBy(BlipDeviceCaption, StringComparer.CurrentCultureIgnoreCase).Take(30).ToList();
-            foreach (var group in BlipDevice.GroupDestinations(matches, owner.Split(':')[0]))
-                AddContactRows(rows, owner, group, null);
+                .OrderByDescending(d => d.Contact.Equals(query, StringComparison.OrdinalIgnoreCase))
+                .ThenBy(BlipDeviceCaption, StringComparer.CurrentCultureIgnoreCase).Take(30).ToList();
+            if (matches.Count > 0) rows.Children.Add(QuickText("Suggestions", 12, true));
+            foreach (var device in matches)
+            {
+                var name = BlipDeviceCaption(device);
+                var email = device.Contact;
+                if (email.Contains('@') && !email.Equals(name, StringComparison.OrdinalIgnoreCase))
+                    AddRecipientRow(rows, owner, name, device, null, suggestionDetail: email);
+                else
+                    AddRecipientRow(rows, owner, name, device, null);
+            }
             if (searched && searchMessage.Length > 0) rows.Children.Add(QuickText(searchMessage, 12));
             else if (matches.Count == 0) rows.Children.Add(QuickText("No matching people or devices.", 12));
             return;
@@ -419,12 +441,12 @@ public sealed partial class MainWindow
     }
 
     private void AddRecipientRow(StackPanel rows, string owner, string name, BlipDevice device, string? remove,
-                                 string? nickname = null, bool deviceShortcut = false)
+                                 string? nickname = null, bool deviceShortcut = false, string? suggestionDetail = null)
     {
         var row = new Grid { ColumnSpacing = 4 };
         row.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
         row.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
-        var detail = BlipDeviceDetail(device);
+        var detail = suggestionDetail == null ? BlipDeviceDetail(device) : suggestionDetail + " · " + BlipDeviceDetail(device);
         var title = BlipDestinationLabel(QuickText(name, 12), detail);
         if (device.History) row.Children.Add(new Border { Child = title, Padding = new Thickness(7, 3, 0, 3) });
         else

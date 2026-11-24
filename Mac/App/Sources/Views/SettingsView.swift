@@ -41,6 +41,7 @@ struct SettingsView: View {
                 }))
                 .help("Updates install when myDrive is in the background and idle.")
             Button("Check for updates") { app.checkForAppUpdate(showResult: true) }
+            BlipSettingsView(receiver: app.blip)
             Menu("Advanced") {
                 Button("Syncthing settings…") { app.dialog = .syncSettings }
                 Button("Open Syncthing web interface") { app.openSyncthingWeb() }
@@ -95,5 +96,22 @@ struct SettingsView: View {
             app.showBanner(.error, "Could not change login startup", error.localizedDescription)
         }
         app.settingsPref = PrefStore.shared.preferences
+    }
+}
+
+private struct BlipSettingsView: View {
+    @ObservedObject var receiver: BlipReceiver
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Blip").fontWeight(.semibold)
+            Toggle("Open approved senders’ links automatically",
+                   isOn: Binding(get: { receiver.autoOpen }, set: receiver.setAutoOpen))
+            Toggle("Keep Blip available in the background",
+                   isOn: Binding(get: { receiver.backgroundEnabled }, set: receiver.setBackground))
+            DisclosureGroup("Sender permissions") {
+                BlipSenderPermissionsView(receiver: receiver)
+            }
+        }
     }
 }

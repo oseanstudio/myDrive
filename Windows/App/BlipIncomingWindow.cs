@@ -21,11 +21,11 @@ internal sealed class BlipIncomingWindow : Window
     private BlipTransfer? transfer;
     private string signature="";
     private string? failure;
-    private readonly Func<PointInt32> anchor;
+    private readonly Func<RectInt32> anchor;
     public FrameworkElement Surface {get;}
     public string TransferId=>transfer?.Id??"";
     internal BlipReceivedCard FileCard=>fileCard;
-    public BlipIncomingWindow(Action<BlipTransfer> accept,Action settings,Func<PointInt32> anchor) {
+    public BlipIncomingWindow(Action<BlipTransfer> accept,Action settings,Func<RectInt32> anchor) {
         this.anchor=anchor;
         Title="myDrive · Incoming transfer";
         var content=new StackPanel{Spacing=8};
@@ -69,16 +69,13 @@ internal sealed class BlipIncomingWindow : Window
         if(signature!=next){signature=next;UpdateExpiry();}
         if (announce && !AppWindow.IsVisible)
         {
-            var point = anchor();
-            var area = DisplayArea.GetFromPoint(point, DisplayAreaFallback.Nearest).WorkArea;
-            var scale = TrayIcon.Scale(WindowNative.GetWindowHandle(this));
-            int width = Math.Min((int)(352 * scale), area.Width - 16);
-            int height = Math.Min((int)(360 * scale), area.Height - 16);
-            AppWindow.Resize(new SizeInt32(width, height));
-            int x = Math.Clamp(point.X - width, area.X + 8, Math.Max(area.X + 8, area.X + area.Width - width - 8));
-            int y = Math.Clamp(point.Y > area.Y + area.Height / 2 ? point.Y - height - 8 : point.Y + 32,
-                area.Y + 8, Math.Max(area.Y + 8, area.Y + area.Height - height - 8));
-            AppWindow.Move(new PointInt32(x, y));
+            var icon = anchor();
+            var (area, scale) = TrayPopupPlacement.MonitorAt(TrayPopupPlacement.Center(icon), WindowNative.GetWindowHandle(this));
+            int gap = (int)Math.Ceiling(4 * scale);
+            var size = new SizeInt32(Math.Min((int)(352 * scale), area.Width - 2 * gap),
+                Math.Min((int)(360 * scale), area.Height - 2 * gap));
+            AppWindow.Move(TrayPopupPlacement.Beside(icon, area, size, gap));
+            AppWindow.Resize(size);
             AppWindow.Show(false);
         }
     }

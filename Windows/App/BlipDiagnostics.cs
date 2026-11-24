@@ -50,6 +50,37 @@ public sealed partial class MainWindow
             activeDialog?.Hide();
             await showing;
         }
+
+        const string email = "person@example.test";
+        first.Contact = email;
+        first.UserName = email;
+        if (BlipPersonName(first, first.Account) != second.UserName)
+            throw new IOException("An email fallback hid the native Blip username.");
+        recipientInput!.Text = "person@";
+        await Task.Delay(100);
+        bool showsSuggestion(string name) => recipientRows!.Children.OfType<Grid>()
+            .SelectMany(row => row.Children.OfType<Button>())
+            .Any(button => button.Content is StackPanel panel &&
+                panel.Children.OfType<TextBlock>().Any(label => label.Text == name));
+        if (!showsSuggestion(second.UserName))
+            throw new IOException("Typing an email prefix did not show a local suggestion before submitting.");
+        searchedQuery = recipientQuery.Trim();
+        directoryRecipients = [new BlipDevice {
+            Peer = $"{Guid.NewGuid()}:{Guid.NewGuid()}", UserName = "Directory result", Contact = email
+        }];
+        RenderRecipientRows();
+        if (!showsSuggestion("Directory result"))
+            throw new IOException("The reply from directory search did not appear in suggestions.");
+        recipientInput.Text = "";
+        await Task.Delay(100);
+        searchedQuery = "";
+        directoryRecipients.Clear();
+
+        var workArea = new Windows.Graphics.RectInt32(-1920, 120, 1920, 1040);
+        var taskbarIcon = new Windows.Graphics.RectInt32(-210, 1166, 24, 24);
+        var position = TrayPopupPlacement.Beside(taskbarIcon, workArea, new(344, 420), 4);
+        if (position.X != -530 || position.Y + 420 != 1156)
+            throw new IOException("The tray menu placement ignored the secondary monitor's origin or taskbar edge.");
     }
 
     private static IEnumerable<Grid> BlipPickerRows(ListView list) =>

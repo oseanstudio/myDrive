@@ -3,7 +3,6 @@ import SwiftUI
 
 struct BlipView: View {
     @ObservedObject var receiver: BlipReceiver
-    @State var senders = false
     @State private var query = ""
 
     var body: some View {
@@ -15,17 +14,8 @@ struct BlipView: View {
                 Button("Send…") { receiver.chooseFilesToSend() }
                     .disabled(receiver.preparingSend || receiver.sending)
                 Button("Received Files") { receiver.openReceived() }
-                Spacer(minLength: 0)
-                Button { Task { await receiver.refreshConnection() } } label: {
-                    Image(systemName: "arrow.clockwise").frame(width: 24, height: 24)
-                }.buttonStyle(.plain).help("Refresh Blip").accessibilityLabel("Refresh Blip")
-                Menu {
-                    Toggle("Keep Blip available in the background",
-                           isOn: Binding(get: { receiver.backgroundEnabled }, set: receiver.setBackground))
-                } label: { Image(systemName: "gearshape") }
-                .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
-                .accessibilityLabel("Blip options")
             }.controlSize(.small)
+            if receiver.connected { recipientPanel }
             ForEach(receiver.transfers.filter { $0.direction == "Outgoing" && $0.isLive }) { transfer in
                 liveTransfer(transfer)
             }
@@ -43,7 +33,6 @@ struct BlipView: View {
                     }.frame(minHeight: 44)
                 }
             }
-            if receiver.connected { recipientPanel }
             if receiver.canSetUpBlip {
                 Button("Set up Blip…", action: receiver.setUpBlip).controlSize(.small)
             }
@@ -64,17 +53,18 @@ struct BlipView: View {
             ForEach(receiver.transfers.filter { $0.direction != "Outgoing" && $0.isLive }) { transfer in
                 liveTransfer(transfer)
             }
-            DisclosureGroup("Sender permissions", isExpanded: $senders) {
-                BlipSenderPermissionsView(receiver: receiver)
-            }.font(.system(size: 12))
         }.onChange(of: receiver.recipientOwner) {
             query = ""
-        }.onChange(of: query) { _, text in receiver.suggestRecipients(text) }
+            receiver.suggestRecipients("")
+        }
     }
 
     private var recipientPanel: some View {
         VStack(alignment: .leading, spacing: 4) {
-            BlipSearchField(text: $query) { receiver.suggestRecipients(query, immediate: true) }
+            BlipSearchField(text: Binding(get: { query }, set: { text in
+                query = text
+                receiver.suggestRecipients(text)
+            })) { receiver.suggestRecipients(query, immediate: true) }
                 .frame(height: 24)
             let term = query.trimmingCharacters(in: .whitespacesAndNewlines)
             let available = receiver.recipients.filter { !receiver.isArchived($0) }
@@ -85,9 +75,16 @@ struct BlipView: View {
                 }
                 let searched = term.caseInsensitiveCompare(receiver.directoryQuery) == .orderedSame
                 let remote = searched ? receiver.directoryRecipients.filter { !receiver.isArchived($0) } : []
-                let matches = unique(known + remote)
+                let matches = unique(remote + known, query: term)
+                if !matches.isEmpty {
+                    Text("Suggestions").font(.caption).fontWeight(.semibold)
+                }
                 ForEach(matches.prefix(30)) { peer in
-                    recipientRow(receiver.recipientLabel(peer), peer: peer)
+                    let name = receiver.recipientLabel(peer)
+                    let email = peer.contact
+                    recipientRow(name, peer: peer,
+                                 detail: email?.contains("@") == true && email?.caseInsensitiveCompare(name) != .orderedSame
+                                     ? email : nil)
                 }
                 if searched && !receiver.directorySearchStatus.isEmpty {
                     Text(receiver.directorySearchStatus).font(.caption).foregroundStyle(.secondary)
@@ -168,10 +165,15 @@ struct BlipView: View {
         }
     }
 
-    private func unique(_ peers: [BlipPeer]) -> [BlipPeer] {
+    private func unique(_ peers: [BlipPeer], query: String) -> [BlipPeer] {
         var seen = Set<String>()
         return peers.filter { seen.insert($0.peer.lowercased()).inserted }
-            .sorted { receiver.recipientLabel($0).localizedStandardCompare(receiver.recipientLabel($1)) == .orderedAscending }
+            .sorted {
+                let firstExact = $0.contact?.caseInsensitiveCompare(query) == .orderedSame
+                let secondExact = $1.contact?.caseInsensitiveCompare(query) == .orderedSame
+                if firstExact != secondExact { return firstExact }
+                return receiver.recipientLabel($0).localizedStandardCompare(receiver.recipientLabel($1)) == .orderedAscending
+            }
     }
 
     private func accountPart(_ peer: String) -> String {
@@ -183,7 +185,8 @@ struct BlipView: View {
     }
 
     private func recipientRow(_ name: String, peer: BlipPeer?, removing: String? = nil,
-                              nickname: String? = nil, person: Bool = false, deviceShortcut: Bool = false) -> some View {
+                              nickname: String? = nil, person: Bool = false, deviceShortcut: Bool = false,
+                              detail: String? = nil) -> some View {
         HStack(spacing: 4) {
             if let peer {
                 Button { receiver.chooseFiles(to: peer) } label: {
@@ -192,10 +195,13 @@ struct BlipView: View {
                             .fill(peer.online == true ? Color.green : Color.secondary.opacity(peer.online == nil ? 0.26 : 0.52))
                             .frame(width: 6, height: 6)
                             .accessibilityHidden(true)
-                        Text(name).lineLimit(1)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(name).lineLimit(1)
+                            if let detail { Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
+                        }
                     }.frame(maxWidth: .infinity, alignment: .leading)
                 }.accessibilityLabel("Send files to " + name)
-                    .accessibilityHint(receiver.deviceAvailability(peer))
+                    .accessibilityHint([detail, receiver.deviceAvailability(peer)].compactMap { $0 }.joined(separator: ", "))
                     .help(name + " · " + receiver.deviceAvailability(peer))
                     .buttonStyle(.plain)
                     .disabled(receiver.sending || receiver.preparingSend)
@@ -299,9 +305,6 @@ struct BlipSenderPermissionsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Toggle("Open approved senders’ web links",
-                   isOn: Binding(get: { receiver.autoOpen }, set: receiver.setAutoOpen))
-                .toggleStyle(.checkbox)
             let groups = Dictionary(grouping: receiver.peers) { $0.peer.split(separator: ":").first?.lowercased() ?? "" }
             ForEach(groups.keys.sorted(), id: \.self) { user in
                 let devices = (groups[user] ?? []).sorted {

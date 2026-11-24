@@ -457,13 +457,6 @@ struct BlipQueuedSend: Codable, Identifiable {
         if enabled && activity == nil {activity=ProcessInfo.processInfo.beginActivity(options:.userInitiatedAllowingIdleSystemSleep,reason:"Watch for incoming Blip transfers")}
         if !enabled,let activity {ProcessInfo.processInfo.endActivity(activity);self.activity=nil}
     }
-    func refreshConnection() async {
-        if backgroundProcess == nil { nextHostAttempt = .distantPast }
-        nextReceiveSetup = .distantPast
-        nextReceiveAttempt.removeAll()
-        await refresh()
-    }
-
     func refresh() async {
         guard !refreshing else { return }; refreshing = true; defer { refreshing = false }
         ensureBackground()
