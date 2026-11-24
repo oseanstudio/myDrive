@@ -20,7 +20,9 @@ public sealed partial class MainWindow
         recentRecipients = [Recent(first)];
         RenderRecipientRows();
         var mainGroup = recipientRows?.Children.OfType<Expander>().SingleOrDefault();
-        if (mainGroup?.Header is not TextBlock { Text: "Fixture contact" } || mainGroup.IsExpanded ||
+        if (mainGroup?.Header is not Grid header ||
+            header.Children.OfType<TextBlock>().SingleOrDefault()?.Text != "Fixture contact" ||
+            header.Children.OfType<Button>().Count() != 2 || mainGroup.IsExpanded ||
             mainGroup.Content is not StackPanel mainDevices || mainDevices.Children.Count != 2 ||
             !recipientRows!.Children.OfType<Grid>().SelectMany(row => row.Children.OfType<Button>())
                 .Any(button => button.Content is TextBlock { Text: "Studio Mac" }))
@@ -85,7 +87,9 @@ public sealed partial class MainWindow
             recentRecipients = blipSnapshot.Devices.Take(2).Select(Recent).ToList();
             RenderRecipientRows();
             var contact = recipientRows?.Children.OfType<Expander>().SingleOrDefault();
-            if (contact?.Header is not TextBlock { Text: "Studio tester" } || contact.Content is not StackPanel devices ||
+            if (contact?.Header is not Grid contactHeader ||
+                contactHeader.Children.OfType<TextBlock>().SingleOrDefault()?.Text != "Studio tester" ||
+                contact.Content is not StackPanel devices ||
                 devices.Children.Count != 4 || devices.Children.OfType<Grid>().Any(row =>
                     row.Children.OfType<StackPanel>().Single().Children.OfType<Button>()
                         .Select(button => Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(button).Split(' ')[0])

@@ -297,12 +297,20 @@ public sealed partial class MainWindow
         expander.Collapsed += (_, _) => expandedContacts.Remove(group.Key);
         if (saved != null && group.Select(d => saved.GetValueOrDefault(d.Peer)).FirstOrDefault(r => r != null) is { } entry)
         {
-            var actions = new MenuFlyout();
-            MenuAction(actions, "Rename contact…", () => _ = RenameRecentRecipient(owner, entry.Account, contact,
-                entry.person_nickname, person: true));
-            MenuAction(actions, "Archive recent devices", () => _ = UpdateRecentRecipients("archive", owner,
-                target: entry.Account));
-            expander.ContextFlyout = actions;
+            var header = new Grid { ColumnSpacing = 4 };
+            header.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
+            header.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
+            header.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
+            header.Children.Add(QuickText(contact, 12, true));
+            var rename = QuickIcon("\uE70F", "Rename contact " + contact,
+                () => _ = RenameRecentRecipient(owner, entry.Account, contact, entry.person_nickname, person: true));
+            var archive = QuickIcon("\uE711", "Archive recent devices for " + contact,
+                () => _ = UpdateRecentRecipients("archive", owner, target: entry.Account));
+            Grid.SetColumn(rename, 1);
+            Grid.SetColumn(archive, 2);
+            header.Children.Add(rename);
+            header.Children.Add(archive);
+            expander.Header = header;
         }
         rows.Children.Add(expander);
     }
