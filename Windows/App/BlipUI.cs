@@ -478,7 +478,7 @@ public sealed partial class MainWindow
             send.HorizontalAlignment = HorizontalAlignment.Stretch;
             send.HorizontalContentAlignment = HorizontalAlignment.Left;
             send.Tag = device;
-            var paste = FlatBlipButton(QuickIcon("\uE77F", "Paste and send to " + title.Text + ", " + detail,
+            var paste = FlatBlipButton(BlipPasteButton(title.Text + ", " + detail,
                 () => SelectDevice(device, paste: true)));
             var rename = BlipRecipientOptions(BlipDeviceName(device) + ", " + detail, () =>
                 EditRecipientName(dialog, content, localPeer, device, title, send, paste, grouped));

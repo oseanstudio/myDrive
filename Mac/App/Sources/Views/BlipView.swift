@@ -1,9 +1,11 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct BlipView: View {
     @ObservedObject var receiver: BlipReceiver
     @State private var query = ""
+    @State private var dropPeer: String?
 
     var body: some View {
         LazyVStack(alignment: .leading, spacing: 8) {
@@ -219,8 +221,8 @@ struct BlipView: View {
                 Text(name).fontWeight(person ? .semibold : .regular)
                     .lineLimit(1).help(name).frame(maxWidth: .infinity, alignment: .leading)
             }
-            if let peer, deviceShortcut || removing != nil {
-                Button { receiver.pasteAndSend(to: peer) } label: { Image(systemName: "clipboard") }
+            if let peer {
+                Button { receiver.pasteAndSend(to: peer) } label: { Text("Paste").frame(minWidth: 42) }
                     .accessibilityLabel("Paste and send to " + name)
                     .help("Paste and send")
                     .disabled(receiver.sending || receiver.preparingSend)
@@ -241,7 +243,36 @@ struct BlipView: View {
                 .accessibilityLabel("Options for " + name)
                 .help("Options for " + name)
             }
-        }.controlSize(.small).font(.system(size: 12)).frame(minHeight: 27)
+        }
+        .controlSize(.small).font(.system(size: 12)).frame(minHeight: 27)
+        .background {
+            if let peer, dropPeer == peer.id {
+                RoundedRectangle(cornerRadius: 4).fill(Color.accentColor.opacity(0.14))
+            }
+        }
+        .contentShape(Rectangle())
+        .onDrop(of: [.fileURL], isTargeted: dropTarget(peer?.id)) { acceptDrop($0, to: peer) }
+    }
+
+    private func dropTarget(_ id: String?) -> Binding<Bool> {
+        Binding(
+            get: { id != nil && dropPeer == id },
+            set: { targeted in
+                guard let id else { return }
+                if targeted { dropPeer = id }
+                else if dropPeer == id { dropPeer = nil }
+            }
+        )
+    }
+
+    private func acceptDrop(_ providers: [NSItemProvider], to peer: BlipPeer?) -> Bool {
+        guard let peer, receiver.connected, !receiver.sending, !receiver.preparingSend else { return false }
+        let owner = receiver.recipientOwner
+        return FileDropInput.receive(providers) { urls in
+            guard owner == receiver.recipientOwner else { return }
+            if urls.isEmpty { receiver.reportSend("Drop up to 256 available files or folders."); return }
+            receiver.send(.forFiles(urls), to: peer)
+        }
     }
 
     private func liveTransfer(_ transfer: BlipTransfer) -> some View {

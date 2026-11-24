@@ -602,15 +602,17 @@ class TransferView:
             select.set_tooltip_text("Send files to " + name + " · " + self.device_availability(peer))
             select.set_hexpand(True)
             controls.append(select)
+            drop = Gtk.DropTarget.new(Gdk.FileList.__gtype__, Gdk.DragAction.COPY)
+            drop.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+            drop.connect("drop", lambda _, value, x, y: self.drop_on_recipient(owner, peer, value))
+            controls.add_controller(drop)
             actions.append(("Send folder…", lambda: self.choose_files(folder=True, peer=peer, owner=owner)))
-            if not (remove or device_shortcut):
-                actions.append(("Paste and send", lambda: self.paste(peer, owner)))
         else:
             name_label = label(name, "heading" if person else None)
             name_label.set_hexpand(True)
             controls.append(name_label)
-        if peer and (remove or device_shortcut):
-            paste = Gtk.Button(icon_name="edit-paste-symbolic", tooltip_text="Paste and send to " + name)
+        if peer:
+            paste = Gtk.Button(label="Paste", width_request=55, tooltip_text="Paste and send to " + name)
             paste.connect("clicked", lambda *_: self.paste(peer, owner))
             controls.append(paste)
         if device_shortcut:
@@ -627,6 +629,16 @@ class TransferView:
             controls.append(menu(actions, "emblem-system-symbolic" if remove or device_shortcut
                                  else "view-more-symbolic", "Options for " + name))
         self.recipient_rows.append(controls)
+
+    def drop_on_recipient(self, owner, peer, value):
+        if self.owner(self.snapshot) != owner or (peer not in self.visible_recipients()
+                and peer not in self.names(self.directory_recipients, self.catalog(owner))):
+            return False
+        paths = self.app.dropped_paths(value)
+        if not paths:
+            return False
+        self.send(peer, paths, expected_owner=owner)
+        return True
 
     def accept(self, transfer):
         self.app.work("blip", "Receive transfer", lambda: self.blip.request("accept-manual", transfer["transfer_id"]),
@@ -753,7 +765,7 @@ class TransferView:
             send.set_child(self.destination_label(name, peer))
             send.set_tooltip_text(name + " · " + self.device_availability(peer))
             send.set_hexpand(True)
-            paste = Gtk.Button(icon_name="edit-paste-symbolic", tooltip_text="Paste and send to " + name)
+            paste = Gtk.Button(label="Paste", width_request=55, tooltip_text="Paste and send to " + name)
             paste.connect("clicked", lambda _, peer=peer: activate(peer, paste=True))
             def update_name(updated, send=send, paste=paste, peer=peer):
                 send.set_child(self.destination_label(updated, peer))
@@ -810,7 +822,10 @@ class TransferView:
             return {}
         devices = [d for d in self.snapshot.get("devices", [])
                    if not d.get("history") and str(d.get("peer", "")).lower() != identity]
-        return self.names(devices, self.catalog(identity))
+        remembered = {row["peer"] for row in self.recent_recipients if not row.get("archived")}
+        people = [p for p in self.snapshot.get("people", [])
+                  if p.get("recent") or str(p.get("peer", "")).lower() in remembered]
+        return self.names(devices + people, self.catalog(identity))
 
     def is_archived(self, peer):
         return any(entry.get("archived") and entry["peer"] == peer for entry in self.recent_recipients)

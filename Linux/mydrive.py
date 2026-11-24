@@ -565,9 +565,16 @@ class MyDrive(Gtk.Application):
         if path:
             self.open_uri(Gio.File.new_for_path(str(Path(path).expanduser())).get_uri())
 
-    def dropped(self, controller, value, x, y):
+    @staticmethod
+    def dropped_paths(value):
         paths = [file.get_path() for file in value.get_files()]
-        if not paths or not all(path and (Path(path).is_file() or Path(path).is_dir()) for path in paths):
+        if not 0 < len(paths) <= 256 or not all(path and (Path(path).is_file() or Path(path).is_dir()) for path in paths):
+            return []
+        return list(dict.fromkeys(paths))
+
+    def dropped(self, controller, value, x, y):
+        paths = self.dropped_paths(value)
+        if not paths:
             return False
         self.handle_drop(paths)
         return True
@@ -1219,6 +1226,23 @@ class MyDrive(Gtk.Application):
             other_heading = other_owned.get_next_sibling()
             assert heading.get_label() == "My devices"
             assert other_owned.get_first_child().get_child().get_first_child().get_label() == "Fixture studio"
+            drop_targets = [target for target in recipient.observe_controllers() if isinstance(target, Gtk.DropTarget)]
+            assert len(drop_targets) == 1
+            with TemporaryDirectory() as directory:
+                fixture = Path(directory, "dropped.txt")
+                fixture.write_text("Generated drop fixture", encoding="utf-8")
+                class DropSelection:
+                    def get_files(self):
+                        return [Gio.File.new_for_path(str(fixture)), Gio.File.new_for_path(directory)]
+                send = view.send
+                drops = []
+                try:
+                    view.send = lambda recipient, paths, expected_owner: drops.append((recipient, paths, expected_owner))
+                    assert view.drop_on_recipient(view.recipient_owner, peer, DropSelection())
+                    assert drops == [(peer, [str(fixture), directory], view.recipient_owner)]
+                    assert not view.drop_on_recipient("old-account", peer, DropSelection())
+                finally:
+                    view.send = send
             assert other_heading.get_label() == "Other devices"
             assert other_heading.get_next_sibling() == view.recipient_rows.get_last_child()
             external = view.recipient_rows.get_last_child()
@@ -1268,7 +1292,7 @@ class MyDrive(Gtk.Application):
                                                   lambda: abandoned.append(True))
             actions = paste_picker.get_row_at_index(0).get_child()
             paste_action = actions.get_first_child().get_next_sibling()
-            assert paste_action.get_icon_name() == "edit-paste-symbolic"
+            assert paste_action.get_label() == "Paste"
             assert actions.get_last_child().get_icon_name() == "document-edit-symbolic"
             paste_action.emit("clicked")
             paste_action.emit("clicked")
@@ -1328,7 +1352,7 @@ class MyDrive(Gtk.Application):
             target = recipients.get_row_at_index(3)
             send = target.get_child().get_first_child()
             edit = target.get_child().get_last_child()
-            assert edit.get_prev_sibling().get_icon_name() == "edit-paste-symbolic"
+            assert edit.get_prev_sibling().get_label() == "Paste"
             assert not chosen and not target.get_activatable()
             edit.emit("clicked")
             assert not chosen

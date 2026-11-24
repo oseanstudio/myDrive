@@ -401,6 +401,15 @@ public sealed partial class MainWindow
         return options;
     }
 
+    private static Button BlipPasteButton(string name, Action paste)
+    {
+        var button = QuickButton("Paste", paste);
+        button.MinWidth = 55;
+        AutomationProperties.SetName(button, "Paste and send to " + name);
+        ToolTipService.SetToolTip(button, "Paste and send to " + name);
+        return button;
+    }
+
     private static string FirstName(params string?[] names) =>
         names.FirstOrDefault(name => !string.IsNullOrWhiteSpace(name)) ?? "Device";
 
@@ -466,13 +475,14 @@ public sealed partial class MainWindow
             MenuAction(alternatives, "Paste and send", () => _ = SendToBlipRecipient(owner, device, paste: true));
             send.ContextFlyout = alternatives;
             row.Children.Add(send);
+            EnableRecipientDrop(row, owner, device, name);
         }
-        if (remove != null || deviceShortcut)
+        if (!device.History || remove != null || deviceShortcut)
         {
             var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 1, VerticalAlignment = VerticalAlignment.Center };
             if (!device.History)
             {
-                var paste = QuickIcon("\uE77F", "Paste and send to " + name,
+                var paste = BlipPasteButton(name,
                     () => _ = SendToBlipRecipient(owner, device, paste: true));
                 paste.IsEnabled = BlipRunning && !busy;
                 actions.Children.Add(paste);

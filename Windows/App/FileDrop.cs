@@ -26,13 +26,46 @@ public sealed partial class MainWindow
             List<string> paths;
             try
             {
-                var items = await e.DataView.GetStorageItemsAsync();
-                paths = items.Select(item => item.Path).Where(path => !string.IsNullOrWhiteSpace(path))
-                    .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+                paths = await DroppedPaths(e.DataView);
             }
             catch (Exception error) { Error(error); return; }
             finally { deferral.Complete(); }
             if (paths.Count > 0) await HandleFileDrop(paths);
+        };
+    }
+
+    private static async Task<List<string>> DroppedPaths(DataPackageView data)
+    {
+        var items = await data.GetStorageItemsAsync();
+        if (items.Count is 0 or > 256 || items.Any(item => string.IsNullOrEmpty(item.Path) || !Path.IsPathFullyQualified(item.Path)))
+            throw new IOException("Drop up to 256 available files or folders.");
+        return items.Select(item => item.Path).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+    }
+
+    private void EnableRecipientDrop(Grid row, string owner, BlipDevice recipient, string label)
+    {
+        bool available() => !busy && modalDepth == 0 && BlipRunning &&
+            owner.Equals(BlipOwner, StringComparison.OrdinalIgnoreCase);
+        row.Background = new Microsoft.UI.Xaml.Media.SolidColorBrush(Microsoft.UI.Colors.Transparent);
+        row.AllowDrop = true;
+        row.DragOver += (_, e) =>
+        {
+            if (!e.DataView.Contains(StandardDataFormats.StorageItems)) return;
+            e.Handled = true;
+            e.AcceptedOperation = available() ? DataPackageOperation.Copy : DataPackageOperation.None;
+            if (available()) e.DragUIOverride.Caption = "Send to " + label;
+        };
+        row.Drop += async (_, e) =>
+        {
+            if (!e.DataView.Contains(StandardDataFormats.StorageItems)) return;
+            e.Handled = true;
+            if (!available() || diagnosticMode) return;
+            var deferral = e.GetDeferral();
+            List<string> paths;
+            try { paths = await DroppedPaths(e.DataView); }
+            catch (Exception error) { Error(error); return; }
+            finally { deferral.Complete(); }
+            if (available()) await DispatchBlipSend(recipient, paths, owner);
         };
     }
 
@@ -42,16 +75,19 @@ public sealed partial class MainWindow
     {
         var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(125) };
         PointerPosition? start = null;
+        PointerPosition? lastIdlePosition = null;
         int hover = 0;
         timer.Tick += (_, _) =>
         {
-            if (!LeftMousePressed() || !GetCursorPos(out var pointer))
+            if (!GetCursorPos(out var pointer)) return;
+            if (!LeftMousePressed())
             {
+                lastIdlePosition = pointer;
                 start = null;
                 hover = 0;
                 return;
             }
-            start ??= pointer;
+            start ??= lastIdlePosition ?? pointer;
             if (AppWindow.IsVisible || busy || modalDepth > 0 ||
                 Math.Abs(pointer.X - start.Value.X) + Math.Abs(pointer.Y - start.Value.Y) < 20 ||
                 tray?.Contains(new(pointer.X, pointer.Y)) != true)
@@ -59,7 +95,11 @@ public sealed partial class MainWindow
                 hover = 0;
                 return;
             }
-            if (++hover == 2) SetMode(true, activate: false);
+            if (++hover == 2)
+            {
+                NavigateQuick("transfers");
+                SetMode(true, activate: false);
+            }
         };
         Closed += (_, _) => timer.Stop();
         timer.Start();

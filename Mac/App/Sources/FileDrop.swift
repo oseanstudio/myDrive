@@ -3,10 +3,12 @@ import UniformTypeIdentifiers
 
 @MainActor final class StatusFileDropView: NSView {
     private weak var button: NSStatusBarButton?
+    private let showMenu: () -> Void
     private let receive: ([URL]) -> Void
 
-    init(button: NSStatusBarButton, receive: @escaping ([URL]) -> Void) {
+    init(button: NSStatusBarButton, showMenu: @escaping () -> Void, receive: @escaping ([URL]) -> Void) {
         self.button = button
+        self.showMenu = showMenu
         self.receive = receive
         super.init(frame: button.bounds)
         autoresizingMask = [.width, .height]
@@ -19,8 +21,10 @@ import UniformTypeIdentifiers
     override func rightMouseDown(with event: NSEvent) { button?.rightMouseDown(with: event) }
 
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
-        sender.draggingPasteboard.canReadObject(forClasses: [NSURL.self],
-            options: [.urlReadingFileURLsOnly: true]) ? .copy : []
+        guard sender.draggingPasteboard.canReadObject(forClasses: [NSURL.self],
+            options: [.urlReadingFileURLsOnly: true]) else { return [] }
+        DispatchQueue.main.async { [showMenu] in showMenu() }
+        return .copy
     }
 
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
@@ -32,23 +36,39 @@ import UniformTypeIdentifiers
     }
 }
 
-@MainActor extension AppState {
-    func receiveDropProviders(_ providers: [NSItemProvider]) -> Bool {
+@MainActor enum FileDropInput {
+    static func receive(_ providers: [NSItemProvider], then handle: @escaping @MainActor ([URL]) -> Void) -> Bool {
         let files = providers.filter { $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) }
         guard !files.isEmpty else { return false }
-        Task {
-            var urls: [URL] = []
+        Task.detached {
+            guard files.count <= 256 else {
+                await handle([])
+                return
+            }
+            var urls = [URL]()
+            var seen = Set<URL>()
             for provider in files {
                 let url = await withCheckedContinuation { (continuation: CheckedContinuation<URL?, Never>) in
                     _ = provider.loadDataRepresentation(forTypeIdentifier: UTType.fileURL.identifier) { data, _ in
                         continuation.resume(returning: data.flatMap { URL(dataRepresentation: $0, relativeTo: nil) })
                     }
                 }
-                if let url { urls.append(url) }
+                guard let path = url?.standardizedFileURL, path.isFileURL, (path.host ?? "").isEmpty,
+                      FileManager.default.fileExists(atPath: path.path) else {
+                    await handle([])
+                    return
+                }
+                if seen.insert(path).inserted { urls.append(path) }
             }
-            handleFileDrop(urls)
+            await handle(urls)
         }
         return true
+    }
+}
+
+@MainActor extension AppState {
+    func receiveDropProviders(_ providers: [NSItemProvider]) -> Bool {
+        FileDropInput.receive(providers, then: handleFileDrop)
     }
 
     func handleFileDrop(_ candidates: [URL]) {

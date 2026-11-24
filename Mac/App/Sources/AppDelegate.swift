@@ -137,7 +137,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             button.target = self
             button.action = #selector(statusItemClicked(_:))
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
-            button.addSubview(StatusFileDropView(button: button) { [weak self] urls in
+            button.addSubview(StatusFileDropView(button: button, showMenu: { [weak self] in
+                self?.showPopover(view: .transfers, activate: false)
+            }) { [weak self] urls in
                 guard let self else { return }
                 self.showPopover()
                 self.appState.handleFileDrop(urls)
@@ -244,7 +246,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         popover.contentViewController = NSHostingController(rootView: root)
     }
 
-    func showPopover(view target: PopupViewKind? = nil) {
+    func showPopover(view target: PopupViewKind? = nil, activate: Bool = true) {
         if let target { appState.view = target }
         guard let button = statusItem?.button else { return }
         if popover.isShown { return }
@@ -253,9 +255,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
         // An accessory app is not active by default; without activation the
         // transient popover closes immediately after showing.
-        NSApp.activate(ignoringOtherApps: true)
+        if activate { NSApp.activate(ignoringOtherApps: true) }
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-        popover.contentViewController?.view.window?.makeKey()
+        if activate { popover.contentViewController?.view.window?.makeKey() }
         refreshWindowAppearance()
         appState.popoverVisible = true
         appState.checkForAppUpdate(onOpen: true)

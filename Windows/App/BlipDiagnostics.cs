@@ -34,6 +34,10 @@ public sealed partial class MainWindow
             names.Count(fields => fields.SequenceEqual(new[] { "Fixture contact", "Online" })) != 1 ||
             mainRows.Count != 2)
             throw new IOException("Blip must show the person once and the owned device once, despite duplicate history and device data.");
+        if (mainRows.Any(row => !row.AllowDrop || !row.Children.OfType<StackPanel>()
+                .SelectMany(actions => actions.Children.OfType<Button>())
+                .Any(button => button.Content is "Paste" && button.MinWidth >= 55)))
+            throw new IOException("Each destination row needs a full drop target and a wide Paste button.");
         blipSnapshot.Devices.Remove(own);
 
         var showing = ShowBlipSend();

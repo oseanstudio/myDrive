@@ -297,8 +297,8 @@ struct BlipSendPayload {
         send.setAccessibilityLabel("Send to " + label + ", " + state)
         send.translatesAutoresizingMaskIntoConstraints = false
         cell.addSubview(send)
-        let paste = NSButton(title: "", target: self, action: #selector(pasteToDevice(_:)))
-        paste.image = NSImage(systemSymbolName: "clipboard", accessibilityDescription: nil)
+        let paste = NSButton(title: "Paste", target: self, action: #selector(pasteToDevice(_:)))
+        paste.font = .systemFont(ofSize: 12)
         paste.isBordered = false
         paste.tag = row
         paste.toolTip = "Paste and send to " + label
@@ -324,7 +324,7 @@ struct BlipSendPayload {
             send.bottomAnchor.constraint(equalTo: cell.bottomAnchor),
             paste.trailingAnchor.constraint(equalTo: edit.leadingAnchor, constant: -2),
             paste.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
-            paste.widthAnchor.constraint(equalToConstant: 24),
+            paste.widthAnchor.constraint(equalToConstant: 55),
             paste.heightAnchor.constraint(equalToConstant: 24),
             edit.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -5),
             edit.centerYAnchor.constraint(equalTo: cell.centerYAnchor),

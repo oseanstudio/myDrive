@@ -1,7 +1,7 @@
 [Desktop Entry]
 Name=myDrive
 Comment=Browse storage, sync folders and send files
-Exec=myDrive
+Exec=myDrive --send-files %F
 Icon=net.oseanstudio.myDrive
 Terminal=false
 Type=Application
