@@ -114,8 +114,12 @@ private final class BlipThumbnailReply:@unchecked Sendable {
         }
     }
     static func writeText(_ text: String, clipboard: NSPasteboard) throws {
+        let entry = NSPasteboardItem()
+        guard entry.setString(text, forType: .string) else {
+            throw BlipReceiverError.message("The received text could not be copied.")
+        }
         clipboard.clearContents()
-        guard clipboard.setString(text, forType: .string) else {
+        guard clipboard.writeObjects([entry]) else {
             throw BlipReceiverError.message("The received text could not be copied.")
         }
     }

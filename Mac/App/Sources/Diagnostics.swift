@@ -177,9 +177,7 @@ enum Diagnostics {
         let email = "fixture@example.test"
         let board = NSPasteboard.withUniqueName()
         defer { board.releaseGlobally() }
-        guard board.setString(email, forType: .string) else {
-            throw BlipReceiverError.message("The sign-in clipboard fixture could not be prepared.")
-        }
+        try BlipFileActions.writeText(email, clipboard: board)
         let alert = NSAlert()
         alert.messageText = "Sign in to Blip"
         alert.addButton(withTitle: "Send code")
