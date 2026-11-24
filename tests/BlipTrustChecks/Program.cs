@@ -45,6 +45,11 @@ Check(ownMac.RecipientCaption(account, ownMac.DisplayName, ownMac.ContactName, t
 var hiddenPhone = new BlipDevice { Peer = phonePeer, Kind = "Phone", Name = "Phone", UserName = "Studio tester" };
 Check(hiddenPhone.ToString() == "Studio tester" && hiddenPhone.DisplayName == "Phone" && !hiddenPhone.HasDeviceName,
     "a missing device name keeps the remote username and a readable fallback");
+var anotherContactDevice = new BlipDevice { Peer = peer, Kind = "Desktop", UserName = "Studio tester" };
+var targets = BlipDevice.GroupDestinations(new[] { ownMac, hiddenPhone, anotherContactDevice }, account).ToList();
+Check(targets.Count == 2 && targets[0].Single() == ownMac &&
+    targets[1].SequenceEqual(new[] { hiddenPhone, anotherContactDevice }),
+    "several unnamed endpoints appear under one contact while owned devices stay separate");
 var blankPeer = peer.Split(':')[0] + ":" + Guid.NewGuid();
 catalog.Merge(status, new[] { new BlipDevice { Peer = blankPeer, Kind = "Laptop", UserName = "Studio tester" } }, Array.Empty<BlipTransfer>(), Array.Empty<string>());
 var restoredContact = catalog.Merge(status, new[] { new BlipDevice { Peer = blankPeer, History = true } },

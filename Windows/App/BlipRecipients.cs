@@ -38,6 +38,7 @@ public sealed partial class MainWindow
     private string recentOwner = "", recipientQuery = "", searchedQuery = "", searchMessage = "";
     private bool searchingRecipients;
     private bool archivesExpanded;
+    private readonly HashSet<string> expandedContacts = new(StringComparer.OrdinalIgnoreCase);
     private TextBox? recipientInput;
     private StackPanel? recipientRows;
 
@@ -83,9 +84,9 @@ public sealed partial class MainWindow
         var person = BlipPersonName(device, account);
         bool distinguish = !string.IsNullOrWhiteSpace(recent?.nickname) ||
             !string.IsNullOrWhiteSpace(device.Nickname) ||
-            known.Any(other => !other.History && !other.Peer.Equals(device.Peer, StringComparison.OrdinalIgnoreCase) &&
+            (device.HasDeviceName && known.Any(other => !other.History && !other.Peer.Equals(device.Peer, StringComparison.OrdinalIgnoreCase) &&
                 other.Peer.StartsWith(account + ":", StringComparison.OrdinalIgnoreCase) &&
-                !IsRecipientArchived(BlipOwner, other.Peer));
+                !IsRecipientArchived(BlipOwner, other.Peer)));
         return device.RecipientCaption(BlipOwner.Split(':')[0], name, person, distinguish);
     }
 
@@ -98,6 +99,7 @@ public sealed partial class MainWindow
             .Concat(known.Select(other => other.UserName))
             .Concat(saved.Select(r => r.person)).Append(device.Contact)
             .Concat(known.Select(other => other.Contact))
+            .Concat(saved.Select(r => r.FallbackLabel).Where(label => label != "Device"))
             .FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
     }
 
@@ -145,6 +147,7 @@ public sealed partial class MainWindow
             recentOwner = owner;
             recentRecipients = new();
             archivesExpanded = false;
+            expandedContacts.Clear();
             recipientQuery = searchedQuery = searchMessage = "";
             directoryRecipients = new();
             if (owner.Length > 0) _ = UpdateRecentRecipients("list", owner);
@@ -203,14 +206,16 @@ public sealed partial class MainWindow
         if (query.Length > 0)
         {
             bool searched = query.Equals(searchedQuery, StringComparison.OrdinalIgnoreCase);
-            var matches = devices.Where(d => new[] { d.ContactName, d.Contact, BlipDeviceName(d), d.Name }
+            var matches = devices.Where(d => new[] { d.ContactName, d.Contact, BlipDeviceName(d), d.Name,
+                    BlipPersonName(d, d.Account) ?? "" }
                 .Any(text => text.Contains(query, StringComparison.CurrentCultureIgnoreCase)))
                 .Concat(searched ? directoryRecipients : new List<BlipDevice>())
                 .Where(d => BlipTrustPolicy.ExactPeer(d.Peer) && !d.Peer.Equals(owner, StringComparison.OrdinalIgnoreCase)
                     && !IsRecipientArchived(owner, d.Peer))
                 .DistinctBy(d => d.Peer, StringComparer.OrdinalIgnoreCase)
                 .OrderBy(BlipDeviceCaption, StringComparer.CurrentCultureIgnoreCase).Take(30).ToList();
-            foreach (var device in matches) AddRecipientRow(rows, owner, BlipDeviceCaption(device), device, null);
+            foreach (var group in BlipDevice.GroupDestinations(matches, owner.Split(':')[0]))
+                AddContactRows(rows, owner, group, null);
             if (searched && searchMessage.Length > 0) rows.Children.Add(QuickText(searchMessage, 12));
             else if (matches.Count == 0) rows.Children.Add(QuickText(searched ? "No matching Blip devices." : "Press Enter to search Blip.", 12));
             return;
@@ -229,39 +234,29 @@ public sealed partial class MainWindow
             }
         }
         var listedDevices = myDevices.Select(d => d.Peer).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var otherRecents = recentRecipients.Where(r => r.archived == null && !listedDevices.Contains(r.peer)).ToList();
-        if (otherRecents.Count > 0) rows.Children.Add(QuickText("Recent recipients", 12, true));
-        foreach (var group in otherRecents.GroupBy(r => r.Account))
-        {
-            var entries = group.ToList();
-            bool own = owner.StartsWith(group.Key + ":", StringComparison.OrdinalIgnoreCase);
-            bool grouped = entries.Count > 1;
-            var person = own ? "Your devices" : FirstName(
-                BlipPersonName(new BlipDevice { Peer = entries[0].peer }, group.Key), entries[0].FallbackLabel);
-            if (grouped)
-                AddRecipientRow(rows, owner, person, null, group.Key, entries[0].person_nickname, person: true);
-            foreach (var entry in entries)
-            {
-                var device = devices.Find(d => d.Peer.Equals(entry.peer, StringComparison.OrdinalIgnoreCase));
-                var known = device ?? blipSnapshot?.Devices.Find(d => d.Peer.Equals(entry.peer, StringComparison.OrdinalIgnoreCase))
-                    ?? new BlipDevice { Peer = entry.peer };
-                var name = grouped ? BlipDeviceName(known) : BlipDeviceCaption(known);
-                AddRecipientRow(rows, owner, name, device, entry.peer, entry.nickname, nested: grouped);
-            }
-        }
-        listedDevices.UnionWith(otherRecents.Select(r => r.peer));
-        var otherDevices = devices.Where(d => !listedDevices.Contains(d.Peer))
-            .OrderBy(BlipDeviceCaption, StringComparer.CurrentCultureIgnoreCase).ToList();
-        if (otherDevices.Count > 0) rows.Children.Add(QuickText("Other devices", 12, true));
-        foreach (var device in otherDevices)
-            AddRecipientRow(rows, owner, BlipDeviceCaption(device), device, device.Peer);
+        var saved = recentRecipients.Where(r => r.archived == null && !listedDevices.Contains(r.peer))
+            .ToDictionary(r => r.peer, StringComparer.OrdinalIgnoreCase);
+        var contacts = saved.Keys.Select(peer => devices.Find(d => d.Peer.Equals(peer, StringComparison.OrdinalIgnoreCase))
+                ?? new BlipDevice { Peer = peer, History = true })
+            .Concat(devices.Where(d => !listedDevices.Contains(d.Peer) && !saved.ContainsKey(d.Peer))
+                .OrderBy(BlipDeviceCaption, StringComparer.CurrentCultureIgnoreCase));
+        var groups = BlipDevice.GroupDestinations(contacts, ownAccount).ToList();
+        var previous = groups.Where(group => group.Any(d => saved.ContainsKey(d.Peer))).ToList();
+        var others = groups.Except(previous).ToList();
+        if (previous.Count > 0) rows.Children.Add(QuickText("Recent recipients", 12, true));
+        foreach (var group in previous) AddContactRows(rows, owner, group, saved);
+        if (others.Count > 0) rows.Children.Add(QuickText("Other devices", 12, true));
+        foreach (var group in others) AddContactRows(rows, owner, group, saved);
         var archived = recentRecipients.Where(r => r.archived != null).ToList();
         if (archived.Count > 0)
         {
             var contents = new StackPanel { Spacing = 3 };
             foreach (var entry in archived)
             {
-                var name = BlipPeerCaption(entry.peer);
+                var device = blipSnapshot?.Devices.Find(d => d.Peer.Equals(entry.peer, StringComparison.OrdinalIgnoreCase))
+                    ?? new BlipDevice { Peer = entry.peer };
+                var name = device.RecipientCaption(ownAccount, BlipDeviceName(device),
+                    BlipPersonName(device, device.Account), showDevice: true);
                 var entryRow = new Grid { ColumnSpacing = 4 };
                 entryRow.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
                 entryRow.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
@@ -279,6 +274,44 @@ public sealed partial class MainWindow
             rows.Children.Add(collection);
         }
     }
+
+    private void AddContactRows(StackPanel rows, string owner, IGrouping<string, BlipDevice> group,
+                                Dictionary<string, RecentRecipient>? saved)
+    {
+        var first = group.First();
+        var contact = BlipPersonName(first, first.Account);
+        bool grouped = contact != null && group.Skip(1).Any();
+        var list = grouped ? new StackPanel { Spacing = 3 } : rows;
+        foreach (var device in group)
+        {
+            var recent = saved?.GetValueOrDefault(device.Peer);
+            var name = grouped ? BlipDeviceName(device) : BlipDeviceCaption(device);
+            AddRecipientRow(list, owner, name, device.History ? null : device, saved == null ? null : device.Peer,
+                recent?.nickname);
+        }
+        if (!grouped || contact == null) return;
+
+        var expander = ContactExpander(contact, list);
+        expander.IsExpanded = expandedContacts.Contains(group.Key);
+        expander.Expanding += (_, _) => expandedContacts.Add(group.Key);
+        expander.Collapsed += (_, _) => expandedContacts.Remove(group.Key);
+        if (saved != null && group.Select(d => saved.GetValueOrDefault(d.Peer)).FirstOrDefault(r => r != null) is { } entry)
+        {
+            var actions = new MenuFlyout();
+            MenuAction(actions, "Rename contact…", () => _ = RenameRecentRecipient(owner, entry.Account, contact,
+                entry.person_nickname, person: true));
+            MenuAction(actions, "Archive recent devices", () => _ = UpdateRecentRecipients("archive", owner,
+                target: entry.Account));
+            expander.ContextFlyout = actions;
+        }
+        rows.Children.Add(expander);
+    }
+
+    private static Expander ContactExpander(string name, StackPanel devices) => new()
+    {
+        Header = QuickText(name, 12, true), Content = devices,
+        HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch
+    };
 
     private static string FirstName(params string?[] names) =>
         names.FirstOrDefault(name => !string.IsNullOrWhiteSpace(name)) ?? "Device";
@@ -319,13 +352,12 @@ public sealed partial class MainWindow
     }
 
     private void AddRecipientRow(StackPanel rows, string owner, string name, BlipDevice? device, string? remove,
-                                 string? nickname = null, bool person = false, bool nested = false,
-                                 bool deviceShortcut = false)
+                                 string? nickname = null, bool deviceShortcut = false)
     {
-        var row = new Grid { ColumnSpacing = 4, Margin = new Thickness(nested ? 12 : 0, 0, 0, 0) };
+        var row = new Grid { ColumnSpacing = 4 };
         row.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
         row.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
-        if (device == null) row.Children.Add(QuickText(name, 12, person));
+        if (device == null) row.Children.Add(QuickText(name, 12));
         else
         {
             var send = QuickButton("", () => _ = SendToBlipRecipient(owner, device));
@@ -357,7 +389,7 @@ public sealed partial class MainWindow
             if (remove != null)
             {
                 actions.Children.Add(QuickIcon("\uE70F", "Rename " + name,
-                    () => _ = RenameRecentRecipient(owner, remove, name, nickname, person)));
+                    () => _ = RenameRecentRecipient(owner, remove, name, nickname, person: false)));
                 actions.Children.Add(QuickIcon("\uE711", "Archive " + name,
                     () => _ = UpdateRecentRecipients("archive", owner, device, target: remove)));
             }

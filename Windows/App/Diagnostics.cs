@@ -49,6 +49,7 @@ public sealed partial class MainWindow
             double rowTop=row.TransformToVisual(root).TransformPoint(new Windows.Foundation.Point(0,0)).Y;
             if(rowTop<top-2||rowTop+row.ActualHeight>root.ActualHeight+2)
                 throw new IOException("The last folder did not scroll fully into view.");
+            await CheckBlipContactGrouping();
             result=new{ok=true,bottom_gap=gap,viewport_height=list.ActualHeight};
         }
         catch(Exception error){result=new{ok=false,error=error.ToString()};}

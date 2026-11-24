@@ -23,6 +23,7 @@ public sealed class BlipDevice
     [JsonPropertyName("name_known")] public bool NameKnown { get; set; }
     [JsonPropertyName("user_name")] public string UserName { get; set; }="";
     [JsonPropertyName("nickname")] public string Nickname { get; set; }="";
+    [JsonIgnore] public string Account => Peer.Split(':', 2)[0];
     [JsonIgnore] public string SelectionName { get; set; } = "";
     [JsonIgnore] public bool HasRegisteredName => NameKnown && !string.IsNullOrWhiteSpace(Name);
     [JsonIgnore] public bool HasDeviceName => HasRegisteredName || !string.IsNullOrWhiteSpace(Nickname);
@@ -47,6 +48,11 @@ public sealed class BlipDevice
         return showDevice && !person.Equals(device, StringComparison.CurrentCultureIgnoreCase)
             ? person + " · " + device : person;
     }
+
+    public static IEnumerable<IGrouping<string, BlipDevice>> GroupDestinations(
+        IEnumerable<BlipDevice> devices, string ownAccount) =>
+        devices.GroupBy(device => device.Account.Equals(ownAccount, StringComparison.OrdinalIgnoreCase)
+            ? device.Peer : device.Account, StringComparer.OrdinalIgnoreCase);
     public static string FallbackName(string peer, string kind = "Device")
     {
         var parts = peer.Split(':', 2);

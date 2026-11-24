@@ -443,9 +443,9 @@ public sealed partial class MainWindow
             pasteClipboard = paste;
             dialog.Hide();
         }
-        foreach (var device in devices)
+        Grid DestinationRow(BlipDevice device, bool grouped)
         {
-            var title = QuickText(BlipDeviceCaption(device), 13);
+            var title = QuickText(grouped ? BlipDeviceName(device) : BlipDeviceCaption(device), 13);
             var send = QuickButton("", () => SelectDevice(device, paste: false));
             send.Content = title;
             send.HorizontalAlignment = HorizontalAlignment.Stretch;
@@ -454,7 +454,7 @@ public sealed partial class MainWindow
             var paste = QuickIcon("\uE77F", "Paste and send to " + title.Text,
                 () => SelectDevice(device, paste: true));
             var rename = QuickIcon("\uE70F", "Rename " + BlipDeviceName(device), () =>
-                EditRecipientName(dialog, content, localPeer, device, title, send, paste));
+                EditRecipientName(dialog, content, localPeer, device, title, send, paste, grouped));
             var row = new Grid { ColumnSpacing = 4 };
             row.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
             row.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
@@ -466,8 +466,23 @@ public sealed partial class MainWindow
             row.Children.Add(rename);
             AutomationProperties.SetName(send, "Send to " + title.Text);
             ToolTipService.SetToolTip(send, title.Text);
+            return row;
+        }
+        void AddDestination(UIElement row)
+        {
             recipients.Items.Add(new ListViewItem { Content = row, MinHeight = 30, Padding = new Thickness(1, 0, 1, 0),
                 HorizontalContentAlignment = HorizontalAlignment.Stretch, IsTabStop = false });
+        }
+        foreach (var group in BlipDevice.GroupDestinations(devices, blipSnapshot.Status.UserId))
+        {
+            var first = group.First();
+            if (group.Skip(1).Any() && BlipPersonName(first, first.Account) is { } contact)
+            {
+                var destinations = new StackPanel { Spacing = 3 };
+                foreach (var device in group) destinations.Children.Add(DestinationRow(device, grouped: true));
+                AddDestination(ContactExpander(contact, destinations));
+            }
+            else foreach (var device in group) AddDestination(DestinationRow(device, grouped: false));
         }
         if (devices.Count > 0) content.Children.Add(recipients);
         else content.Children.Add(Text("No other Blip devices are available.", 12));
@@ -520,7 +535,7 @@ public sealed partial class MainWindow
     }
 
     private void EditRecipientName(ContentDialog dialog, StackPanel recipients, string owner,
-                                   BlipDevice device, TextBlock name, Button send, Button paste)
+                                   BlipDevice device, TextBlock name, Button send, Button paste, bool grouped)
     {
         var input = new TextBox { Header = "Device name", Text = recentRecipients.Find(r =>
             r.peer.Equals(device.Peer, StringComparison.OrdinalIgnoreCase))?.nickname ?? device.Nickname,
@@ -539,7 +554,7 @@ public sealed partial class MainWindow
             }
             try { SaveBlipDeviceName(status.UserId, device, input.Text); }
             catch (IOException error) { Error(error); return; }
-            name.Text = BlipDeviceCaption(device);
+            name.Text = grouped ? BlipDeviceName(device) : BlipDeviceCaption(device);
             AutomationProperties.SetName(send, "Send to " + name.Text);
             ToolTipService.SetToolTip(send, name.Text);
             AutomationProperties.SetName(paste, "Paste and send to " + name.Text);
