@@ -9,7 +9,7 @@ from time import monotonic
 from urllib.parse import unquote, urlsplit
 from uuid import UUID
 
-from gi.repository import Gdk, Gio, GLib, GObject, Gtk
+from gi.repository import Gdk, Gio, GLib, Gtk
 
 from services import DATA, core, exact_peer, link_url, person_destination, read_settings, save_settings
 from ui_widgets import button, clear, label, menu, row
@@ -697,7 +697,7 @@ class TransferView:
             text, path = data
             clipboard = self.app.window.get_clipboard()
             if text is not None:
-                provider = Gdk.ContentProvider.new_for_value(GObject.Value(str, text))
+                provider = Gdk.ContentProvider.new_for_value(text)
             else:
                 uri = Gio.File.new_for_path(str(path)).get_uri()
                 provider = Gdk.ContentProvider.new_for_bytes("text/uri-list", GLib.Bytes.new((uri + "\r\n").encode()))

@@ -1130,8 +1130,35 @@ class MyDrive(Gtk.Application):
             self.snapshot = snapshot
             self.leave_sync_attention()
             print("Linux GTK sync attention and folder error navigation passed", flush=True)
-            self.quit()
+            verify_received_copy()
             return GLib.SOURCE_REMOVE
+
+        def verify_received_copy():
+            staging = TemporaryDirectory()
+            file = Path(staging.name, "received.txt")
+            text = "  Received café 雪\r\n\r\n2\n3\n4\n5\n6\n7\n "
+            file.write_bytes(text.encode("utf-16"))
+            dialog = Gtk.Dialog(application=self)
+            error = Gtk.Label(visible=False)
+            dialog.present()
+            self.transfer_view.copy_received({"path": str(file)}, dialog, error)
+            clipboard = self.window.get_clipboard()
+
+            def read_text(clipboard, result):
+                assert clipboard.read_text_finish(result) == text
+                assert not clipboard.get_formats().contain_mime_type("text/uri-list")
+                staging.cleanup()
+                print("Linux GTK plain-text clipboard and successful copy dismissal passed", flush=True)
+                self.quit()
+
+            def check_dismissal():
+                if self.pending["blip-recipients"]:
+                    return GLib.SOURCE_CONTINUE
+                assert not error.get_visible() and not dialog.get_visible()
+                clipboard.read_text_async(None, read_text)
+                return GLib.SOURCE_REMOVE
+
+            GLib.timeout_add(25, check_dismissal)
 
         self.storage_view.tail_devices = [{"name": "Fixture device", "address": "100.64.0.1", "online": True}]
         self.storage_view.render_bookmarks()

@@ -32,7 +32,7 @@ public static class BlipReceivedFiles {
         if (file.ReadByte() != -1) return null;
 
         static bool StartsWith(byte[] data, params byte[] prefix) => data.AsSpan().StartsWith(prefix);
-        (Encoding encoding, int prefixLength) = bytes switch
+        (Encoding Decoder, int PrefixLength) format = bytes switch
         {
             _ when StartsWith(bytes, 0xff, 0xfe, 0, 0) => (new UTF32Encoding(false, false, true), 4),
             _ when StartsWith(bytes, 0, 0, 0xfe, 0xff) => (new UTF32Encoding(true, false, true), 4),
@@ -43,7 +43,7 @@ public static class BlipReceivedFiles {
         };
         try
         {
-            string text = encoding.GetString(bytes, prefixLength, bytes.Length - prefixLength);
+            string text = format.Decoder.GetString(bytes, format.PrefixLength, bytes.Length - format.PrefixLength);
             return text.Contains('\0') ? null : text;
         }
         catch (DecoderFallbackException) { return null; }
