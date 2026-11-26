@@ -3,25 +3,20 @@ import ScreenCaptureKit
 import Vision
 
 enum ParsecBadge {
-    /// Accept only one fresh device from the signed-in Blip account.
-    static func match(_ values: [String], owner: String, now: Date = .now) -> String? {
-        let identity = owner.lowercased().split(separator: ":")
-        guard identity.count == 2, let account = UUID(uuidString: String(identity[0])),
-              let localDevice = UUID(uuidString: String(identity[1])) else { return nil }
-        let compactAccount = Self.compact(account)
+    /// Accept one fresh badge for a known, exact Blip recipient.
+    static func match(_ values: [String], owner: String, recipients: [String], now: Date = .now) -> String? {
+        guard BlipPolicy.exactPeer(owner) else { return nil }
         let current = Int64(now.timeIntervalSince1970) / 30
         let peers = Set(values.compactMap { value -> String? in
             let fields = value.split(separator: ":", omittingEmptySubsequences: false)
-            guard fields.count == 4, fields[0] == "mydrive-parsec-v1", fields[1] == compactAccount,
-                  let interval = Int64(fields[3]), (current - 2...current + 1).contains(interval),
-                  let device = uuid(fields[2]), device != localDevice else { return nil }
+            guard fields.count == 4, fields[0] == "mydrive-parsec-v1",
+                  let account = uuid(fields[1]), let device = uuid(fields[2]),
+                  let interval = Int64(fields[3]), (current - 2...current + 1).contains(interval) else { return nil }
             return account.uuidString.lowercased() + ":" + device.uuidString.lowercased()
         })
-        return peers.count == 1 ? peers.first : nil
-    }
-
-    static func compact(_ uuid: UUID) -> String {
-        uuid.uuidString.lowercased().replacingOccurrences(of: "-", with: "")
+        guard peers.count == 1, let peer = peers.first, peer != owner.lowercased(),
+              recipients.contains(where: { $0.lowercased() == peer }) else { return nil }
+        return peer
     }
 
     private static func uuid(_ hex: Substring) -> UUID? {

@@ -268,10 +268,14 @@ enum Diagnostics {
                 device.replacingOccurrences(of: "-", with: "") + ":\(interval)"
         }
         let valid = code(account, remote, 100)
-        guard ParsecBadge.match([valid, valid, "unrelated QR"], owner: owner, now: now) == expected,
-              ParsecBadge.match([code(account, alternate, 100), valid], owner: owner, now: now) == nil,
-              ParsecBadge.match([code(alternate, remote, 100), code(account, local, 100),
-                                 code(account, remote, 90)], owner: owner, now: now) == nil else {
+        let contact = code(alternate, remote, 100)
+        let contactPeer = alternate + ":" + remote
+        guard ParsecBadge.match([valid, valid, "unrelated QR"], owner: owner, recipients: [expected], now: now) == expected,
+              ParsecBadge.match([contact], owner: owner, recipients: [contactPeer], now: now) == contactPeer,
+              ParsecBadge.match([contact], owner: owner, recipients: [expected], now: now) == nil,
+              ParsecBadge.match([contact, valid], owner: owner, recipients: [expected, contactPeer], now: now) == nil,
+              ParsecBadge.match([code(account, local, 100)], owner: owner, recipients: [owner], now: now) == nil,
+              ParsecBadge.match([code(account, remote, 90)], owner: owner, recipients: [expected], now: now) == nil else {
             throw BlipReceiverError.message("Parsec badge matching accepted an ambiguous, stale or unrelated device.")
         }
     }

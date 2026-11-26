@@ -125,9 +125,7 @@ import CoreGraphics
         let peer: BlipPeer?
         if candidate == session, receiver.parsecAutomaticMatching,
            let detectedPeer, detectedPeer.until > Date() {
-            peer = receiver.recipients.first {
-                $0.peer.lowercased() == detectedPeer.id && $0.online != false && !receiver.isArchived($0)
-            }
+            peer = badgeRecipients.first { $0.peer.lowercased() == detectedPeer.id }
         } else if let connection, !connection.app.isTerminated, connection.owner == owner,
            connection.app.processIdentifier == session.process, connection.app.launchDate == session.launched {
             peer = (receiver.recipients + receiver.people + receiver.directoryRecipients)
@@ -207,7 +205,10 @@ import CoreGraphics
             probeBadge(session, owner: receiver.recipientOwner)
         }
         if badgeTask != nil, elapsed < 1.35 { return }
-        let route = route(for: session)
+        let screen = NSScreen.screens.first { $0.frame.contains(point) }?.frame ?? bounds
+        let area = screen.intersection(bounds)
+        let match = route(for: session)
+        let route = area.width >= 342 ? match : Route(session: session, owner: match.owner, peer: nil)
         if let shown, shown.session == session, panel.frame.contains(point),
            shown.peer == nil || shown.peer?.peer == route.peer?.peer { return }
         hide()
@@ -215,14 +216,19 @@ import CoreGraphics
         target.label.stringValue = route.peer.map { "Send to " + receiver.recipientLabel($0) } ?? "Send with Blip"
         target.computer.stringValue = route.peer == nil ? "Drop to choose a recipient" : "Parsec connection · Blip"
         target.showChoice(route.peer != nil)
-        let area = NSScreen.screens.first { $0.frame.contains(point) }?.frame ?? bounds
-        let size = CGSize(width: route.peer == nil ? 230 : 342, height: 66)
+        let size = CGSize(width: route.peer == nil ? min(230, area.width) : 342, height: min(66, area.height))
         // Anchor the direct drop zone at the cursor. The picker is to its right.
         let center = route.peer == nil ? size.width / 2 : (size.width - 105) / 2
         panel.setFrame(CGRect(x: max(area.minX, min(area.maxX - size.width, point.x - center)),
                               y: max(area.minY, min(area.maxY - size.height, point.y - size.height / 2)),
                               width: size.width, height: size.height), display: true)
         panel.orderFrontRegardless()
+    }
+
+    private var badgeRecipients: [BlipPeer] {
+        (receiver.recipients + receiver.directoryRecipients).filter {
+            BlipPolicy.exactPeer($0.peer) && $0.online != false && !receiver.isArchived($0)
+        }
     }
 
     private func probeBadge(_ session: Session, owner: String) {
@@ -232,7 +238,8 @@ import CoreGraphics
             guard let self, !Task.isCancelled, self.candidate == session else { return }
             self.badgeTask = nil
             guard self.receiver.recipientOwner == owner, self.receiver.parsecAutomaticMatching,
-                  let peer = ParsecBadge.match(values, owner: owner) else { return }
+                  let peer = ParsecBadge.match(values, owner: owner,
+                                              recipients: self.badgeRecipients.map(\.peer)) else { return }
             self.detectedPeer = (peer, .now.addingTimeInterval(8))
         }
     }
