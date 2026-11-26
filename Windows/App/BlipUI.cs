@@ -20,6 +20,7 @@ public sealed partial class MainWindow
     private long nextBlipNamePublish;
     private string blipNamingOwner = "";
     private readonly HashSet<string> cancellingBlipSends = new();
+    private BlipSendingItem? preparingBlipSend;
     private readonly BlipNoticeTracker blipNotices=new();
     private BlipSenderCatalog? blipSenderCatalog;
     private BlipSenderCatalog SenderCatalog=>System.Threading.LazyInitializer.EnsureInitialized(ref blipSenderCatalog,()=>new(Path.Combine(CoreBridge.DataDir,"Blip","sender-catalog.json")));
@@ -176,19 +177,59 @@ public sealed partial class MainWindow
         else if (!signedIn && !BlipDesktop)
             page.Children.Add(QuickButton(blipSnapshot?.Status.Registration == "CODE_SENT" ? "Enter code…" : "Connect Blip…", () => _ = ConnectBlip()));
         RenderBlipRecipients();
-        AddLiveBlipTransfers("Outgoing");
-        if (signedIn)
-            foreach (var queued in blipRelayQueued)
-                page.Children.Add(BlipTransferRow(new BlipTransfer { Id = queued.id, Peer = queued.peer,
-                    ItemNames = [queued.label], Direction = "Outgoing", Status = "QueuedForRelay" }, queuedRelay: true));
         if (!blip.RuntimeAvailable && !diagnosticMode) page.Children.Add(Card(Text("The myDrive Blip helper is missing. Reinstall myDrive.", 12)));
         string failure = blipFailure.Length > 0 ? blipFailure : blip.LastError;
-        if (blipRelayWaiting > 0) page.Children.Add(Text($"{blipRelayWaiting} waiting for relay or delivery", 11));
         if (failure.Length > 0) page.Children.Add(Card(Text(failure, 12)));
         if (!running) page.Children.Add(Text(Preferences.Current.BlipAutoConnectDesktop ? "myDrive keeps this computer's existing Blip device available. Sign in in Blip once if needed." : "Reuse the account in desktop Blip, or start a separate Blip device for headless use.", 12));
         if (running && BlipDesktop && !signedIn) page.Children.Add(Text("Sign in in the Blip desktop app, then refresh here.", 12));
         if (running && !signedIn && !BlipDesktop) page.Children.Add(Text("Use your Blip account to connect this computer as a separate device. Sign-in starts only when you choose Connect Blip.", 12));
         AddLiveBlipTransfers("Incoming");
+    }
+
+    private sealed record BlipSendingItem(BlipTransfer Transfer, bool Relay, bool Preparing = false);
+
+    private List<BlipSendingItem> LiveBlipSends()
+    {
+        var live = (blipSnapshot?.Transfers ?? [])
+            .Where(transfer => transfer.Direction == "Outgoing" && transfer.IsLive && !IsRelayPacket(transfer))
+            .Select(transfer => new BlipSendingItem(transfer, false));
+        if (preparingBlipSend is { } preparing) live = live.Append(preparing);
+        return live.Concat(blipRelayQueued.Select(item => new BlipSendingItem(new BlipTransfer
+        {
+            Id = item.id, Peer = item.peer, ItemNames = [item.label], Direction = "Outgoing", Status = "QueuedForRelay",
+        }, true))).DistinctBy(item => item.Transfer.Id).ToList();
+    }
+
+    private Button CancelBlipSendingItems(string name, IReadOnlyList<BlipSendingItem> items)
+    {
+        void Stop(BlipSendingItem item)
+        {
+            if (item.Preparing) operation?.Cancel();
+            else _ = CancelBlipSend(item.Transfer, item.Relay);
+        }
+
+        if (items.Count == 1)
+        {
+            var item = items[0];
+            var cancel = QuickIcon("\uE711", "Cancel sending to " + name,
+                () => Stop(item));
+            cancel.IsEnabled = !cancellingBlipSends.Contains(item.Transfer.Id);
+            return cancel;
+        }
+        var multiple = QuickIcon("\uE711", "Cancel sends to " + name, () => { });
+        var menu = new MenuFlyout();
+        foreach (var item in items)
+        {
+            var entry = new MenuFlyoutItem
+            {
+                Text = "Cancel " + (item.Transfer.ItemNames.FirstOrDefault() ?? "transfer"),
+                IsEnabled = !cancellingBlipSends.Contains(item.Transfer.Id),
+            };
+            entry.Click += (_, _) => Stop(item);
+            menu.Items.Add(entry);
+        }
+        multiple.Flyout = menu;
+        return multiple;
     }
 
     private void AddLiveBlipTransfers(string direction)
@@ -558,16 +599,31 @@ public sealed partial class MainWindow
             Info("Blip connection changed", "Open the device list again before sending.");
             return;
         }
+        if (busy) return;
         sendingStarted?.Invoke();
-        await Run("Queue Blip transfer", async token => {
-            if (!await TryQueueRelay(peer, paths, token)) {
-                string id = await blip.SendAsync(peer.Peer, paths, token);
-                blipSentNames[id] = paths.Count == 1 ? Path.GetFileName(paths[0]) : paths.Count + " files";
-            }
-            await UpdateRecentRecipients("remember", localPeer, peer);
-            await RefreshBlip();
-        });
-        Render();
+        string label = paths.Count == 1 ? Path.GetFileName(paths[0]) : paths.Count + " files";
+        preparingBlipSend = new(new BlipTransfer { Id = Guid.NewGuid().ToString(), Peer = peer.Peer, ItemNames = [label] },
+            Relay: false, Preparing: true);
+        try
+        {
+            await Run("Queue Blip transfer", async token =>
+            {
+                if (currentView == "transfers") RenderRecipientRows();
+                if (!await TryQueueRelay(peer, paths, token))
+                {
+                    string id = await blip.SendAsync(peer.Peer, paths, token);
+                    blipSentNames[id] = label;
+                }
+                preparingBlipSend = null;
+                await UpdateRecentRecipients("remember", localPeer, peer);
+                await RefreshBlip();
+            });
+        }
+        finally
+        {
+            preparingBlipSend = null;
+            Render();
+        }
     }
 
     private void EditRecipientName(ContentDialog dialog, StackPanel recipients, string owner,

@@ -51,6 +51,7 @@ struct BlipQueuedSend: Codable, Identifiable {
     @Published var autoOpen = PrefStore.shared.preferences.blipAutoOpenLinks
     @Published private(set) var backgroundEnabled = PrefStore.shared.preferences.blipBackgroundReceiving ?? true
     @Published private(set) var sending = false
+    @Published private(set) var sendingPeer: String?
     @Published private(set) var preparingSend = false
     @Published private(set) var sendMessage: String?
     @Published private(set) var relayWaiting = 0
@@ -124,9 +125,10 @@ struct BlipQueuedSend: Codable, Identifiable {
         let paths = payload.files.map(\.path)
         let destination = peer.peer
         sending = true
-        reportSend("Preparing transfer…")
+        sendingPeer = destination
+        sendMessage = nil
         Task {
-            defer { sending = false }
+            defer { sendingPeer = nil; sending = false }
             do {
                 if try await queueRelay(paths: paths, target: peer, owner: sender) {
                     payload.discard()

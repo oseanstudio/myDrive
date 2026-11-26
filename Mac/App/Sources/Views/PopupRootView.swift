@@ -66,6 +66,7 @@ struct PopupRootView: View {
     private var sectionBar: some View {
         HStack(spacing: 3) {
             ForEach(PopupViewKind.tabs) { kind in
+                if kind == .activity { Spacer(minLength: 4) }
                 let selected = app.view.tab == kind
                 Button { app.view = kind } label: {
                     Group {
@@ -87,7 +88,6 @@ struct PopupRootView: View {
                 .accessibilityLabel(kind.label)
                 .accessibilityAddTraits(selected ? .isSelected : [])
             }
-            Spacer(minLength: 0)
         }
         .padding(.horizontal, 10)
         .padding(.bottom, 5)

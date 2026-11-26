@@ -96,12 +96,26 @@ public sealed partial class MainWindow
             : status;
     }
 
-    private static StackPanel BlipDestinationLabel(TextBlock title, string detail)
+    private static Grid BlipSendingLabel(TextBlock title)
+    {
+        var heading = new Grid { ColumnSpacing = 6, HorizontalAlignment = HorizontalAlignment.Left };
+        heading.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
+        heading.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
+        var sending = QuickText("Sending", 11);
+        sending.Opacity = .70;
+        sending.VerticalAlignment = VerticalAlignment.Center;
+        Grid.SetColumn(sending, 1);
+        heading.Children.Add(title);
+        heading.Children.Add(sending);
+        return heading;
+    }
+
+    private static StackPanel BlipDestinationLabel(TextBlock title, string detail, bool sending = false)
     {
         var summary = QuickText(detail, 11);
         summary.Opacity = .70;
         var text = new StackPanel { Spacing = 1, IsHitTestVisible = false };
-        text.Children.Add(title);
+        text.Children.Add(sending ? BlipSendingLabel(title) : title);
         text.Children.Add(summary);
         return text;
     }
@@ -297,6 +311,23 @@ public sealed partial class MainWindow
         rows.Children.Clear();
         string owner = BlipOwner, query = recipientQuery.Trim();
         if (owner.Length == 0) return;
+        var active = LiveBlipSends();
+        void AddUnlistedSends()
+        {
+            int index = 0;
+            foreach (var group in active.GroupBy(item => item.Transfer.Peer, StringComparer.OrdinalIgnoreCase))
+            {
+                string name = BlipPeerCaption(group.Key);
+                var row = new Grid { ColumnSpacing = 4 };
+                row.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
+                row.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
+                row.Children.Add(BlipSendingLabel(QuickText(name, 12)));
+                var cancel = CancelBlipSendingItems(name, group.ToList());
+                Grid.SetColumn(cancel, 1);
+                row.Children.Add(cancel);
+                rows.Children.Insert(index++, row);
+            }
+        }
         var ownAccount = owner.Split(':')[0];
         var devices = KnownRecipients(owner).Where(d => !IsRecipientArchived(owner, d.Peer)).ToList();
         var knownAccounts = devices.Select(d => d.Account).Concat(recentRecipients.Where(entry => entry.archived == null)
@@ -323,12 +354,13 @@ public sealed partial class MainWindow
                 var name = BlipDeviceCaption(device);
                 var email = device.Contact;
                 if (email.Contains('@') && !email.Equals(name, StringComparison.OrdinalIgnoreCase))
-                    AddRecipientRow(rows, owner, name, device, null, suggestionDetail: email);
+                    AddRecipientRow(rows, owner, name, device, null, active, suggestionDetail: email);
                 else
-                    AddRecipientRow(rows, owner, name, device, null);
+                    AddRecipientRow(rows, owner, name, device, null, active);
             }
             if (searched && searchMessage.Length > 0) rows.Children.Add(QuickText(searchMessage, 12));
             else if (matches.Count == 0) rows.Children.Add(QuickText("No matching people or devices.", 12));
+            AddUnlistedSends();
             return;
         }
         var myDevices = devices.Where(d => d.Peer.StartsWith(ownAccount + ":", StringComparison.OrdinalIgnoreCase))
@@ -350,7 +382,7 @@ public sealed partial class MainWindow
             {
                 var alias = saved.Find(r => r.peer.Equals(person.Peer, StringComparison.OrdinalIgnoreCase))?.nickname
                     ?? saved.Find(r => r.Account.Equals(person.Account, StringComparison.OrdinalIgnoreCase))?.person_nickname;
-                AddRecipientRow(rows, owner, BlipDeviceCaption(person), person, person.Peer, alias);
+                AddRecipientRow(rows, owner, BlipDeviceCaption(person), person, person.Peer, active, alias);
             }
         }
         AddPeople("Recent recipients", previous);
@@ -359,7 +391,7 @@ public sealed partial class MainWindow
         foreach (var device in myDevices)
         {
             var recent = recentRecipients.Find(r => r.peer.Equals(device.Peer, StringComparison.OrdinalIgnoreCase));
-            AddRecipientRow(rows, owner, BlipDeviceName(device), device, null, deviceShortcut: true, nickname: recent?.nickname);
+            AddRecipientRow(rows, owner, BlipDeviceName(device), device, null, active, deviceShortcut: true, nickname: recent?.nickname);
         }
         AddPeople("Other people", others);
         var archived = recentRecipients.Where(r => r.archived != null).ToList();
@@ -389,6 +421,7 @@ public sealed partial class MainWindow
             collection.Collapsed += (_, _) => archivesExpanded = false;
             rows.Children.Add(collection);
         }
+        AddUnlistedSends();
     }
 
     private static Button BlipRecipientOptions(string name, Action edit, Action? remove = null, Action? connectParsec = null, Action? editParsec = null)
@@ -452,14 +485,17 @@ public sealed partial class MainWindow
     }
 
     private void AddRecipientRow(StackPanel rows, string owner, string name, BlipDevice device, string? remove,
-                                 string? nickname = null, bool deviceShortcut = false, string? suggestionDetail = null)
+                                 List<BlipSendingItem> active, string? nickname = null, bool deviceShortcut = false, string? suggestionDetail = null)
     {
         var row = new Grid { ColumnSpacing = 4 };
         row.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
         row.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
         var detail = BlipDeviceDetail(device, name);
         if (suggestionDetail != null) detail = suggestionDetail + " · " + detail;
-        var title = BlipDestinationLabel(QuickText(name, 12), detail);
+        var sends = active.Where(item => string.Equals(item.Transfer.Peer, device.Peer, StringComparison.OrdinalIgnoreCase) ||
+            (device.IsPerson && SameBlipAccount(item.Transfer.Peer, device.Account))).ToList();
+        active.RemoveAll(sends.Contains);
+        var title = BlipDestinationLabel(QuickText(name, 12), detail, sends.Count > 0);
         if (device.History) row.Children.Add(new Border { Child = title, Padding = new Thickness(7, 3, 0, 3) });
         else
         {
@@ -481,7 +517,7 @@ public sealed partial class MainWindow
             row.Children.Add(send);
             EnableRecipientDrop(row, owner, device, name);
         }
-        if (!device.History || remove != null || deviceShortcut)
+        if (!device.History || remove != null || deviceShortcut || sends.Count > 0)
         {
             var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 1, VerticalAlignment = VerticalAlignment.Center };
             if (!device.History)
@@ -504,6 +540,7 @@ public sealed partial class MainWindow
                     device.History ? null : () => _ = ConnectParsec(owner, device),
                     device.History ? null : () => _ = ConnectParsec(owner, device, edit: true)));
             }
+            if (sends.Count > 0) actions.Children.Add(CancelBlipSendingItems(name, sends));
             foreach (var action in actions.Children.OfType<Button>()) FlatBlipButton(action);
             Grid.SetColumn(actions, 1);
             row.Children.Add(actions);

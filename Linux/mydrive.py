@@ -128,7 +128,7 @@ class MyDrive(Gtk.Application):
         header.pack_end(controls)
         content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=7)
         self.window.set_child(content)
-        tabs = Gtk.StackSwitcher(halign=Gtk.Align.CENTER, margin_top=6, margin_start=6, margin_end=6)
+        tabs = Gtk.Box(spacing=4, margin_top=6, margin_start=6, margin_end=6)
         content.append(tabs)
         drop = Gtk.DropTarget.new(Gdk.FileList.__gtype__, Gdk.DragAction.COPY)
         drop.connect("drop", self.dropped)
@@ -147,13 +147,29 @@ class MyDrive(Gtk.Application):
             page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, margin_bottom=8, margin_start=8, margin_end=8)
             scroll = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER, child=page)
             self.pages[title] = page
-            tab = self.stack.add_titled(scroll, title, caption)
-            if title in ("Activity", "Settings"):
-                tab.set_icon_name("document-open-recent-symbolic" if title == "Activity" else "emblem-system-symbolic")
+            self.stack.add_titled(scroll, title, caption)
+        tab_buttons = {}
+        for name, caption in titles.items():
+            if name == "Activity":
+                tabs.append(Gtk.Box(hexpand=True))
+            tab = Gtk.ToggleButton()
+            if name in ("Activity", "Settings"):
+                tab.set_icon_name("document-open-recent-symbolic" if name == "Activity" else "emblem-system-symbolic")
+            else:
+                tab.set_label(caption)
+            tab.set_tooltip_text(caption)
+            tab.update_property([Gtk.AccessibleProperty.LABEL], [caption])
+            if tab_buttons:
+                tab.set_group(next(iter(tab_buttons.values())))
+            tab.connect("clicked", lambda _button, target=name: self.stack.set_visible_child_name(target))
+            tabs.append(tab)
+            tab_buttons[name] = tab
         self.stack.set_visible_child_name("Send")
-        tabs.set_stack(self.stack)
+        tab_buttons["Send"].set_active(True)
         def show_view(stack, *_):
             title = stack.get_visible_child_name()
+            if title in tab_buttons:
+                tab_buttons[title].set_active(True)
             if title == "Sync" and not self.fixture:
                 self.refresh_background_sync(force=True)
             if title == "SMB Drives" and not self.fixture:
@@ -177,7 +193,8 @@ class MyDrive(Gtk.Application):
             assert header.get_decoration_layout() == ":close" and controls.get_last_child() == expand
             assert expand.get_icon_name() == "view-fullscreen-symbolic" and content.get_last_child() == self.stack
             assert header_content.get_last_child() == self.update_offer
-            assert self.stack.get_visible_child_name() == "Send" and tabs.get_stack() == self.stack
+            assert self.stack.get_visible_child_name() == "Send" and tab_buttons["Send"].get_active()
+            assert tabs.get_last_child() == tab_buttons["Settings"]
             assert self.stack.get_pages().get_item(0).get_title() == "Blip"
             assert self.stack.get_pages().get_item(1).get_title() == "Syncthing"
             self.run_fixture()

@@ -18,23 +18,6 @@ struct BlipView: View {
                 Button("Received Files") { receiver.openReceived() }
             }.controlSize(.small)
             if receiver.connected { recipientPanel }
-            ForEach(receiver.transfers.filter { $0.direction == "Outgoing" && $0.isLive }) { transfer in
-                liveTransfer(transfer)
-            }
-            if receiver.connected {
-                ForEach(receiver.relayQueued) { item in
-                    HStack {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(item.label).font(.system(size: 12, weight: .semibold)).lineLimit(1)
-                            Text(receiver.senderLabel(item.peer) + " · Queued for relay")
-                                .font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
-                        }
-                        Spacer(minLength: 6)
-                        Button("Cancel") { receiver.cancelQueuedSend(item) }
-                            .controlSize(.small).disabled(receiver.cancellingSends.contains(item.id))
-                    }.frame(minHeight: 44)
-                }
-            }
             if receiver.canSetUpBlip {
                 Button("Set up Blip…", action: receiver.setUpBlip).controlSize(.small)
             }
@@ -44,10 +27,6 @@ struct BlipView: View {
             }
             if let message = receiver.sendMessage {
                 Text(message).font(.system(size: 11)).foregroundStyle(.secondary)
-            }
-            if receiver.relayWaiting > 0 {
-                Text("\(receiver.relayWaiting) waiting for relay or delivery")
-                    .font(.system(size: 11)).foregroundStyle(.secondary)
             }
             if let problem = receiver.problem {
                 Text(problem).font(.system(size: 11)).foregroundStyle(.red)
@@ -82,7 +61,9 @@ struct BlipView: View {
                 if !matches.isEmpty {
                     Text("Suggestions").font(.caption).fontWeight(.semibold)
                 }
-                ForEach(matches.filter { $0.isPerson || !accounts.contains(accountPart($0.peer)) }.prefix(30)) { peer in
+                let rows = matches.filter { $0.isPerson || !accounts.contains(accountPart($0.peer)) }.prefix(30)
+                unlistedSends(excluding: rows.map(\.peer))
+                ForEach(rows) { peer in
                     let name = receiver.recipientLabel(peer)
                     let email = peer.contact
                     recipientRow(name, peer: peer,
@@ -100,6 +81,7 @@ struct BlipView: View {
                 let myDevices = available.filter { accountPart($0.peer) == account }
                 let listed = Set(myDevices.map { $0.peer.lowercased() })
                 let recents = receiver.recentRecipients.filter { $0.archived == nil }
+                unlistedSends(excluding: available.map(\.peer) + recents.map(\.peer))
                 recentRows(recents.filter { !listed.contains($0.peer.lowercased()) }, available: available + receiver.people)
                 if !myDevices.isEmpty {
                     Text("My devices").font(.caption).fontWeight(.semibold)
@@ -187,7 +169,82 @@ struct BlipView: View {
         names.compactMap { $0 }.first { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } ?? "Device"
     }
 
-    private func sendAction(_ name: String, peer: BlipPeer, detail: String?) -> some View {
+    private enum SendingItem: Identifiable {
+        case direct(BlipTransfer)
+        case relay(BlipQueuedSend)
+
+        var id: String {
+            switch self {
+            case .direct(let transfer): return transfer.id
+            case .relay(let transfer): return transfer.id
+            }
+        }
+        var peer: String {
+            switch self {
+            case .direct(let transfer): return transfer.peer
+            case .relay(let transfer): return transfer.peer
+            }
+        }
+        var name: String {
+            switch self {
+            case .direct(let transfer): return transfer.item_names?.first ?? "transfer"
+            case .relay(let transfer): return transfer.label
+            }
+        }
+    }
+
+    private var sends: [SendingItem] {
+        let direct = receiver.transfers.filter { $0.direction == "Outgoing" && $0.isLive }.map(SendingItem.direct)
+        let ids = Set(direct.map(\.id))
+        return direct + receiver.relayQueued.filter { !ids.contains($0.id) }.map(SendingItem.relay)
+    }
+
+    private func containsRecipient(_ recipients: [String], target: String) -> Bool {
+        recipients.contains { peer in
+            peer.caseInsensitiveCompare(target) == .orderedSame ||
+                (peer.hasSuffix(":") && accountPart(peer) == accountPart(target))
+        }
+    }
+
+    @ViewBuilder private func unlistedSends(excluding recipients: [String]) -> some View {
+        let peers = Set(sends.map(\.peer) + [receiver.sendingPeer].compactMap { $0 })
+        ForEach(peers.filter { !containsRecipient(recipients, target: $0) }.sorted(), id: \.self) { peer in
+            let name = receiver.senderLabel(peer)
+            HStack {
+                recipientName(name, sending: true)
+                Spacer()
+                cancelSends(sends.filter { $0.peer == peer }, name: name)
+            }.font(.system(size: 12))
+        }
+    }
+
+    @ViewBuilder private func cancelSends(_ items: [SendingItem], name: String) -> some View {
+        if !items.isEmpty {
+            Menu {
+                ForEach(items) { item in
+                    Button("Cancel " + item.name) {
+                        switch item {
+                        case .direct(let transfer): receiver.cancelSend(transfer)
+                        case .relay(let transfer): receiver.cancelQueuedSend(transfer)
+                        }
+                    }.disabled(receiver.cancellingSends.contains(item.id))
+                }
+            } label: {
+                Image(systemName: "xmark.circle").frame(width: 20, height: 24)
+            }
+            .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+            .accessibilityLabel("Cancel sends to " + name)
+        }
+    }
+
+    private func recipientName(_ name: String, sending: Bool) -> some View {
+        HStack(spacing: 5) {
+            Text(name).lineLimit(1)
+            if sending { Text("Sending").font(.caption).foregroundStyle(.secondary).fixedSize() }
+        }
+    }
+
+    private func sendAction(_ name: String, peer: BlipPeer, detail: String?, sending: Bool) -> some View {
         let availability = receiver.deviceAvailability(peer)
         let hint = detail.map { $0 + ", " + availability } ?? availability
         let tooltip = name + " · " + (detail ?? availability)
@@ -198,7 +255,7 @@ struct BlipView: View {
                     .frame(width: 6, height: 6)
                     .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(name).lineLimit(1)
+                    recipientName(name, sending: sending)
                     if let detail { Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
                 }
             }.frame(maxWidth: .infinity, alignment: .leading)
@@ -220,12 +277,16 @@ struct BlipView: View {
     private func recipientRow(_ name: String, peer: BlipPeer?, removing: String? = nil,
                               nickname: String? = nil, person: Bool = false, deviceShortcut: Bool = false,
                               detail: String? = nil) -> some View {
-        HStack(spacing: 4) {
+        let keys = [peer?.peer ?? removing].compactMap { $0 }.filter { $0.contains(":") }
+        let active = sends.filter { containsRecipient(keys, target: $0.peer) }
+        let preparing = receiver.sendingPeer.map { containsRecipient(keys, target: $0) } ?? false
+        let sending = !active.isEmpty || preparing
+        return HStack(spacing: 4) {
             if let peer {
-                sendAction(name, peer: peer, detail: detail)
+                sendAction(name, peer: peer, detail: detail, sending: sending)
             } else {
-                Text(name).fontWeight(person ? .semibold : .regular)
-                    .lineLimit(1).help(name).frame(maxWidth: .infinity, alignment: .leading)
+                recipientName(name, sending: sending).fontWeight(person ? .semibold : .regular)
+                    .help(name).frame(maxWidth: .infinity, alignment: .leading)
             }
             if let peer {
                 Button { receiver.pasteAndSend(to: peer) } label: { Text("Paste").frame(minWidth: 42) }
@@ -253,6 +314,7 @@ struct BlipView: View {
                 .accessibilityLabel("Options for " + name)
                 .help("Options for " + name)
             }
+            cancelSends(active, name: name)
         }
         .controlSize(.small).font(.system(size: 12)).frame(minHeight: 27)
         .background {
@@ -289,21 +351,17 @@ struct BlipView: View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
                 let name = receiver.senderLabel(transfer.peer)
-                Text(transfer.direction == "Outgoing" ? transfer.item_names?.first ?? name : name)
+                Text(name)
                     .font(.system(size: 12, weight: .semibold))
                     .lineLimit(1).truncationMode(.middle)
                 let progress = transfer.has_error ? "Needs attention" : receiver.receiving.contains(transfer.id) ? "Receiving" :
                     transfer.pending ? "Waiting for you" : transfer.status
-                Text(transfer.direction == "Outgoing" ? name + " · " + progress : progress)
+                Text(progress)
                     .font(.system(size: 11)).foregroundStyle(.secondary)
             }
             Spacer(minLength: 6)
             if transfer.pending && !receiver.receiving.contains(transfer.id) {
                 Button("Receive") { receiver.receive(transfer) }.controlSize(.small)
-            } else if transfer.direction == "Outgoing" {
-                Button(receiver.cancellingSends.contains(transfer.id) ? "Cancelling…" : "Cancel") {
-                    receiver.cancelSend(transfer)
-                }.controlSize(.small).disabled(receiver.cancellingSends.contains(transfer.id))
             }
         }.frame(minHeight: 44)
     }

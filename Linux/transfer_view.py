@@ -4,7 +4,7 @@ import hashlib
 import os
 import re
 import tempfile
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 from time import monotonic
 from urllib.parse import unquote, urlsplit
@@ -85,6 +85,7 @@ class TransferView:
         self.error = ""
         self.connecting_to_send = False
         self.cancelling_sends = set()
+        self.preparing_sends = Counter()
         self.next_name_publish = 0
         self.recipient_owner = ""
         self.recent_recipients = []
@@ -342,24 +343,6 @@ class TransferView:
                              ("Received files", lambda: self.app.open_path(self.blip.inbox))]))
         self.page.append(actions)
         names = self.names(self.snapshot.get("devices", []), self.catalog(identity))
-        for transfer in self.snapshot.get("transfers", []):
-            if (transfer.get("direction") == "Outgoing" and not transfer.get("dismissed")
-                    and not transfer.get("completed") and not packet(transfer) and transfer.get("status") in self.LIVE):
-                identifier = transfer["transfer_id"]
-                waiting = identifier in self.cancelling_sends
-                stop = button("Cancelling…" if waiting else "Cancel", lambda t=transfer: self.cancel_send(t))
-                stop.set_sensitive(not waiting and bool(identity))
-                title = next(iter(transfer.get("item_names", [])), "Outgoing transfer")
-                stop.set_tooltip_text("Cancel send of " + title)
-                peer = transfer.get("peer", "").lower()
-                self.page.append(row(title, f"{names.get(peer, self.fallback_name(peer))} · {transfer['status']}", stop))
-        if identity:
-            for item in self.snapshot.get("queued", []):
-                waiting = item["id"] in self.cancelling_sends
-                stop = button("Cancelling…" if waiting else "Cancel", lambda q=item: self.cancel_send(q, relay=True))
-                stop.set_sensitive(not waiting)
-                peer = item["peer"].lower()
-                self.page.append(row(item["label"], f"{names.get(peer, self.fallback_name(peer))} · Queued for relay", stop))
         if self.recipient_owner != identity:
             self.recipient_owner = identity
             self.archives_expanded = False
@@ -384,8 +367,6 @@ class TransferView:
         self.render_recipient_rows()
         if focused and identity:
             self.recipient_entry.grab_focus()
-        if waiting := self.snapshot.get("relays"):
-            self.page.append(label(f"{waiting} waiting for relay or delivery"))
         for transfer in self.snapshot.get("transfers", []):
             if (transfer.get("direction") != "Incoming" or transfer.get("dismissed") or packet(transfer)
                     or transfer.get("status") not in self.LIVE):
@@ -467,6 +448,7 @@ class TransferView:
 
     def render_recipient_rows(self):
         clear(self.recipient_rows)
+        self.unplaced_sends = self.active_recipient_sends()
         owner = self.recipient_owner
         if not owner:
             return
@@ -502,6 +484,7 @@ class TransferView:
                 self.recipient_rows.append(label(self.search_status))
             elif not matched:
                 self.recipient_rows.append(label("No matching people or devices."))
+            self.show_unlisted_sends()
             return
         details = self.recent_details(owner)
         catalog = self.catalog(owner)
@@ -562,6 +545,38 @@ class TransferView:
             section.connect("notify::expanded", lambda current, _: setattr(self, "archives_expanded", current.get_expanded()))
             self.recipient_rows.append(section)
 
+        self.show_unlisted_sends()
+
+    def active_recipient_sends(self):
+        active = defaultdict(list)
+        seen = set()
+        for item in self.snapshot.get("transfers", []):
+            if (item.get("direction") == "Outgoing" and not item.get("dismissed")
+                    and not item.get("completed") and not packet(item) and item.get("status") in self.LIVE):
+                identifier = item["transfer_id"]
+                seen.add(identifier)
+                name = next(iter(item.get("item_names") or []), "transfer")
+                active[item.get("peer", "").lower()].append((identifier, name, item, False))
+        for item in self.snapshot.get("queued", []):
+            if item["id"] not in seen:
+                active[item["peer"].lower()].append((item["id"], item["label"], item, True))
+        for peer in self.preparing_sends:
+            active[peer].append((None, "", None, False))
+        return active
+
+    def sending_cancellations(self, items):
+        return [("Cancel " + name, lambda t=transfer, r=relay: self.cancel_send(t, relay=r))
+                for identifier, name, transfer, relay in items if identifier and identifier not in self.cancelling_sends]
+
+    def show_unlisted_sends(self):
+        for peer, items in reversed(list(self.unplaced_sends.items())):
+            name = self.fallback_name(peer)
+            actions = self.sending_cancellations(items)
+            controls = [label("Sending", "dim-label")]
+            if actions:
+                controls.append(menu(actions, "process-stop-symbolic", "Cancel sends to " + name))
+            self.recipient_rows.prepend(row(name, "", *controls))
+
     def recent_details(self, owner):
         catalog = self.catalog(owner)
         rows = self.snapshot.get("devices", []) + self.directory_recipients
@@ -597,6 +612,12 @@ class TransferView:
     def add_recipient_row(self, owner, name, peer=None, remove=None, nickname=None, person=False, nested=False,
                           device_shortcut=False, email=""):
         controls = Gtk.Box(spacing=4, margin_start=12 if nested else 0)
+        peer_key = peer or remove or ""
+        items = self.unplaced_sends.pop(peer_key, [])
+        if person_destination(peer_key):
+            for target in list(self.unplaced_sends):
+                if target.startswith(peer_key):
+                    items.extend(self.unplaced_sends.pop(target))
         actions = []
         if peer:
             select = button(name, lambda: self.choose_files(peer=peer, owner=owner))
@@ -616,6 +637,9 @@ class TransferView:
             name_label = label(name, "heading" if person else None)
             name_label.set_hexpand(True)
             controls.append(name_label)
+        if items:
+            controls.append(label("Sending", "dim-label"))
+            actions.extend(self.sending_cancellations(items))
         if peer:
             paste = Gtk.Button(label="Paste", width_request=55, tooltip_text="Paste and send to " + name)
             paste.connect("clicked", lambda *_: self.paste(peer, owner))
@@ -1031,10 +1055,21 @@ class TransferView:
                     self.next_relay_discovery = 0
                     return result
             return self.blip.send(peer, paths)
-        def sent(_):
-            self.update_recents("remember", sender, peer=peer, title=current[peer])
-            self.refresh()
-        self.app.work("blip", "Send with Blip", dispatch, sent)
+        def finished(error=None):
+            self.preparing_sends[peer] -= 1
+            if not self.preparing_sends[peer]:
+                del self.preparing_sends[peer]
+            self.render_recipient_rows()
+            if error:
+                self.app.announce(error)
+            else:
+                self.update_recents("remember", sender, peer=peer, title=current[peer])
+                self.refresh()
+            self.app.record("Send with Blip", not error)
+
+        self.preparing_sends[peer] += 1
+        self.render_recipient_rows()
+        self.app.work("blip", "Send with Blip", dispatch, lambda _: finished(), quiet=True, queue=True, on_error=finished)
 
     def paste(self, peer=None, owner=None):
         def got_text(clipboard, result):

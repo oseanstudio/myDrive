@@ -66,6 +66,21 @@ public sealed partial class MainWindow
                 .SelectMany(actions => actions.Children.OfType<Button>())
                 .Any(button => button.Content is "Paste" && button.MinWidth >= 55)))
             throw new IOException("Each destination row needs a full drop target and a wide Paste button.");
+        var pending = new BlipTransfer { Id = Guid.NewGuid().ToString(), Peer = own.Peer,
+            Direction = "Outgoing", Status = "Pending", ItemNames = ["sample.txt"] };
+        blipSnapshot.Transfers.Add(pending);
+        Render();
+        var sendingRows = recipientRows!.Children.OfType<Grid>().Where(row =>
+            row.Children.OfType<Button>().Any(button => button.Content is StackPanel panel &&
+                panel.Children.FirstOrDefault() is Grid heading &&
+                heading.Children.OfType<TextBlock>().Select(label => label.Text).SequenceEqual(["Studio Mac", "Sending"])));
+        if (sendingRows.SingleOrDefault() is not { } sendingRow ||
+            !sendingRow.Children.OfType<StackPanel>().SelectMany(actions => actions.Children.OfType<Button>())
+                .Any(button => Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(button) == "Cancel sending to Studio Mac") ||
+            page.Children.OfType<ListView>().Any())
+            throw new IOException("A pending Blip transfer must show Sending and Cancel in its recipient row.");
+        blipSnapshot.Transfers.Clear();
+        Render();
         blipSnapshot.Devices.Remove(own);
 
         var showing = ShowBlipSend();

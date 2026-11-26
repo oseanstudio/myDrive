@@ -64,14 +64,15 @@ public sealed partial class MainWindow
             { ("transfers", SendViewName, null), ("sync", SyncViewName, null), ("connections", StorageViewName, null),
               ("activity", "Activity", "\uE9D9"), ("settings", "Settings", "\uE713") })
         {
-            tabs.ColumnDefinitions.Add(new() { Width = icon == null ? new GridLength(1, GridUnitType.Star) : GridLength.Auto });
+            if (key == "activity") tabs.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
+            tabs.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
             var tab = new ToggleButton { Content = icon == null ? name : new FontIcon { Glyph = icon, FontSize = 12 },
                 FontSize = 12, MinWidth = icon == null ? 0 : 29, Height = 28, Padding = new Thickness(4, 0, 4, 0),
                 HorizontalAlignment = HorizontalAlignment.Stretch };
             AutomationProperties.SetName(tab, name);
             ToolTipService.SetToolTip(tab, name);
             tab.Click += (_, _) => NavigateQuick(key);
-            Grid.SetColumn(tab, quickTabs.Count);
+            Grid.SetColumn(tab, tabs.ColumnDefinitions.Count - 1);
             quickTabs.Add(key, tab);
             tabs.Children.Add(tab);
         }
@@ -108,7 +109,7 @@ public sealed partial class MainWindow
             tab.IsEnabled = !busy;
         }
         quickExpand.IsEnabled = !busy;
-        if(statusFooter!=null){statusFooter.Visibility=compact&&!busy?Visibility.Collapsed:Visibility.Visible;if(statusFooter.Child is Grid footer)footer.Padding=compact?new Thickness(10,5,10,5):new Thickness(24,10,24,10);}
+        if(statusFooter!=null){statusFooter.Visibility=compact&&(!busy||currentView=="transfers"&&preparingBlipSend!=null)?Visibility.Collapsed:Visibility.Visible;if(statusFooter.Child is Grid footer)footer.Padding=compact?new Thickness(10,5,10,5):new Thickness(24,10,24,10);}
         status.MaxWidth=compact?190:double.PositiveInfinity;
         UpdateProblemColors();
     }
