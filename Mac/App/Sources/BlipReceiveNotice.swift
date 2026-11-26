@@ -22,6 +22,7 @@ private struct ReceiveNoticeHeight: PreferenceKey {
         self.openTransfers = openTransfers
         super.init()
         popover.behavior = .applicationDefined
+        popover.contentSize = NSSize(width: Self.width, height: 112)
         popover.delegate = self
     }
 
@@ -29,7 +30,7 @@ private struct ReceiveNoticeHeight: PreferenceKey {
         !dismissed.contains(id) && receiver.transfers.contains(where: { $0.id == id })
     }
 
-    func show(_ id: String, at button: NSStatusBarButton) {
+    func show(_ id: String, at anchor: NSView) {
         guard canShow(id) else { return }
         if self.id != id || !popover.isShown {
             self.id = id
@@ -59,7 +60,7 @@ private struct ReceiveNoticeHeight: PreferenceKey {
             sizeToContent(controller.view.fittingSize.height)
         }
         if !popover.isShown {
-            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+            popover.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .minY)
         }
         updateExpiry(hovered: false)
     }

@@ -77,15 +77,23 @@ enum Diagnostics {
                     guard notice.canShow(transfer.id), !notice.isShown else {
                         throw BlipReceiverError.message("The receive popover did not start ready and closed.")
                     }
-                    if statusButton.window?.isVisible == true {
-                        notice.show(transfer.id, at: statusButton)
-                        guard notice.isShown else {
-                            throw BlipReceiverError.message("The receive popover did not open from the menu bar.")
-                        }
-                        notice.dismiss()
-                        guard !notice.canShow(transfer.id) else {
-                            throw BlipReceiverError.message("A dismissed transfer could reopen its popover.")
-                        }
+                    // A runner's menu bar can have no visible status-button anchor.
+                    // Use a visible fixture window to exercise AppKit's popover lifecycle.
+                    let host = NSWindow(contentRect: NSRect(x: 40, y: 40, width: 160, height: 100),
+                                        styleMask: [.titled], backing: .buffered, defer: false)
+                    host.isReleasedWhenClosed = false
+                    defer { host.close() }
+                    let anchor = NSView(frame: NSRect(x: 60, y: 55, width: 40, height: 24))
+                    host.contentView?.addSubview(anchor)
+                    host.orderFrontRegardless()
+                    host.displayIfNeeded()
+                    notice.show(transfer.id, at: anchor)
+                    guard notice.isShown else {
+                        throw BlipReceiverError.message("AppKit did not show the receive popover at its anchor.")
+                    }
+                    notice.dismiss()
+                    guard !notice.isShown && !notice.canShow(transfer.id) else {
+                        throw BlipReceiverError.message("A dismissed transfer could reopen its popover.")
                     }
                     let file = "blip-receive-notice.png"
                     let height = renderReceiveNotice(BlipReceiveNoticeView(receiver: receiver, id: transfer.id, openTransfers: {}),
