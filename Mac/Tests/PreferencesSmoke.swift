@@ -33,6 +33,12 @@ enum AtomicFile {
         let migrated = try decoder.decode(Preferences.self, from: JSONSerialization.data(withJSONObject: legacy))
         check(migrated.blipAutoOpenLinks && migrated == original, "missing new key enables links without resetting existing settings")
         check(migrated.blipBackgroundReceiving != false, "existing preferences enable background receiving")
+        check(migrated.blipDownloadDirectory == nil, "existing preferences use the default Blip download folder")
+        var customFolder = migrated
+        customFolder.blipDownloadDirectory = "/fixture/Client Deliveries"
+        customFolder.previousBlipDownloadDirectories = ["/fixture/Old Deliveries"]
+        let savedFolder = try decoder.decode(Preferences.self, from: encoder.encode(customFolder))
+        check(savedFolder == customFolder, "Blip download folder and previous relay locations survive a save and reload")
         var backgroundOptOut = migrated
         backgroundOptOut.blipBackgroundReceiving = false
         let restored = try decoder.decode(Preferences.self, from: encoder.encode(backgroundOptOut))

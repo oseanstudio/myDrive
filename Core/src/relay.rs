@@ -134,6 +134,8 @@ struct Snapshot {
     own: String,
     inbox: PathBuf,
     #[serde(default)]
+    previous_inboxes: Vec<PathBuf>,
+    #[serde(default)]
     downloads: Option<PathBuf>,
     devices: Vec<Device>,
     transfers: Vec<Transfer>,
@@ -424,6 +426,10 @@ fn send(job: &mut Job, record: &Path, peer: String, paths: Vec<PathBuf>) -> Resu
     })
 }
 
+fn receive_roots(req: &Snapshot) -> impl Iterator<Item = &Path> {
+    std::iter::once(req.inbox.as_path()).chain(req.previous_inboxes.iter().map(PathBuf::as_path))
+}
+
 fn owned_packet(req: &Snapshot, transfer: &Transfer, packet: &Packet) -> Result<Option<PathBuf>> {
     let [item] = transfer.received_items.as_slice() else {
         return Ok(None);
@@ -435,16 +441,25 @@ fn owned_packet(req: &Snapshot, transfer: &Transfer, packet: &Packet) -> Result<
     if item.path.file_name() != expected.file_name() {
         return Ok(None);
     }
-    if expected.exists() && !item.path.exists() {
-        checked(&expected)?;
-        return Ok(Some(expected));
-    }
     if !item.path.exists() {
+        for inbox in receive_roots(req) {
+            let accepted = inbox.join(&transfer.transfer_id).join(&item.name);
+            if accepted.exists() {
+                checked(&accepted)?;
+                return Ok(Some(accepted));
+            }
+        }
         return Ok(None);
     }
     let actual = checked(&item.path)?;
+    for inbox in receive_roots(req) {
+        let accepted = inbox.join(&transfer.transfer_id).join(&item.name);
+        if accepted.exists() && checked(&accepted).is_ok_and(|path| path == actual) {
+            return Ok(Some(accepted));
+        }
+    }
     if expected.exists() {
-        return Ok((actual == checked(&expected)?).then_some(expected));
+        return Ok(None);
     }
     // Native auto-accept can place our packet under Downloads before myDrive
     // sees the invite. Only move the exact reserved folder from that tree.
@@ -684,7 +699,8 @@ fn advance(req: &Snapshot, root: &Path, data: &Path) -> Result<Option<Action>> {
                 // inside the receiver directory myDrive created for this job.
                 let local = dir.path().join(packet.name("data"));
                 let owned = envelope == local
-                    || envelope.parent().and_then(Path::parent) == Some(req.inbox.as_path())
+                    || receive_roots(req)
+                        .any(|inbox| envelope.parent().and_then(Path::parent) == Some(inbox))
                         && envelope
                             .parent()
                             .and_then(Path::file_name)
@@ -772,11 +788,22 @@ mod tests {
     }
 
     fn tick(root: &Path, who: &str, up: &[&str], transfers: Vec<Value>) -> Value {
+        tick_in(root, who, up, transfers, root.join("inbox"), vec![])
+    }
+
+    fn tick_in(
+        root: &Path,
+        who: &str,
+        up: &[&str],
+        transfers: Vec<Value>,
+        inbox: PathBuf,
+        previous_inboxes: Vec<PathBuf>,
+    ) -> Value {
         let devices: Vec<_> = [A, B, C]
             .into_iter()
             .map(|d| json!({"peer":peer(d), "online":up.contains(&d)}))
             .collect();
-        run("tick", &json!({"self":peer(who), "inbox":root.join("inbox"), "downloads":root.join("stock-downloads"), "devices":devices, "transfers":transfers}), root).unwrap()
+        run("tick", &json!({"self":peer(who), "inbox":inbox, "previous_inboxes":previous_inboxes, "downloads":root.join("stock-downloads"), "devices":devices, "transfers":transfers}), root).unwrap()
     }
 
     fn transfer(
@@ -891,7 +918,9 @@ mod tests {
             .clone();
         assert_eq!(handoff["peer"], peer(B));
         let held = arrive(&relay, B, A, &handoff, &[A, B]);
-        let stored = tick(
+        // Changing the download directory while this transfer is in flight
+        // leaves its original receive path valid through confirmed delivery.
+        let stored = tick_in(
             &relay,
             B,
             &[A, B],
@@ -902,6 +931,8 @@ mod tests {
                 "Completed",
                 Some(&held),
             )],
+            relay.join("new inbox"),
+            vec![relay.join("inbox")],
         )["command"]
             .clone();
         let s = arrive(&origin, A, B, &stored, &[A, B]);
@@ -934,11 +965,13 @@ mod tests {
             vec![transfer(&forward, peer(C), "Outgoing", "Active", None)],
         );
         assert!(held.is_dir());
-        tick(
+        tick_in(
             &relay,
             B,
             &[B, C],
             vec![transfer(&forward, peer(C), "Outgoing", "Completed", None)],
+            relay.join("new inbox"),
+            vec![relay.join("inbox")],
         );
         assert!(!held.exists());
         assert_eq!(

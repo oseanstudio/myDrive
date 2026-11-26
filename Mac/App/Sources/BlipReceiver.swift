@@ -50,6 +50,11 @@ struct BlipQueuedSend: Codable, Identifiable {
     @Published private(set) var policy = BlipPolicy()
     @Published var autoOpen = PrefStore.shared.preferences.blipAutoOpenLinks
     @Published private(set) var backgroundEnabled = PrefStore.shared.preferences.blipBackgroundReceiving ?? true
+    @Published private(set) var customDownloadDirectory = PrefStore.shared.preferences.blipDownloadDirectory
+    var downloadDirectory: URL {
+        customDownloadDirectory.map { URL(fileURLWithPath: $0, isDirectory: true) }
+            ?? BlipMacPaths.defaultReceivedDirectory
+    }
     @Published private(set) var sending = false
     @Published private(set) var sendingPeer: String?
     @Published private(set) var preparingSend = false
@@ -306,8 +311,9 @@ struct BlipQueuedSend: Codable, Identifiable {
         let now = Date()
         if relayWaiting == 0, transportState == relayTransportState,
            !transports.contains(where: \.isLive), now < nextRelayDiscovery { return }
-        let payload: JSON = ["self": owner, "inbox": BlipMacPaths.receivedDirectory.path,
-                             "downloads": BlipMacPaths.receivedDirectory.deletingLastPathComponent().path,
+        let payload: JSON = ["self": owner, "inbox": downloadDirectory.path,
+                             "previous_inboxes": PrefStore.shared.preferences.previousBlipDownloadDirectories ?? [],
+                             "downloads": URL.downloadsDirectory.path,
                              "devices": snapshot.array("devices"), "transfers": snapshot.array("transfers")]
         guard let result = try await CoreBridge.shared.call(action: "relay.tick",
                 request: ["data_dir": Paths.dataDir.path, "payload": payload], timeout: 10) as? JSON else { return }
@@ -821,8 +827,48 @@ struct BlipQueuedSend: Codable, Identifiable {
     }
 
     func setAutoOpen(_ value: Bool) { autoOpen=value;PrefStore.shared.update{$0.blipAutoOpenLinks=value};session="" }
+    func setDownloadDirectory(_ selection: URL?) throws {
+        let folder = selection?.resolvingSymlinksInPath().standardizedFileURL
+        if let folder {
+            guard folder.path.hasPrefix("/"),
+                  !folder.path.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains),
+                  try folder.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true,
+                  FileManager.default.isWritableFile(atPath: folder.path) else {
+                throw BlipReceiverError.message("Choose a writable folder for Blip downloads.")
+            }
+        }
+        let defaultPath = BlipMacPaths.defaultReceivedDirectory.path
+        let selectedPath = folder?.path == defaultPath ? nil : folder?.path
+        guard selectedPath != customDownloadDirectory else { return }
+        let oldPath = downloadDirectory.path
+        let newPath = selectedPath ?? defaultPath
+        try PrefStore.shared.save { settings in
+            // Transfers already accepted by the relay can finish in their original folder.
+            var previous = settings.previousBlipDownloadDirectories ?? []
+            previous.removeAll { $0 == newPath || $0 == oldPath }
+            previous.append(oldPath)
+            settings.previousBlipDownloadDirectories = previous
+            settings.blipDownloadDirectory = selectedPath
+        }
+        customDownloadDirectory = selectedPath
+        nextReceiveSetup = .distantPast
+        nextRelayDiscovery = .distantPast
+        receiveSetupProblem = nil
+        Task { await refresh() }
+    }
+
     func openReceived() {
-        do {let directory=BlipMacPaths.receivedDirectory;try FileManager.default.createDirectory(at:directory,withIntermediateDirectories:true);NSWorkspace.shared.open(directory)}
-        catch {problem="The received-files folder could not open."}
+        do {
+            let directory = downloadDirectory
+            if customDownloadDirectory == nil {
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            }
+            guard try directory.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true,
+                  NSWorkspace.shared.open(directory) else {
+                throw BlipReceiverError.message("The Blip download folder could not open.")
+            }
+        } catch {
+            problem = "The Blip download folder could not open. Check the folder in Settings."
+        }
     }
 }

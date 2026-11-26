@@ -94,10 +94,12 @@ fn discover_in(home: &Path, temp: &Path) -> Result<Session> {
     let desktop = !managed
         .iter()
         .any(|path| path.canonicalize().is_ok_and(|path| path == resolved));
+    let (inbox, custom_inbox) = received_directory(home);
     Ok(Session {
         profile,
         socket,
-        inbox: home.join("Downloads/myDrive"),
+        inbox,
+        custom_inbox,
         desktop,
     })
 }
@@ -138,30 +140,69 @@ pub(super) fn registration_device(profile: &Path) -> Result<String> {
     }
 }
 
+fn received_directory(home: &Path) -> (PathBuf, bool) {
+    let preference = home.join("Library/Application Support/myDrive/preferences.json");
+    let custom = fs::read(preference)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .and_then(|prefs| {
+            let saved = prefs["blip_download_directory"].as_str()?;
+            let path = PathBuf::from(saved);
+            (path.is_absolute()
+                && !saved.chars().any(char::is_control)
+                && !path
+                    .components()
+                    .any(|part| part == std::path::Component::ParentDir))
+            .then_some(path)
+        });
+    match custom {
+        Some(path) => (path, true),
+        None => (home.join("Downloads/myDrive"), false),
+    }
+}
+
+fn classify_inbox_error(error: io::Error) -> &'static str {
+    if error.kind() == io::ErrorKind::PermissionDenied {
+        "receive_downloads_denied"
+    } else {
+        "receive_downloads_unavailable"
+    }
+}
+
+fn check_inbox(inbox: &Path) -> Result<()> {
+    if !fs::symlink_metadata(inbox).map_err(classify_inbox_error)?.is_dir() {
+        return Err("receive_downloads_unavailable");
+    }
+    fs::read_dir(inbox).map_err(classify_inbox_error)?;
+    Ok(())
+}
+
+pub(super) fn prepare_receive_root(session: &Session) -> Result<()> {
+    if session.custom_inbox {
+        // A custom location may be on a disconnected volume. Never recreate it.
+        check_inbox(&session.inbox)
+    } else {
+        prepare_inbox(&session.inbox)
+    }
+}
+
 pub(super) fn prepare_inbox(inbox: &Path) -> Result<()> {
     use std::os::unix::fs::DirBuilderExt;
     let parent = inbox.parent().ok_or("receive_downloads_unavailable")?;
-    let classify = |error: io::Error| {
-        if error.kind() == io::ErrorKind::PermissionDenied {
-            "receive_downloads_denied"
-        } else {
-            "receive_downloads_unavailable"
-        }
-    };
-    fs::create_dir_all(parent).map_err(classify)?;
+    fs::create_dir_all(parent).map_err(classify_inbox_error)?;
     match fs::DirBuilder::new().mode(0o700).create(inbox) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-            fs::File::open(inbox).map_err(classify)?;
+            check_inbox(inbox)?;
             super::check_plain_directory(inbox).map_err(|_| "receive_downloads_unavailable")
         }
-        Err(error) => Err(classify(error)),
+        Err(error) => Err(classify_inbox_error(error)),
     }
 }
 
 pub(super) fn configure_receive(session: &Session) -> Result<()> {
     session.dispatch("TransferSetAutoAccept", number(1, 0))?;
-    prepare_inbox(&session.inbox)?;
+    prepare_receive_root(session)?;
     session.dispatch(
         "TransferSetCustomDefaultSavePath",
         string(1, super::path_text(&session.inbox)?),
@@ -174,10 +215,12 @@ pub(super) fn prepare() -> Result<Value> {
     let deadline = Instant::now() + Duration::from_secs(12);
     while Instant::now() < deadline {
         if let Some(socket) = live_socket(managed.to_vec()) {
+            let (inbox, custom_inbox) = received_directory(&home);
             let session = Session {
                 profile: home.join("Library/Application Support/myDrive/Blip"),
                 socket,
-                inbox: home.join("Downloads/myDrive"),
+                inbox,
+                custom_inbox,
                 desktop: false,
             };
             let agent = [
@@ -293,6 +336,7 @@ mod tests {
             profile: root.path().join("Blip"),
             socket: root.path().join("sock"),
             inbox: root.path().join("downloads"),
+            custom_inbox: false,
             desktop: false,
         };
         let listener = UnixListener::bind(&session.socket).unwrap();
@@ -411,6 +455,7 @@ mod tests {
             profile: root.path().join("Blip"),
             socket: root.path().join("sock"),
             inbox: root.path().join("downloads"),
+            custom_inbox: false,
             desktop: false,
         };
         let listener = UnixListener::bind(&session.socket).unwrap();

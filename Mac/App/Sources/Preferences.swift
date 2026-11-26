@@ -21,6 +21,8 @@ struct Preferences: Codable, Equatable {
         set { blipAutoOpenLinksOverride = newValue }
     }
     var blipBackgroundReceiving: Bool? = nil
+    var blipDownloadDirectory: String? = nil
+    var previousBlipDownloadDirectories: [String]? = nil
     var parsecAutomaticMatching: Bool? = nil
     var parsecComputers: [String: String]? = nil
     /// SMB shares (`user@host/share`) seen mounted on this Mac, so ones that
@@ -42,6 +44,8 @@ struct Preferences: Codable, Equatable {
         case autoInstallUpdates = "auto_install_updates"
         case blipAutoOpenLinksOverride = "blip_auto_open_links"
         case blipBackgroundReceiving = "blip_background_receiving"
+        case blipDownloadDirectory = "blip_download_directory"
+        case previousBlipDownloadDirectories = "previous_blip_download_directories"
         case parsecAutomaticMatching = "parsec_automatic_matching"
         case parsecComputers = "parsec_computers"
         case knownSmbShares = "known_smb_shares"
@@ -61,6 +65,13 @@ final class PrefStore {
         } else {
             preferences = Preferences()
         }
+    }
+
+    func save(_ change: (inout Preferences) -> Void) throws {
+        var next = preferences
+        change(&next)
+        try AtomicFile.write(JSONEncoder().encode(next), to: url)
+        preferences = next
     }
 
     func update(_ change: (inout Preferences) -> Void) {

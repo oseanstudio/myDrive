@@ -12,11 +12,7 @@ struct BlipView: View {
             if !receiver.connected {
                 Text(receiver.state).font(.system(size: 12)).foregroundStyle(.secondary)
             }
-            HStack(spacing: 9) {
-                Button("Send…") { receiver.chooseFilesToSend() }
-                    .disabled(receiver.preparingSend || receiver.sending)
-                Button("Received Files") { receiver.openReceived() }
-            }.controlSize(.small)
+            searchRow
             if receiver.connected { recipientPanel }
             if receiver.canSetUpBlip {
                 Button("Set up Blip…", action: receiver.setUpBlip).controlSize(.small)
@@ -40,13 +36,26 @@ struct BlipView: View {
         }
     }
 
-    private var recipientPanel: some View {
-        VStack(alignment: .leading, spacing: 4) {
+    private var searchRow: some View {
+        HStack(spacing: 6) {
+            Button(action: receiver.openReceived) {
+                Image(systemName: "folder").frame(width: 18, height: 20)
+            }
+            .controlSize(.small)
+            .accessibilityLabel("Open Blip downloads in Finder")
+            .help("Open Blip downloads in Finder")
+
             BlipSearchField(text: Binding(get: { query }, set: { text in
                 query = text
                 receiver.suggestRecipients(text)
             })) { receiver.suggestRecipients(query, immediate: true) }
                 .frame(height: 24)
+                .disabled(!receiver.connected)
+        }
+    }
+
+    private var recipientPanel: some View {
+        VStack(alignment: .leading, spacing: 4) {
             let term = query.trimmingCharacters(in: .whitespacesAndNewlines)
             let available = receiver.recipients.filter { !receiver.isArchived($0) }
             if !term.isEmpty {

@@ -1,3 +1,4 @@
+import AppKit
 import ServiceManagement
 import SwiftUI
 
@@ -100,11 +101,28 @@ struct SettingsView: View {
 }
 
 private struct BlipSettingsView: View {
+    @EnvironmentObject var app: AppState
     @ObservedObject var receiver: BlipReceiver
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Blip").fontWeight(.semibold)
+            HStack {
+                Text("Download folder")
+                Spacer(minLength: 4)
+                if receiver.customDownloadDirectory != nil {
+                    Button("Use Default") { saveDownloadFolder(nil) }
+                }
+                Button("Choose…", action: chooseDownloadFolder)
+                    .accessibilityLabel("Choose Blip download folder")
+            }
+            .help("Choose where myDrive saves newly received Blip files.")
+            Text((receiver.downloadDirectory.path as NSString).abbreviatingWithTildeInPath)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .help(receiver.downloadDirectory.path)
             Toggle("Open approved senders’ links automatically",
                    isOn: Binding(get: { receiver.autoOpen }, set: receiver.setAutoOpen))
             Toggle("Keep Blip available in the background",
@@ -116,5 +134,23 @@ private struct BlipSettingsView: View {
                 BlipSenderPermissionsView(receiver: receiver)
             }
         }
+    }
+
+    private func chooseDownloadFolder() {
+        let picker = NSOpenPanel()
+        picker.title = "Choose Blip Download Folder"
+        picker.prompt = "Choose"
+        picker.directoryURL = receiver.downloadDirectory
+        picker.canChooseFiles = false
+        picker.canChooseDirectories = true
+        picker.canCreateDirectories = true
+        picker.allowsMultipleSelection = false
+        guard picker.runModal() == .OK, let folder = picker.url else { return }
+        saveDownloadFolder(folder)
+    }
+
+    private func saveDownloadFolder(_ folder: URL?) {
+        do { try receiver.setDownloadDirectory(folder) }
+        catch { app.showBanner(.error, "Could not change the Blip download folder", error.localizedDescription) }
     }
 }

@@ -120,6 +120,8 @@ struct Session {
     lock: PathBuf,
     socket: PathBuf,
     inbox: PathBuf,
+    #[cfg(target_os = "macos")]
+    custom_inbox: bool,
     desktop: bool,
 }
 
@@ -379,7 +381,7 @@ impl Session {
             return Err("invalid_transfer_id");
         }
         #[cfg(target_os = "macos")]
-        mac::prepare_inbox(&self.inbox)?;
+        mac::prepare_receive_root(self)?;
         #[cfg(not(target_os = "macos"))]
         create_plain_directory(&self.inbox)?;
         let destination = self.inbox.join(id);
@@ -1078,8 +1080,8 @@ pub(crate) fn error_message(error: &str) -> &'static str {
         "activity_retry_unavailable" => "This transfer can no longer be retried safely. Choose the files again to start a new send.",
         "cancel_not_active" => "This send is no longer active. Refresh to check its status.",
         "cancel_unconfirmed" => "Blip hasn’t confirmed the cancellation. Refresh to check the send.",
-        "receive_downloads_denied" => "macOS denied access to Downloads. Allow myDrive in System Settings → Privacy & Security → Files and Folders, then refresh.",
-        "receive_downloads_unavailable" => "myDrive couldn’t prepare the received-files folder in Downloads. Check that Downloads/myDrive is a writable folder, then refresh.",
+        "receive_downloads_denied" => "macOS denied access to the Blip download folder. Allow myDrive in System Settings → Privacy & Security → Files and Folders, or choose another folder in myDrive Settings.",
+        "receive_downloads_unavailable" => "myDrive couldn’t prepare the Blip download folder. Check that the folder in myDrive Settings is available and writable.",
         "native_connection_unavailable" => "The local Blip connection is unavailable.",
         "invalid_native_response" => "Blip returned a response myDrive could not read.",
         "native_response_too_large" => "Blip’s local response was too large to read.",
