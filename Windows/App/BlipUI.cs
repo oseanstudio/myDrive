@@ -42,8 +42,9 @@ public sealed partial class MainWindow
         {
             if (diagnosticMode || quitting) return;
             await RefreshBlip(false).ConfigureAwait(false);
+            RefreshParsecBadge();
         }, null, TimeSpan.Zero, TimeSpan.FromSeconds(2));
-        Closed += (_, _) => {blipTimer?.Dispose();blipIncomingWindow?.Stop();};
+        Closed += (_, _) => {blipTimer?.Dispose();blipIncomingWindow?.Stop();HideParsecBadges();};
     }
     private async Task RefreshBlip(bool fullSnapshot = true)
     {
@@ -226,6 +227,17 @@ public sealed partial class MainWindow
             if (background.IsChecked == true) _ = RefreshBlip();
         };
         settings.Children.Add(background);
+        var badge = new CheckBox { Content = "Show the myDrive badge during Parsec sessions",
+            IsChecked = Preferences.Current.ParsecShowBadge };
+        badge.Click += (_, _) =>
+        {
+            if (diagnosticMode) return;
+            Preferences.Current.ParsecShowBadge = badge.IsChecked == true;
+            Preferences.Save();
+            if (!Preferences.Current.ParsecShowBadge) HideParsecBadges();
+        };
+        settings.Children.Add(badge);
+
         var senders = QuickButton("Sender permissions…", () => _ = ChooseLinkSenders());
         senders.IsEnabled = blipSnapshot?.Status.Authenticated == true;
         settings.Children.Add(senders);

@@ -20,6 +20,7 @@
   <ItemGroup>
     <Page Remove="**\._*" />
     <Compile Remove="**\._*" />
+    <PackageReference Include="ZXing.Net" Version="0.16.11" />
     <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.8.260921001" />
     <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.26100.4654" />
     <Content Include="Assets\myDrive.ico" CopyToOutputDirectory="PreserveNewest" />

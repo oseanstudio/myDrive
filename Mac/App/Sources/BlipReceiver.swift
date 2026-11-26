@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import Combine
+import CoreGraphics
 
 enum BlipReceiverError: LocalizedError {
     case message(String)
@@ -44,6 +45,7 @@ struct BlipQueuedSend: Codable, Identifiable {
     @Published private(set) var people: [BlipPeer] = []
     @Published var transfers: [BlipTransfer] = []
     @Published var problem: String?
+    @Published private(set) var parsecAutomaticMatching = PrefStore.shared.preferences.parsecAutomaticMatching ?? false
     var connectParsec: ((BlipPeer, Bool) -> Void)?
     @Published private(set) var policy = BlipPolicy()
     @Published var autoOpen = PrefStore.shared.preferences.blipAutoOpenLinks
@@ -810,6 +812,12 @@ struct BlipQueuedSend: Codable, Identifiable {
             }
         }
     }
+    func setParsecAutomaticMatching(_ enabled: Bool) {
+        parsecAutomaticMatching = enabled
+        PrefStore.shared.update { $0.parsecAutomaticMatching = enabled }
+        if enabled && !CGPreflightScreenCaptureAccess() { _ = CGRequestScreenCaptureAccess() }
+    }
+
     func setAutoOpen(_ value: Bool) { autoOpen=value;PrefStore.shared.update{$0.blipAutoOpenLinks=value};session="" }
     func openReceived() {
         do {let directory=BlipMacPaths.receivedDirectory;try FileManager.default.createDirectory(at:directory,withIntermediateDirectories:true);NSWorkspace.shared.open(directory)}

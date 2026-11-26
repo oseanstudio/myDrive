@@ -109,6 +109,9 @@ private struct BlipSettingsView: View {
                    isOn: Binding(get: { receiver.autoOpen }, set: receiver.setAutoOpen))
             Toggle("Keep Blip available in the background",
                    isOn: Binding(get: { receiver.backgroundEnabled }, set: receiver.setBackground))
+            Toggle("Automatically match Parsec computers",
+                   isOn: Binding(get: { receiver.parsecAutomaticMatching }, set: receiver.setParsecAutomaticMatching))
+                .help("Requires screen recording permission to read the myDrive badge in the Parsec window while you drag a file.")
             DisclosureGroup("Sender permissions") {
                 BlipSenderPermissionsView(receiver: receiver)
             }

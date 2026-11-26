@@ -15,6 +15,7 @@ enum Diagnostics {
                 guard PopupViewKind.tabs.prefix(2).map(\.label) == ["Blip", "Syncthing"] else {
                     throw BlipReceiverError.message("The view tabs must start with Blip and Syncthing.")
                 }
+                try checkParsecBadge()
                 try checkBlipSignInPaste()
                 try checkFieldEditShortcuts()
                 let failedSync = Snapshot(from: ["folders": [
@@ -252,6 +253,27 @@ enum Diagnostics {
         report["layout"] = layout
         report["captures"] = captures
         return report
+    }
+
+    private static func checkParsecBadge() throws {
+        let account = "11111111-1111-4111-8111-111111111111"
+        let local = "22222222-2222-4222-8222-222222222222"
+        let remote = "33333333-3333-4333-8333-333333333333"
+        let alternate = "44444444-4444-4444-8444-444444444444"
+        let owner = account + ":" + local
+        let expected = account + ":" + remote
+        let now = Date(timeIntervalSince1970: 3000)
+        func code(_ user: String, _ device: String, _ interval: Int) -> String {
+            "mydrive-parsec-v1:" + user.replacingOccurrences(of: "-", with: "") + ":" +
+                device.replacingOccurrences(of: "-", with: "") + ":\(interval)"
+        }
+        let valid = code(account, remote, 100)
+        guard ParsecBadge.match([valid, valid, "unrelated QR"], owner: owner, now: now) == expected,
+              ParsecBadge.match([code(account, alternate, 100), valid], owner: owner, now: now) == nil,
+              ParsecBadge.match([code(alternate, remote, 100), code(account, local, 100),
+                                 code(account, remote, 90)], owner: owner, now: now) == nil else {
+            throw BlipReceiverError.message("Parsec badge matching accepted an ambiguous, stale or unrelated device.")
+        }
     }
 
     // MARK: - Checks

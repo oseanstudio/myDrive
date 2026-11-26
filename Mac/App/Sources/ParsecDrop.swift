@@ -32,6 +32,9 @@ import CoreGraphics
     private var startPoint: CGPoint?
     private var sourceProcess: pid_t?
     private var candidate: Session?
+    private var badgeTask: Task<Void, Never>?
+    private var probedBadge = false
+    private var detectedPeer: (id: String, until: Date)?
     private var hoverSince = Date.distantFuture
     private var shown: Route?
     private var lastPressed = Date.distantPast
@@ -44,8 +47,8 @@ import CoreGraphics
         panel.hasShadow = true
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .canJoinAllApplications]
         panel.contentView = target
-        target.canDrop = { [weak self] in self?.canSend() == true }
-        target.receive = { [weak self] urls in self?.send(urls) == true }
+        target.canDrop = { [weak self] choose in self?.canSend(choose: choose) == true }
+        target.receive = { [weak self] urls, choose in self?.send(urls, choose: choose) == true }
     }
 
     func connect(_ peer: BlipPeer, edit: Bool) {
@@ -120,7 +123,12 @@ import CoreGraphics
     private func route(for session: Session) -> Route {
         let owner = receiver.recipientOwner
         let peer: BlipPeer?
-        if let connection, !connection.app.isTerminated, connection.owner == owner,
+        if candidate == session, receiver.parsecAutomaticMatching,
+           let detectedPeer, detectedPeer.until > Date() {
+            peer = receiver.recipients.first {
+                $0.peer.lowercased() == detectedPeer.id && $0.online != false && !receiver.isArchived($0)
+            }
+        } else if let connection, !connection.app.isTerminated, connection.owner == owner,
            connection.app.processIdentifier == session.process, connection.app.launchDate == session.launched {
             peer = (receiver.recipients + receiver.people + receiver.directoryRecipients)
                 .first { $0.peer == connection.peer.peer && !receiver.isArchived($0) }
@@ -139,7 +147,7 @@ import CoreGraphics
         // The same screen coordinates can belong to Finder before a Space switch
         // and to fullscreen Parsec after it. Track the source process.
         sourceProcess = window(at: point)?.0.process
-        candidate = nil
+        clearCandidate()
         hide()
         start()
     }
@@ -148,6 +156,7 @@ import CoreGraphics
         timer?.invalidate()
         timer = nil
         shown = nil
+        clearCandidate()
         connection = nil
         panel.orderOut(nil)
     }
@@ -167,8 +176,8 @@ import CoreGraphics
             idlePoint = point
             startPoint = nil
             sourceProcess = nil
-            candidate = nil
             if now.timeIntervalSince(lastPressed) > 0.3 {
+                clearCandidate()
                 hide()
                 timer?.invalidate()
                 timer = nil
@@ -180,23 +189,60 @@ import CoreGraphics
         guard let startPoint, hypot(point.x - startPoint.x, point.y - startPoint.y) >= 20,
               NSApp.modalWindow == nil, receiver.connected, !receiver.sending, !receiver.preparingSend,
               let (session, bounds) = window(at: point), sourceProcess != session.process else {
-            candidate = nil
+            clearCandidate()
             hide()
             return
         }
+        if candidate != session {
+            clearCandidate()
+            hide()
+            candidate = session
+            hoverSince = now
+            return
+        }
+        let elapsed = now.timeIntervalSince(hoverSince)
+        guard elapsed >= 0.24 else { return }
+        if shown == nil, !probedBadge,
+           receiver.parsecAutomaticMatching, CGPreflightScreenCaptureAccess() {
+            probeBadge(session, owner: receiver.recipientOwner)
+        }
+        if badgeTask != nil, elapsed < 1.35 { return }
         let route = route(for: session)
-        if shown?.session == session, shown?.peer?.peer == route.peer?.peer, panel.frame.contains(point) { return }
+        if let shown, shown.session == session, panel.frame.contains(point),
+           shown.peer == nil || shown.peer?.peer == route.peer?.peer { return }
         hide()
-        if candidate != session { candidate = session; hoverSince = now; return }
-        guard now.timeIntervalSince(hoverSince) >= 0.24 else { return }
         shown = route
         target.label.stringValue = route.peer.map { "Send to " + receiver.recipientLabel($0) } ?? "Send with Blip"
         target.computer.stringValue = route.peer == nil ? "Drop to choose a recipient" : "Parsec connection · Blip"
+        target.showChoice(route.peer != nil)
         let area = NSScreen.screens.first { $0.frame.contains(point) }?.frame ?? bounds
-        let size = panel.frame.size
-        panel.setFrameOrigin(CGPoint(x: max(area.minX, min(area.maxX - size.width, point.x - size.width / 2)),
-                                    y: max(area.minY, min(area.maxY - size.height, point.y - size.height / 2))))
+        let size = CGSize(width: route.peer == nil ? 230 : 342, height: 66)
+        // Anchor the direct drop zone at the cursor. The picker is to its right.
+        let center = route.peer == nil ? size.width / 2 : (size.width - 105) / 2
+        panel.setFrame(CGRect(x: max(area.minX, min(area.maxX - size.width, point.x - center)),
+                              y: max(area.minY, min(area.maxY - size.height, point.y - size.height / 2)),
+                              width: size.width, height: size.height), display: true)
         panel.orderFrontRegardless()
+    }
+
+    private func probeBadge(_ session: Session, owner: String) {
+        probedBadge = true
+        badgeTask = Task { [weak self] in
+            let values = await ParsecBadge.capture(window: session.window, process: session.process)
+            guard let self, !Task.isCancelled, self.candidate == session else { return }
+            self.badgeTask = nil
+            guard self.receiver.recipientOwner == owner, self.receiver.parsecAutomaticMatching,
+                  let peer = ParsecBadge.match(values, owner: owner) else { return }
+            self.detectedPeer = (peer, .now.addingTimeInterval(8))
+        }
+    }
+
+    private func clearCandidate() {
+        candidate = nil
+        badgeTask?.cancel()
+        badgeTask = nil
+        probedBadge = false
+        detectedPeer = nil
     }
 
     private func hide() {
@@ -205,18 +251,19 @@ import CoreGraphics
         panel.orderOut(nil)
     }
 
-    private func canSend() -> Bool {
+    private func canSend(choose: Bool) -> Bool {
         guard let shown, receiver.connected, !receiver.sending, !receiver.preparingSend,
               shown.owner == receiver.recipientOwner,
               let (actual, _) = window(at: NSEvent.mouseLocation) else { return false }
-        return shown.session == actual && route(for: actual).peer?.peer == shown.peer?.peer
+        return shown.session == actual &&
+            (choose || shown.peer == nil || route(for: actual).peer?.peer == shown.peer?.peer)
     }
 
-    private func send(_ candidates: [URL]) -> Bool {
-        guard canSend(), let route = shown, let urls = FileDropInput.localFiles(candidates) else { return false }
+    private func send(_ candidates: [URL], choose: Bool) -> Bool {
+        guard canSend(choose: choose), let route = shown, let urls = FileDropInput.localFiles(candidates) else { return false }
         hide()
         let owner = route.owner
-        let peer = route.peer
+        let peer = choose ? nil : route.peer
         Task {
             guard receiver.recipientOwner == owner else { return }
             if let peer { receiver.send(.forFiles(urls), to: peer) }
@@ -258,8 +305,9 @@ import CoreGraphics
 @MainActor private final class ParsecDropView: NSView {
     let label = NSTextField(labelWithString: "")
     let computer = NSTextField(labelWithString: "")
-    var canDrop: () -> Bool = { false }
-    var receive: ([URL]) -> Bool = { _ in false }
+    private let chooseLabel = NSTextField(labelWithString: "Choose recipient")
+    var canDrop: (Bool) -> Bool = { _ in false }
+    var receive: ([URL], Bool) -> Bool = { _, _ in false }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -276,29 +324,46 @@ import CoreGraphics
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(stack)
+        let body = NSStackView(views: [stack, chooseLabel])
+        body.spacing = 12
+        body.alignment = .centerY
+        body.translatesAutoresizingMaskIntoConstraints = false
+        chooseLabel.font = .systemFont(ofSize: 12, weight: .medium)
+        chooseLabel.textColor = .controlAccentColor
+        chooseLabel.alignment = .center
+        chooseLabel.isHidden = true
+        addSubview(body)
         NSLayoutConstraint.activate([
             background.leadingAnchor.constraint(equalTo: leadingAnchor),
             background.trailingAnchor.constraint(equalTo: trailingAnchor),
             background.topAnchor.constraint(equalTo: topAnchor),
             background.bottomAnchor.constraint(equalTo: bottomAnchor),
-            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
-            stack.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -12),
-            stack.centerYAnchor.constraint(equalTo: centerYAnchor)
+            body.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
+            body.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
+            body.centerYAnchor.constraint(equalTo: centerYAnchor),
+            chooseLabel.widthAnchor.constraint(equalToConstant: 93)
         ])
         registerForDraggedTypes([.fileURL])
     }
 
     required init?(coder: NSCoder) { nil }
 
+    func showChoice(_ show: Bool) { chooseLabel.isHidden = !show }
+
+    private func choosingRecipient(_ sender: NSDraggingInfo) -> Bool {
+        !chooseLabel.isHidden && convert(sender.draggingLocation, from: nil).x >= bounds.maxX - 105
+    }
+
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
-        canDrop() && sender.draggingPasteboard.canReadObject(forClasses: [NSURL.self],
+        canDrop(choosingRecipient(sender)) && sender.draggingPasteboard.canReadObject(forClasses: [NSURL.self],
             options: [.urlReadingFileURLsOnly: true]) ? .copy : []
     }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation { draggingEntered(sender) }
 
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
         let urls = sender.draggingPasteboard.readObjects(forClasses: [NSURL.self],
             options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
-        return receive(urls)
+        return receive(urls, choosingRecipient(sender))
     }
 }

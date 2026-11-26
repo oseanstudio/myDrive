@@ -45,5 +45,9 @@ if (!($included | Where-Object { $_ -match '^Microsoft\.NETCore\.App\.Runtime\.'
     !($included | Where-Object { $_ -match '^Microsoft\.WindowsAppSDK\.WinUI/' })) {
     throw 'The .NET and WinUI license notices are required in the Windows installer.'
 }
+[void]$notices.AppendLine()
+[void]$notices.AppendLine('===== ZXing.Net/0.16.11 - upstream COPYING =====')
+[void]$notices.AppendLine('Copyright 2008 ZXing authors and ZXing.Net contributors')
+[void]$notices.AppendLine((Get-Content -LiteralPath (Join-Path $PSScriptRoot 'ZXing.Net-COPYING.txt') -Raw))
 $output = Join-Path $PublishDirectory 'Windows-ThirdPartyNotices.txt'
 [IO.File]::WriteAllText($output, $notices.ToString())

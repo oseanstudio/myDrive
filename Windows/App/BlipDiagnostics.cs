@@ -5,8 +5,34 @@ using System.Text.Json;
 namespace MyDrive;
 public sealed partial class MainWindow
 {
+    private static void CheckParsecHostBadge()
+    {
+        var owner = "11111111-1111-4111-8111-111111111111:22222222-2222-4222-8222-222222222222";
+        var now = DateTimeOffset.FromUnixTimeSeconds(3000);
+        var payload = ParsecHostLog.Badge(owner, now);
+        if (payload != "mydrive-parsec-v1:11111111111141118111111111111111:22222222222242228222222222222222:100" ||
+            ParsecHostLog.Badge("invalid", now) != null)
+            throw new IOException("The Parsec badge must encode only an exact Blip device and time.");
+        string folder = Path.Combine(Path.GetTempPath(), "myDrive-parsec-fixture-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(folder);
+        try
+        {
+            var started = new DateTime(2026, 1, 1, 10, 0, 0, DateTimeKind.Local);
+            File.WriteAllText(Path.Combine(folder, "log.1.txt"), "[I 2026-01-01 09:30:00] fixture#41 connected.\n");
+            string latest = Path.Combine(folder, "log.txt");
+            File.WriteAllText(latest, "[I 2026-01-01 10:00:00] ===== Parsec: Started =====\n");
+            if (ParsecHostLog.HasGuest(folder, started)) throw new IOException("A prior Parsec session kept its badge.");
+            File.AppendAllText(latest, "[I 2026-01-01 10:01:00] fixture#42 connected.\n");
+            if (!ParsecHostLog.HasGuest(folder, started)) throw new IOException("An active Parsec guest did not enable the badge.");
+            File.AppendAllText(latest, "[I 2026-01-01 10:02:00] fixture#42 disconnected.\n");
+            if (ParsecHostLog.HasGuest(folder, started)) throw new IOException("The badge stayed on after Parsec disconnected.");
+        }
+        finally { Directory.Delete(folder, true); }
+    }
+
     private async Task CheckBlipContactGrouping()
     {
+        CheckParsecHostBadge();
         const string owner = "11111111-1111-4111-8111-111111111111";
         const string contactAccount = "22222222-2222-4222-8222-222222222222";
         var own = new BlipDevice { Peer = owner + ":" + Guid.NewGuid(), Name = "Studio Mac", NameKnown = true };
