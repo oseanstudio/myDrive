@@ -17,7 +17,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var parsecDrop: ParsecDrop?
     private let popover = NSPopover()
     private var fullWindow: NSWindow?
-    private lazy var blipNotice=BlipReceiveNotice(receiver:appState.blip,openTransfers:{[weak self] in self?.showPopover(view:.transfers)},anchor:{[weak self] in guard let button=self?.statusItem?.button,let window=button.window else{return nil};return window.convertToScreen(button.convert(button.bounds,to:nil))})
+    private lazy var blipNotice = BlipReceiveNotice(receiver: appState.blip) { [weak self] in
+        self?.showPopover(view: .transfers)
+    }
     private var timer: Timer?
     private let networkMonitor = NWPathMonitor()
     private var cancellables = Set<AnyCancellable>()
@@ -25,10 +27,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var outsidePress: (point: NSPoint, button: Int, dragged: Bool)?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        appState.blip.assignParsecDrop = { [weak self] peer in
+        appState.blip.connectParsec = { [weak self] peer, edit in
             guard let self else { return }
             if self.parsecDrop == nil { self.parsecDrop = ParsecDrop(receiver: self.appState.blip) }
-            self.parsecDrop?.assign(peer)
+            self.parsecDrop?.connect(peer, edit: edit)
         }
         SingleInstance.install { [weak self] in self?.showPopover() }
         setupStatusItem()
@@ -92,6 +94,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         parsecDrop?.stop()
+        blipNotice.dismiss()
         timer?.invalidate()
         networkMonitor.cancel()
         SmbMonitor.shared.stop()
@@ -133,7 +136,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         if let window = popover.contentViewController?.view.window, window !== statusItem?.button?.window {
             window.appearance = appearance
         }
-        blipNotice.panel.appearance = appearance
+        blipNotice.appearance = appearance
     }
 
     // MARK: - Status item
@@ -196,13 +199,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     @objc private func statusItemClicked(_ sender: Any?) {
         guard let event = NSApp.currentEvent, event.type == .rightMouseUp else {
-            if popover.isShown {
+            if blipNotice.isShown {
+                blipNotice.dismiss()
+            } else if popover.isShown {
                 popover.performClose(nil)
             } else {
                 showPopover()
             }
             return
         }
+        blipNotice.dismiss()
         popover.performClose(nil)
         showStatusMenu()
     }
@@ -256,6 +262,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     func showPopover(view target: PopupViewKind? = nil, activate: Bool = true) {
         if let target { appState.view = target }
         guard let button = statusItem?.button else { return }
+        blipNotice.dismiss()
         if popover.isShown { return }
         if target == nil, appState.busy == nil, appState.dialog == nil, fullWindow?.isVisible != true {
             appState.view = .transfers
@@ -369,7 +376,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     private func setupNotifications() {
         NotificationCenter.default.addObserver(forName: .myDriveIncomingBlip, object: nil, queue: .main) { [weak self] notification in
-            if let id=notification.object as? String {self?.blipNotice.show(id)}
+            guard let self, let id = notification.object as? String,
+                  let button = self.statusItem?.button, self.blipNotice.canShow(id) else { return }
+            self.popover.close()
+            self.blipNotice.show(id, at: button)
         }
         NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification,
                                                object: nil, queue: .main) { [weak self] notification in

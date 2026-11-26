@@ -14,34 +14,87 @@ namespace MyDrive;
 public sealed partial class MainWindow
 {
     private sealed record ParsecRoute(ParsecSession Session, string Computer, string Owner, BlipDevice Peer);
-    private readonly Dictionary<nint, ParsecRoute> parsecRoutes = new();
+    private sealed record ParsecConnection(int ProcessId, long Started, string Owner, BlipDevice Peer);
+    private ParsecConnection? parsecConnection;
     private Window? parsecDropWindow;
     private TextBlock? parsecDropTitle, parsecDropComputer;
     private ParsecRoute? visibleParsecRoute;
     private nint parsecCandidate;
     private long parsecHoverStarted, parsecLastPressed;
 
-    private async Task AssignParsecWindow(string owner, BlipDevice peer)
+    private async Task ConnectParsec(string owner, BlipDevice peer, bool edit = false)
     {
-        if (diagnosticMode || busy || modalDepth > 0 || owner != BlipOwner) return;
-        var name = new TextBox { Header = "Computer name", MaxLength = 80 };
-        var form = new StackPanel { Spacing = 8 };
-        form.Children.Add(Text("Move the pointer over the connected Parsec window after clicking Assign. Files dropped there will be sent to " +
-            BlipDeviceCaption(peer) + ".", 12));
-        form.Children.Add(name);
-        var dialog = new ContentDialog { Title = "Assign a Parsec window", Content = form, XamlRoot = root.XamlRoot,
-            PrimaryButtonText = "Assign in 4 seconds", CloseButtonText = "Cancel" };
-        if (await ShowDialog(dialog) != ContentDialogResult.Primary) return;
-        if (compact) DismissQuickPopup();
-        await Task.Delay(TimeSpan.FromSeconds(4));
-        if (quitting || owner != BlipOwner) return;
-        if (!GetCursorPos(out var cursor) || ParsecSession.At(new(cursor.X, cursor.Y)) is not { } session)
+        if (diagnosticMode || busy || modalDepth > 0 || owner != BlipOwner || owner.Length == 0) return;
+        string key = owner + "/" + peer.Peer;
+        var computers = Preferences.Current.ParsecComputers;
+        computers.TryGetValue(key, out var host);
+        if (edit || host == null)
         {
-            OpenTransfers();
-            Info("Parsec window unavailable", "Point to a connected Parsec window and assign it again.");
+            var input = new TextBox { Header = "Parsec Peer ID", MaxLength = 64, Text = host ?? "" };
+            var form = new StackPanel { Spacing = 8 };
+            form.Children.Add(Text("Copy the Peer ID from Parsec’s Computers tab. A connection opened from myDrive will send drops to " +
+                BlipDeviceCaption(peer) + ".", 12));
+            form.Children.Add(input);
+            var dialog = new ContentDialog { Title = "Link a Parsec computer", Content = form, XamlRoot = root.XamlRoot,
+                PrimaryButtonText = edit ? "Save" : "Save & Connect", CloseButtonText = "Cancel",
+                SecondaryButtonText = edit && host != null ? "Unlink" : "" };
+            var result = await ShowDialog(dialog);
+            if (owner != BlipOwner || quitting) return;
+            if (result == ContentDialogResult.Secondary)
+            {
+                computers.Remove(key);
+                Preferences.Save();
+                parsecConnection = null;
+                HideParsecDrop();
+                return;
+            }
+            if (result != ContentDialogResult.Primary) return;
+            host = input.Text.Trim();
+            if (!System.Text.RegularExpressions.Regex.IsMatch(host, @"\A[A-Za-z0-9_-]{1,64}\z"))
+            {
+                Info("Invalid Peer ID", "Enter the Peer ID shown in Parsec’s Computers tab.");
+                return;
+            }
+            computers[key] = host;
+            Preferences.Save();
+            if (edit)
+            {
+                parsecConnection = null;
+                HideParsecDrop();
+                return;
+            }
+        }
+
+        if (!System.Text.RegularExpressions.Regex.IsMatch(host, @"\A[A-Za-z0-9_-]{1,64}\z")) return;
+        string executable = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Parsec", "parsecd.exe");
+        if (!File.Exists(executable))
+        {
+            Info("Parsec unavailable", "Install Parsec to connect to a linked computer.");
             return;
         }
-        parsecRoutes[session.Window] = new(session, string.IsNullOrWhiteSpace(name.Text) ? session.Title : name.Text.Trim(), owner, peer);
+        try
+        {
+            parsecConnection = null;
+            HideParsecDrop();
+            var launch = new ProcessStartInfo(executable);
+            launch.ArgumentList.Add("peer_id=" + host);
+            using var process = Process.Start(launch);
+            if (process == null || process.HasExited) return;
+            parsecConnection = new(process.Id, process.StartTime.ToFileTimeUtc(), owner, peer);
+            if (compact) DismissQuickPopup();
+        }
+        catch (Exception error) when (error is System.ComponentModel.Win32Exception or InvalidOperationException)
+        {
+            Error(error);
+        }
+    }
+
+    private ParsecRoute? ResolveParsecRoute(ParsecSession session)
+    {
+        if (parsecConnection is not { } connection || session.ProcessId != connection.ProcessId ||
+            session.Started != connection.Started || connection.Owner != BlipOwner ||
+            IsRecipientArchived(connection.Owner, connection.Peer.Peer)) return null;
+        return new(session, "Parsec connection", connection.Owner, connection.Peer);
     }
 
     private bool TrackParsecHover(PointInt32 point, PointInt32? origin)
@@ -54,7 +107,7 @@ public sealed partial class MainWindow
             return false;
         }
         parsecLastPressed = now;
-        if (parsecRoutes.Count == 0 || busy || modalDepth > 0 || !BlipRunning ||
+        if (parsecConnection == null || busy || modalDepth > 0 || !BlipRunning ||
             Math.Abs((long)point.X - origin.Value.X) + Math.Abs((long)point.Y - origin.Value.Y) < 20)
         {
             HideParsecDrop();
@@ -69,8 +122,7 @@ public sealed partial class MainWindow
                 return true;
             HideParsecDrop();
         }
-        if (ParsecSession.At(point) is not { } session || !parsecRoutes.TryGetValue(session.Window, out var route) ||
-            session != route.Session || !CanUse(route, point) || session.Contains(origin.Value))
+        if (ParsecSession.At(point) is not { } session || ResolveParsecRoute(session) is not { } route || !CanUse(route, point) || session.Contains(origin.Value))
         {
             parsecCandidate = 0;
             return false;
@@ -86,7 +138,8 @@ public sealed partial class MainWindow
 
     private bool CanUse(ParsecRoute route, PointInt32 point) =>
         !busy && modalDepth == 0 && BlipRunning && route.Owner == BlipOwner &&
-        route.Session.Contains(point) && ParsecSession.Read(route.Session.Window) == route.Session;
+        route.Session.Contains(point) && ParsecSession.Read(route.Session.Window) is { } session &&
+        session == route.Session && ResolveParsecRoute(session)?.Peer.Peer == route.Peer.Peer;
 
     private void ShowParsecDrop(ParsecRoute route, PointInt32 point)
     {

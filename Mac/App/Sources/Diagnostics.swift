@@ -278,7 +278,19 @@ enum Diagnostics {
                 captures.append(name)
             }
         }
-        transfer.received_items=[textItem,imageItem]
+        transfer.received_items = [textItem]
+        guard BlipFileKind.receivedClipboardURL(transfer) == nil else {
+            throw BlipReceiverError.message("An ordinary document was treated as pasted clipboard text.")
+        }
+        // Keep the sender's original name even if Downloads renames a duplicate.
+        transfer.item_names = ["Clipboard text.txt"]
+        guard BlipFileKind.receivedClipboardURL(transfer)?.path == text.standardizedFileURL.path else {
+            throw BlipReceiverError.message("The received paste could not be recognized.")
+        }
+        transfer.received_items = [textItem, imageItem]
+        guard BlipFileKind.receivedClipboardURL(transfer) == nil else {
+            throw BlipReceiverError.message("A group of files was treated as a single pasted text.")
+        }
         let receiver=BlipReceiver(root:root.appendingPathComponent("unused-profile"));receiver.peers=[BlipPeer(peer:peer,name:"Studio laptop",name_known:true)];receiver.transfers=[transfer]
         renderReceiveNotice(BlipReceiveNoticeView(receiver: receiver, id: transfer.id, openTransfers: {},
             fixturePreview: BlipFilePreview(text: "Received document preview")), to: directory.appendingPathComponent("blip-received-multiple.png"))

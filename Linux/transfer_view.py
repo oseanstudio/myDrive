@@ -2,6 +2,7 @@
 
 import hashlib
 import os
+import re
 import tempfile
 from collections import defaultdict
 from pathlib import Path
@@ -608,7 +609,9 @@ class TransferView:
             drop.connect("drop", lambda _, value, x, y: self.drop_on_recipient(owner, peer, value))
             controls.add_controller(drop)
             actions.append(("Send folder…", lambda: self.choose_files(folder=True, peer=peer, owner=owner)))
-            actions.append(("Open Parsec drop target…", lambda: self.open_parsec_drop(owner, peer, name)))
+            actions.append(("Connect with Parsec", lambda: self.connect_parsec(owner, peer, name)))
+            actions.append(("Edit Parsec computer…", lambda: self.connect_parsec(owner, peer, name, edit=True)))
+            actions.append(("Open drop target…", lambda: self.open_parsec_drop(owner, peer, name)))
         else:
             name_label = label(name, "heading" if person else None)
             name_label.set_hexpand(True)
@@ -642,7 +645,56 @@ class TransferView:
         self.send(peer, paths, expected_owner=owner)
         return True
 
-    def open_parsec_drop(self, owner, peer, name):
+    def connect_parsec(self, owner, peer, name, edit=False):
+        if owner != self.owner(self.snapshot) or self.app.fixture:
+            return
+        key = owner + "/" + peer
+        computers = self.app.preferences.get("parsec_computers", {})
+        host = computers.get(key)
+
+        def launch(host_id):
+            if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", host_id):
+                self.app.announce("Enter the Peer ID shown in Parsec’s Computers tab.")
+                return
+            try:
+                process = Gio.Subprocess.new(["/usr/bin/parsecd", "peer_id=" + host_id], Gio.SubprocessFlags.NONE)
+            except GLib.Error:
+                self.app.announce("Could not open Parsec. Check that it’s installed.")
+                return
+            self.open_parsec_drop(owner, peer, name, process)
+
+        if host and not edit:
+            launch(host)
+            return
+
+        entry = Gtk.Entry(text=host or "", placeholder_text="Parsec Peer ID",
+                          max_length=64, activates_default=True)
+
+        def save():
+            if owner != self.owner(self.snapshot):
+                return
+            value = entry.get_text().strip()
+            updated = dict(self.app.preferences.get("parsec_computers", {}))
+            if edit and not value:
+                updated.pop(key, None)
+            elif re.fullmatch(r"[A-Za-z0-9_-]{1,64}", value):
+                updated[key] = value
+            else:
+                self.app.announce("Enter the Peer ID shown in Parsec’s Computers tab.")
+                return
+            self.app.change_preference("parsec_computers", updated)
+            if edit:
+                if self.parsec_drop:
+                    self.parsec_drop.close()
+            elif self.app.preferences.get("parsec_computers", {}).get(key) == value:
+                launch(value)
+
+        explanation = label("Copy the Peer ID from Parsec’s Computers tab. A connection opened from myDrive sends drops to " + name + ".")
+        if edit:
+            explanation.set_text(explanation.get_text() + " Clear the ID to unlink.")
+        self.app.dialog("Link a Parsec computer", "Save" if edit else "Save & Connect", [explanation, entry], save)
+
+    def open_parsec_drop(self, owner, peer, name, process=None):
         if owner != self.owner(self.snapshot) or self.app.fixture:
             return
         if self.parsec_drop:
@@ -671,6 +723,12 @@ class TransferView:
         content.add_controller(drop)
         window.connect("close-request", closed)
         self.parsec_drop = window
+        if process:
+            def exited(child, result):
+                child.wait_finish(result)
+                if self.parsec_drop is window:
+                    window.close()
+            process.wait_async(None, exited)
         window.present()
         self.app.dismiss_compact()
 

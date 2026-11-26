@@ -44,7 +44,7 @@ struct BlipQueuedSend: Codable, Identifiable {
     @Published private(set) var people: [BlipPeer] = []
     @Published var transfers: [BlipTransfer] = []
     @Published var problem: String?
-    var assignParsecDrop: ((BlipPeer) -> Void)?
+    var connectParsec: ((BlipPeer, Bool) -> Void)?
     @Published private(set) var policy = BlipPolicy()
     @Published var autoOpen = PrefStore.shared.preferences.blipAutoOpenLinks
     @Published private(set) var backgroundEnabled = PrefStore.shared.preferences.blipBackgroundReceiving ?? true
@@ -68,6 +68,8 @@ struct BlipQueuedSend: Codable, Identifiable {
     private var task: Task<Void, Never>?
     private var session = ""
     private(set) var account = ""
+    @Published private(set) var autoCopiedTextID: String?
+    private var clipboardHandled = Set<String>()
     private var noticeSession=""
     private var noticeStates:[String:String]=[:]
     private var contacts:BlipContactStore?
@@ -569,9 +571,16 @@ struct BlipQueuedSend: Codable, Identifiable {
             problem = receiveProblem
             setActivity(true)
             let baseline=noticeSession != identity
-            if baseline {noticeStates=[:];noticeSession=identity}
-            for transfer in transfers where transfer.direction=="Incoming" && (transfer.dismissed != true || transfer.confirmed) {
-                let state=transfer.status+":"+String(transfer.has_error),changed=noticeStates[transfer.id] != state
+            if baseline {
+                noticeStates = [:]
+                noticeSession = identity
+                autoCopiedTextID = nil
+                clipboardHandled = Set(transfers.filter(\.confirmed).map(\.id))
+            }
+            for transfer in transfers where transfer.direction == "Incoming" && (transfer.dismissed != true || transfer.confirmed) {
+                await copyNewClipboardText(transfer, owner: identity)
+                let state = "\(transfer.status):\(transfer.has_error):\(transfer.received_items?.count ?? 0)"
+                let changed = noticeStates[transfer.id] != state
                 noticeStates[transfer.id]=state
                 let live = !transfer.has_error && ["Invited","Pending","Active","Paused","ResumeRequested"].contains(transfer.status)
                 if changed && (!baseline || live) {NotificationCenter.default.post(name:.myDriveIncomingBlip,object:transfer.id)}
@@ -610,6 +619,20 @@ struct BlipQueuedSend: Codable, Identifiable {
             }
         } catch { problem = error.localizedDescription; state = "Blip needs attention"; session = "";selfPeer="";setActivity(false) }
     }
+    private func copyNewClipboardText(_ transfer: BlipTransfer, owner: String) async {
+        guard !clipboardHandled.contains(transfer.id),
+              let file = BlipFileKind.receivedClipboardURL(transfer) else { return }
+        clipboardHandled.insert(transfer.id)
+        let clipboard = NSPasteboard.general
+        let changeCount = clipboard.changeCount
+        guard let text = try? await Task.detached(operation: { try BlipFileKind.clipboardText(file) }).value,
+              !text.isEmpty, selfPeer == owner, clipboard.changeCount == changeCount else { return }
+        do {
+            try BlipFileActions.writeText(text, clipboard: clipboard)
+            autoCopiedTextID = transfer.id
+        } catch { problem = error.localizedDescription }
+    }
+
     func signIn() {
         guard needsSignIn, !signingIn else { return }
         let verifying = registrationCodeSent

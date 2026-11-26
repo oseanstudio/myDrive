@@ -21,6 +21,7 @@ struct Preferences: Codable, Equatable {
         set { blipAutoOpenLinksOverride = newValue }
     }
     var blipBackgroundReceiving: Bool? = nil
+    var parsecComputers: [String: String]? = nil
     /// SMB shares (`user@host/share`) seen mounted on this Mac, so ones that
     /// drop off the mount list can be remounted automatically.
     var knownSmbShares: [String] = []
@@ -40,6 +41,7 @@ struct Preferences: Codable, Equatable {
         case autoInstallUpdates = "auto_install_updates"
         case blipAutoOpenLinksOverride = "blip_auto_open_links"
         case blipBackgroundReceiving = "blip_background_receiving"
+        case parsecComputers = "parsec_computers"
         case knownSmbShares = "known_smb_shares"
     }
 }

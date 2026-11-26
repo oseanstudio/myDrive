@@ -6,30 +6,41 @@ private struct ReceiveNoticeHeight: PreferenceKey {
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
 }
 
-@MainActor final class BlipReceiveNotice:NSObject,NSWindowDelegate {
-    static let width: CGFloat = 320
-    private let receiver:BlipReceiver
-    let panel:NSPanel
-    private var id=""
-    private var dismissed=Set<String>()
-    private var expiry:Timer?
-    private let openTransfers:()->Void
-    private let anchor:()->NSRect?
-    init(receiver:BlipReceiver,openTransfers:@escaping ()->Void,anchor:@escaping ()->NSRect?) {
-        self.anchor=anchor
-        self.receiver=receiver;self.openTransfers=openTransfers
-        panel=NSPanel(contentRect:NSRect(x:0,y:0,width:Self.width,height:96),styleMask:[.titled,.closable,.nonactivatingPanel],backing:.buffered,defer:false)
-        super.init();panel.title="Blip transfer";panel.level = .floating;panel.hidesOnDeactivate=false;panel.isReleasedWhenClosed=false;panel.delegate=self
-        panel.titlebarAppearsTransparent = true
-        panel.collectionBehavior=[.moveToActiveSpace,.fullScreenAuxiliary]
+@MainActor final class BlipReceiveNotice: NSObject, NSPopoverDelegate {
+    static let width: CGFloat = 308
+    private let receiver: BlipReceiver
+    private let popover = NSPopover()
+    private let openTransfers: () -> Void
+    private var id = ""
+    private var dismissed = Set<String>()
+    private var expiry: Timer?
+    var appearance: NSAppearance? { didSet { popover.appearance = appearance } }
+    var isShown: Bool { popover.isShown }
+
+    init(receiver: BlipReceiver, openTransfers: @escaping () -> Void) {
+        self.receiver = receiver
+        self.openTransfers = openTransfers
+        super.init()
+        popover.behavior = .applicationDefined
+        popover.delegate = self
     }
-    func show(_ id:String) {
-        guard !dismissed.contains(id),let transfer=receiver.transfers.first(where:{$0.id==id}) else {return}
-        self.id=id;expiry?.invalidate()
-        let view = BlipReceiveNoticeView(receiver: receiver, id: id, openTransfers: openTransfers,
-                                        onCopy: { [weak self] in
-                                            if self?.id == id { self?.dismiss() }
-                                        })
+
+    func canShow(_ id: String) -> Bool {
+        !dismissed.contains(id) && receiver.transfers.contains(where: { $0.id == id })
+    }
+
+    func show(_ id: String, at button: NSStatusBarButton) {
+        guard canShow(id) else { return }
+        if self.id != id || !popover.isShown {
+            self.id = id
+            let view = BlipReceiveNoticeView(
+                receiver: receiver, id: id,
+                openTransfers: { [weak self] in self?.dismiss(); self?.openTransfers() },
+                onDismiss: { [weak self] in
+                    if self?.id == id { self?.dismiss() }
+                },
+                onActionError: { [weak receiver] in receiver?.problem = $0 }
+            )
             .frame(width: Self.width)
             .fixedSize(horizontal: false, vertical: true)
             .background {
@@ -43,50 +54,70 @@ private struct ReceiveNoticeHeight: PreferenceKey {
                 }
             }
             .onHover { [weak self] inside in self?.updateExpiry(hovered: inside) }
-        let hosting = NSHostingView(rootView: view)
-        panel.contentView = hosting
-        sizeToContent(hosting.fittingSize.height)
-        if !panel.isVisible {
-            let icon=anchor(),screen=icon.flatMap{rect in NSScreen.screens.first{$0.frame.intersects(rect)}} ?? NSScreen.main
-            if let screen {let frame=screen.visibleFrame,x=(icon?.maxX ?? frame.maxX)-panel.frame.width,y=(icon?.minY ?? frame.maxY)-panel.frame.height-8;panel.setFrameOrigin(NSPoint(x:min(max(x,frame.minX+8),frame.maxX-panel.frame.width-8),y:min(max(y,frame.minY+8),frame.maxY-panel.frame.height-8)))}
+            let controller = NSHostingController(rootView: view)
+            popover.contentViewController = controller
+            sizeToContent(controller.view.fittingSize.height)
         }
-        panel.orderFrontRegardless()
-        updateExpiry(hovered:false)
+        if !popover.isShown {
+            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        }
+        updateExpiry(hovered: false)
     }
 
     private func sizeToContent(_ height: CGFloat) {
-        guard height.isFinite, height > 0 else { return }
-        let size = panel.frameRect(forContentRect: NSRect(x: 0, y: 0, width: Self.width, height: ceil(height))).size
-        guard abs(panel.frame.height - size.height) >= 1 else { return }
-        var frame = panel.frame
-        frame.origin.y = frame.maxY - size.height
-        frame.size = size
-        if panel.isVisible, let screen = panel.screen {
-            frame.origin.y = max(screen.visibleFrame.minY + 8, frame.origin.y)
-        }
-        panel.setFrame(frame, display: panel.isVisible)
+        guard height.isFinite, height > 0, abs(popover.contentSize.height - height) >= 1 else { return }
+        popover.contentSize = NSSize(width: Self.width, height: ceil(height))
     }
-    private func updateExpiry(hovered:Bool){expiry?.invalidate();guard !hovered,let transfer=receiver.transfers.first(where:{$0.id==id}),transfer.confirmed||transfer.has_error||transfer.status=="Cancelled" else{return};expiry=Timer.scheduledTimer(withTimeInterval:30,repeats:false){[weak self]_ in Task{@MainActor in self?.panel.orderOut(nil)}}}
-    private func dismiss() { dismissed.insert(id); stop() }
-    func windowShouldClose(_ sender:NSWindow)->Bool { dismiss(); return false }
-    func stop(){expiry?.invalidate();panel.orderOut(nil)}
+
+    private func updateExpiry(hovered: Bool) {
+        expiry?.invalidate()
+        guard !hovered, let transfer = receiver.transfers.first(where: { $0.id == id }),
+              transfer.confirmed || transfer.has_error || transfer.status == "Cancelled" else { return }
+        let noticeID = id
+        expiry = Timer.scheduledTimer(withTimeInterval: 30, repeats: false) { [weak self] _ in
+            Task { @MainActor in
+                if self?.id == noticeID { self?.dismiss() }
+            }
+        }
+    }
+
+    func dismiss() {
+        if !id.isEmpty { dismissed.insert(id) }
+        expiry?.invalidate()
+        expiry = nil
+        popover.close()
+    }
+
+    func popoverDidClose(_ notification: Notification) {
+        expiry?.invalidate()
+        expiry = nil
+        id = ""
+    }
 }
 
-struct BlipReceiveNoticeView:View {
+struct BlipReceiveNoticeView: View {
     @ObservedObject var receiver:BlipReceiver
     let id:String
     let openTransfers:()->Void
     var fixturePreview:BlipFilePreview?=nil
-    var onCopy: () -> Void = {}
+    var onDismiss: () -> Void = {}
+    var onActionError: (String) -> Void = { _ in }
     var body:some View {
         VStack(alignment:.leading,spacing:7) {
             if let transfer=receiver.transfers.first(where:{$0.id==id}) {
                 HStack(spacing:8) {
                     Text(receiver.senderLabel(transfer.peer)).font(.system(size:13,weight:.semibold)).lineLimit(1).truncationMode(.tail)
                     Spacer(minLength:0)
-                    Text(transfer.has_error ? "Needs attention" : transfer.confirmed ? "Received" : receiver.receiving.contains(transfer.id) ? "Requesting…" : transfer.status=="Pending" ? "Connecting" : transfer.status).font(.system(size:11)).foregroundStyle(.secondary).lineLimit(1).fixedSize(horizontal:true,vertical:false)
+                    let copied = receiver.autoCopiedTextID == id
+                    Text(copied ? "Copied" : statusText(transfer))
+                        .font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
+                        .lineLimit(1).fixedSize(horizontal: true, vertical: false)
+                    Button(action: onDismiss) {
+                        Image(systemName: "xmark.circle.fill").foregroundStyle(.tertiary)
+                    }
+                    .buttonStyle(.plain).accessibilityLabel("Dismiss transfer")
                 }
-                BlipReceivedFileView(transfer:transfer,fixturePreview:fixturePreview,onCopy:onCopy).id(transfer.id)
+                BlipReceivedFileView(transfer: transfer, fixturePreview: fixturePreview, onAction: onDismiss, onActionError: onActionError).id(transfer.id)
                 if transfer.pending,let problem=receiver.problem {Text(problem).font(.system(size:11)).foregroundStyle(.red).lineLimit(3)}
                 if transfer.status=="Active" {
                     if let total=transfer.total_bytes,total>0,let progress=transfer.progress,progress>=0,progress<=total {
@@ -100,6 +131,13 @@ struct BlipReceiveNoticeView:View {
                     }.controlSize(.small)
                 }
             } else {Text("Open the Blip tab for the current status.").font(.system(size:12));Button(PopupViewKind.transfers.label,action:openTransfers)}
-        }.padding(12).frame(maxWidth:.infinity,alignment:.leading)
+        }.padding(12).frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func statusText(_ transfer: BlipTransfer) -> String {
+        if transfer.has_error { return "Needs attention" }
+        if transfer.confirmed { return "Received" }
+        if receiver.receiving.contains(transfer.id) { return "Requesting…" }
+        return transfer.status == "Pending" ? "Connecting" : transfer.status
     }
 }

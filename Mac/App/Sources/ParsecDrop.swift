@@ -20,7 +20,14 @@ import CoreGraphics
     private let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 230, height: 66),
                                 styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
     private let target = ParsecDropView(frame: .zero)
-    private var routes: [CGWindowID: Route] = [:]
+    private struct Connection {
+        let app: NSRunningApplication
+        let owner: String
+        let peer: BlipPeer
+    }
+
+    private var connection: Connection?
+    private var starting = false
     private var timer: Timer?
     private var idlePoint: CGPoint?
     private var startPoint: CGPoint?
@@ -40,35 +47,85 @@ import CoreGraphics
         target.receive = { [weak self] urls in self?.send(urls) == true }
     }
 
-    func assign(_ peer: BlipPeer) {
+    func connect(_ peer: BlipPeer, edit: Bool) {
         let owner = receiver.recipientOwner
-        guard !owner.isEmpty else { return }
-        let alert = NSAlert()
-        alert.messageText = "Assign a Parsec window"
-        alert.informativeText = "Move the pointer over the connected Parsec window after clicking Assign. Files dropped there will be sent to \(receiver.recipientLabel(peer))."
-        alert.addButton(withTitle: "Assign in 4 seconds")
-        alert.addButton(withTitle: "Cancel")
-        let name = NSTextField(frame: NSRect(x: 0, y: 0, width: 250, height: 24))
-        name.placeholderString = "Computer name"
-        name.setAccessibilityLabel("Computer name")
-        alert.accessoryView = name
-        guard BlipReceiver.runSignInPrompt(alert, field: name) == .alertFirstButtonReturn else { return }
-        let label = String(name.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).prefix(80))
-        Task {
-            try? await Task.sleep(for: .seconds(4))
-            guard owner == receiver.recipientOwner,
-                  let (session, _) = window(at: NSEvent.mouseLocation) else {
-                receiver.reportSend("Point to an open Parsec window and assign it again.")
+        guard !owner.isEmpty, !starting else { return }
+        let key = owner + "/" + peer.peer
+        let current = PrefStore.shared.preferences.parsecComputers?[key]
+        var host = current ?? ""
+        if edit || current == nil {
+            let prompt = NSAlert()
+            prompt.messageText = "Link a Parsec computer"
+            prompt.informativeText = "Copy the Peer ID from Parsec’s Computers tab. A connection to that computer from myDrive will send drops to " + receiver.recipientLabel(peer) + "."
+            prompt.addButton(withTitle: edit ? "Save" : "Save & Connect")
+            prompt.addButton(withTitle: "Cancel")
+            if edit, current != nil { prompt.addButton(withTitle: "Unlink") }
+            let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 290, height: 24))
+            input.placeholderString = "Parsec Peer ID"
+            input.setAccessibilityLabel("Parsec Peer ID")
+            input.stringValue = host
+            prompt.accessoryView = input
+            let result = BlipReceiver.runSignInPrompt(prompt, field: input)
+            guard owner == receiver.recipientOwner else { return }
+            if result == .alertThirdButtonReturn {
+                PrefStore.shared.update { $0.parsecComputers?.removeValue(forKey: key) }
+                connection = nil
+                hide()
                 return
             }
-            routes[session.window] = Route(session: session, computer: label.isEmpty ? (session.title ?? "Parsec") : label,
-                                           owner: owner, peer: peer)
-            receiver.reportSend("Parsec window assigned to " + receiver.recipientLabel(peer) + ".")
+            guard result == .alertFirstButtonReturn else { return }
+            host = input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard host.range(of: #"^[A-Za-z0-9_-]{1,64}$"#, options: .regularExpression) != nil else {
+                receiver.reportSend("Enter the Parsec Peer ID shown in the Computers tab.")
+                return
+            }
+            PrefStore.shared.update {
+                var computers = $0.parsecComputers ?? [:]
+                computers[key] = host
+                $0.parsecComputers = computers
+            }
+            if edit { connection = nil; hide(); return }
+        }
+
+        let urls = [
+            FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Applications/Parsec.app"),
+            URL(fileURLWithPath: "/Applications/Parsec.app", isDirectory: true)
+        ]
+        guard let url = urls.first(where: { FileManager.default.fileExists(atPath: $0.path) }) else {
+            receiver.reportSend("Install Parsec to connect to a linked computer.")
+            return
+        }
+        let existing = Set(NSWorkspace.shared.runningApplications.map(\.processIdentifier))
+        let config = NSWorkspace.OpenConfiguration()
+        config.createsNewApplicationInstance = true
+        config.arguments = ["peer_id=" + host]
+        connection = nil
+        hide()
+        starting = true
+        Task {
+            defer { starting = false }
+            do {
+                let app = try await NSWorkspace.shared.openApplication(at: url, configuration: config)
+                guard owner == receiver.recipientOwner else { return }
+                guard !existing.contains(app.processIdentifier), !app.isTerminated else {
+                    receiver.reportSend("Parsec reused an existing session. Use the recipient row to send files.")
+                    return
+                }
+                connection = Connection(app: app, owner: owner, peer: peer)
+            } catch { receiver.reportSend("Could not open Parsec. " + error.localizedDescription) }
         }
     }
 
+    private func route(for session: Session) -> Route? {
+        guard let connection, !connection.app.isTerminated, connection.owner == receiver.recipientOwner,
+              connection.app.processIdentifier == session.process, connection.app.launchDate == session.launched,
+              let peer = (receiver.recipients + receiver.people + receiver.directoryRecipients)
+                .first(where: { $0.peer == connection.peer.peer && !receiver.isArchived($0) }) else { return nil }
+        return Route(session: session, computer: "Parsec connection", owner: connection.owner, peer: peer)
+    }
+
     func beginPointerPress() {
-        guard !routes.isEmpty, timer == nil else { return }
+        guard connection?.app.isTerminated == false, timer == nil else { return }
         idlePoint = NSEvent.mouseLocation
         start()
     }
@@ -77,7 +134,7 @@ import CoreGraphics
         timer?.invalidate()
         timer = nil
         shown = nil
-        routes.removeAll()
+        connection = nil
         panel.orderOut(nil)
     }
 
@@ -108,7 +165,7 @@ import CoreGraphics
         guard let startPoint, hypot(point.x - startPoint.x, point.y - startPoint.y) >= 20,
               NSApp.modalWindow == nil, receiver.connected, !receiver.sending,
               let (session, bounds) = window(at: point),
-              let route = routes[session.window], route.session == session, route.owner == receiver.recipientOwner,
+              let route = route(for: session),
               !bounds.contains(startPoint) else { candidate = nil; hide(); return }
         if shown?.session == session, panel.frame.contains(point) { return }
         hide()
@@ -133,8 +190,7 @@ import CoreGraphics
     private func canSend() -> Bool {
         guard let shown, receiver.connected, !receiver.sending, shown.owner == receiver.recipientOwner,
               let (actual, _) = window(at: NSEvent.mouseLocation) else { return false }
-        return shown.session == actual && (receiver.recipients + receiver.people + receiver.directoryRecipients)
-            .contains { $0.peer == shown.peer.peer && !receiver.isArchived($0) }
+        return shown.session == actual && route(for: actual)?.peer.peer == shown.peer.peer
     }
 
     private func send(_ candidates: [URL]) -> Bool {

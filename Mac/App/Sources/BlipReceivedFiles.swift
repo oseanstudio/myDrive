@@ -17,6 +17,13 @@ enum BlipFileKind {
         guard let text,!text.contains("\0") else{return nil};return text.components(separatedBy:.newlines).prefix(6).joined(separator:"\n")
     }
 
+    static func receivedClipboardURL(_ transfer: BlipTransfer) -> URL? {
+        guard transfer.item_names == ["Clipboard text.txt"],
+              let items = transfer.received_items, items.count == 1, let item = items.first,
+              !item.is_directory, let url = BlipReceivedPath.url(item, in: transfer), text(url) else { return nil }
+        return url
+    }
+
     static func clipboardText(_ url: URL) throws -> String? {
         guard text(url) else { return nil }
         let limit = 16 * 1024 * 1024
@@ -135,21 +142,28 @@ private final class BlipThumbnailReply:@unchecked Sendable {
 @MainActor struct BlipReceivedFileView:View {
     let transfer:BlipTransfer
     var fixturePreview:BlipFilePreview?=nil
-    var onCopy: () -> Void = {}
+    var onAction: () -> Void = {}
+    var onActionError: (String) -> Void = { _ in }
     @State private var selection=""
     @State private var preview=BlipFilePreview()
     @State private var message=""
     private var items:[BlipReceivedItem]{transfer.direction=="Incoming"&&transfer.confirmed ? Array((transfer.received_items ?? []).prefix(256)).sorted{$0.name<$1.name}:[]}
     private var selected:BlipReceivedItem?{items.first{$0.path==selection} ?? items.first}
     private var file:URL?{selected.flatMap{BlipReceivedPath.url($0,in:transfer)}}
-    private func act(after: () -> Void = {}, _ action: () throws -> Void) {
-        do { try action(); message = ""; after() }
-        catch { message = error.localizedDescription }
+    private func showActionError(_ error: Error) {
+        message = error.localizedDescription
+        onActionError(message)
+    }
+    private func act(_ action: () throws -> Void) {
+        onAction()
+        do { try action(); message = "" }
+        catch { showActionError(error) }
     }
     private func copy(_ item: BlipReceivedItem) {
+        onAction()
         Task {
-            do { try await BlipFileActions.copyItem(item, transfer); onCopy() }
-            catch { message = error.localizedDescription }
+            do { try await BlipFileActions.copyItem(item, transfer) }
+            catch { showActionError(error) }
         }
     }
     private func actionMenu(_ item: BlipReceivedItem) -> some View {
@@ -170,17 +184,17 @@ private final class BlipThumbnailReply:@unchecked Sendable {
             }.disabled(item.is_directory || isShortcut)
             Button("Copy") { copy(item) }
             if isText {
-                Button("Copy File") { act(after: onCopy) { try BlipFileActions.copy([item], transfer) } }
+                Button("Copy File") { act { try BlipFileActions.copy([item], transfer) } }
             }
-            Button("Copy Path") { act(after: onCopy) { try BlipFileActions.copy([item], transfer, paths: true) } }
+            Button("Copy Path") { act { try BlipFileActions.copy([item], transfer, paths: true) } }
             Divider()
             Button("Open Folder") { act { try BlipFileActions.folder(item, transfer) } }
             Button("Show in Finder") { act { try BlipFileActions.reveal(item, transfer) } }
-            Button("Quick Look") { if let location { BlipQuickLook.shared.show(location) } }.disabled(isShortcut)
+            Button("Quick Look") { act { if let location { BlipQuickLook.shared.show(location) } } }.disabled(isShortcut)
             if items.count > 1 {
                 Divider()
-                Button("Copy Listed Files") { act(after: onCopy) { try BlipFileActions.copy(items, transfer) } }
-                Button("Copy Listed Paths") { act(after: onCopy) { try BlipFileActions.copy(items, transfer, paths: true) } }
+                Button("Copy Listed Files") { act { try BlipFileActions.copy(items, transfer) } }
+                Button("Copy Listed Paths") { act { try BlipFileActions.copy(items, transfer, paths: true) } }
             }
         } label: {
             Image(systemName: "chevron.down").font(.system(size: 10))
