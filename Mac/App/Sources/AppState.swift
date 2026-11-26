@@ -327,6 +327,11 @@ final class AppState: ObservableObject {
         }
     }
 
+    var updateOfferLabel: String {
+        if installingAppUpdate { return "Updating…" }
+        return preparedUpdatePath == nil ? "Update" : "Install"
+    }
+
     func updateOfferTitle(_ version: String) -> String {
         if applyingAppUpdate { return "Installing update…" }
         if installingAppUpdate { return "Downloading myDrive \(version)…" }

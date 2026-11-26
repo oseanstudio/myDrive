@@ -12,6 +12,7 @@ namespace MyDrive;
 public sealed partial class MainWindow
 {
     private Button quickExpand = null!;
+    private StackPanel fullVersionFooter = null!;
 
     private static TextBlock QuickText(string value,double size=12,bool strong=false)
     {
@@ -42,10 +43,9 @@ public sealed partial class MainWindow
         for(int i=0;i<3;i++)quickHeader.ColumnDefinitions.Add(new(){Width=GridLength.Auto});
         quickHeader.RowDefinitions.Add(new() { Height = GridLength.Auto });
         quickHeader.RowDefinitions.Add(new() { Height = GridLength.Auto });
-        var identity = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4, VerticalAlignment = VerticalAlignment.Center };
-        identity.Children.Add(QuickText("myDrive", 13, true));
-        identity.Children.Add(new TextBlock { Text = DisplayVersion, FontSize = 10, Opacity = .73, VerticalAlignment = VerticalAlignment.Center });
-        quickHeader.Children.Add(identity);
+        quickHeader.Children.Add(BuildVersionRow(quickUpdateOffer));
+        fullVersionFooter = BuildVersionRow(updateOffer);
+        fullVersionFooter.Margin = new Thickness(12, 0, 0, 0);
         var add=QuickIcon("\uE710","Add folder or connection",()=>{});var addMenu=new MenuFlyout();
         MenuAction(addMenu,"Sync a folder…",()=>_=ShowQuickShare());
         MenuAction(addMenu,"Send with Blip…",()=>{NavigateQuick("transfers");if(blipSnapshot?.Status.Authenticated==true)_=ShowBlipSend();});
@@ -79,6 +79,15 @@ public sealed partial class MainWindow
         Grid.SetColumnSpan(tabs, quickHeader.ColumnDefinitions.Count);
         quickHeader.Children.Add(tabs);
     }
+    private static StackPanel BuildVersionRow(Button update)
+    {
+        var identity = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4, VerticalAlignment = VerticalAlignment.Center };
+        identity.Children.Add(QuickText("myDrive", 13, true));
+        identity.Children.Add(new TextBlock { Text = DisplayVersion, FontSize = 10, Opacity = .73, VerticalAlignment = VerticalAlignment.Center });
+        identity.Children.Add(update);
+        return identity;
+    }
+
     private void NavigateQuick(string view)
     {
         if(busy)return;currentView=view;

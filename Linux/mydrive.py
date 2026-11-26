@@ -105,6 +105,10 @@ class MyDrive(Gtk.Application):
                   "Activity": "Activity", "Settings": "Settings"}
         header_content = Gtk.Box(spacing=7)
         header_content.append(label(f"myDrive {VERSION}", "heading"))
+        self.update_offer = button("", self.install_update)
+        self.update_offer.set_valign(Gtk.Align.CENTER)
+        self.update_offer.set_visible(False)
+        header_content.append(self.update_offer)
         header.set_title_widget(header_content)
         controls = Gtk.Box(spacing=4)
         controls.append(menu([("Sync a folder…", self.share_folder), ("Quit myDrive", self.quit)]))
@@ -136,11 +140,6 @@ class MyDrive(Gtk.Application):
         self.status.set_margin_end(8)
         self.status.set_visible(False)
         content.append(self.status)
-        self.update_offer = button("", self.install_update)
-        self.update_offer.set_halign(Gtk.Align.START)
-        self.update_offer.set_margin_start(8)
-        self.update_offer.set_visible(False)
-        content.append(self.update_offer)
         self.stack = Gtk.Stack(vhomogeneous=False, vexpand=True)
         content.append(self.stack)
         self.pages = {}
@@ -177,6 +176,7 @@ class MyDrive(Gtk.Application):
         if self.fixture:
             assert header.get_decoration_layout() == ":close" and controls.get_last_child() == expand
             assert expand.get_icon_name() == "view-fullscreen-symbolic" and content.get_last_child() == self.stack
+            assert header_content.get_last_child() == self.update_offer
             assert self.stack.get_visible_child_name() == "Send" and tabs.get_stack() == self.stack
             assert self.stack.get_pages().get_item(0).get_title() == "Blip"
             assert self.stack.get_pages().get_item(1).get_title() == "Syncthing"
@@ -335,11 +335,18 @@ class MyDrive(Gtk.Application):
             for transfer in self.transfer_view.snapshot.get("transfers", [])
         )
 
+    def show_update_offer(self, label_text, title, enabled=True):
+        self.update_offer.set_label(label_text)
+        self.update_offer.set_tooltip_text(title)
+        self.update_offer.update_property([Gtk.AccessibleProperty.LABEL], [title])
+        self.update_offer.set_sensitive(enabled)
+
     def update_offer_label(self):
-        self.update_offer.set_sensitive(True)
         if self.available_update:
-            action = "Install myDrive" if self.prepared_update else "Update to myDrive"
-            self.update_offer.set_label(f"{action} {self.available_update}")
+            if self.prepared_update:
+                self.show_update_offer("Install", f"Install myDrive {self.available_update}")
+            else:
+                self.show_update_offer("Update", f"Update to myDrive {self.available_update}")
 
     def install_update(self, automatic=False):
         if self.stopping or not self.available_update or self.pending["updates"]:
@@ -356,7 +363,6 @@ class MyDrive(Gtk.Application):
             if not automatic:
                 self.announce("Open myDrive from its AppImage before updating.")
             return
-        self.update_offer.set_sensitive(False)
         self.manual_update_requested |= not automatic
 
         def failed(message):
@@ -367,7 +373,7 @@ class MyDrive(Gtk.Application):
             self.sync_auto_install_timer()
 
         if self.prepared_update:
-            self.update_offer.set_label("Installing update…")
+            self.show_update_offer("Updating…", f"Installing myDrive {self.available_update}…", enabled=False)
             path = self.prepared_update
 
             def applied(_):
@@ -379,7 +385,7 @@ class MyDrive(Gtk.Application):
             return
 
         target = self.available_update
-        self.update_offer.set_label(f"Downloading myDrive {target}…")
+        self.show_update_offer("Updating…", f"Downloading myDrive {target}…", enabled=False)
 
         def download():
             result = core("update.stage", payload={

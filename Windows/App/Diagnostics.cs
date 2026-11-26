@@ -37,6 +37,18 @@ public sealed partial class MainWindow
                 throw new IOException("The tabs must start with Blip and select Syncthing when its page opens.");
             var list=syncFolderList??throw new IOException("The compact Sync list did not load.");
             double top=list.TransformToVisual(root).TransformPoint(new Windows.Foundation.Point(0,0)).Y;
+            double viewportHeight = list.ActualHeight;
+            var windowSize = AppWindow.Size;
+            ShowUpdateOffers("Update", "Update to myDrive 99.99.99", enabled: true);
+            root.UpdateLayout();
+            if (quickUpdateOffer.Parent is not Microsoft.UI.Xaml.Controls.StackPanel identity ||
+                identity.Parent != quickHeader || identity.Children[^1] != quickUpdateOffer ||
+                Math.Abs(list.TransformToVisual(root).TransformPoint(new Windows.Foundation.Point(0,0)).Y - top) > 1 ||
+                Math.Abs(list.ActualHeight - viewportHeight) > 1 ||
+                AppWindow.Size.Width != windowSize.Width || AppWindow.Size.Height != windowSize.Height)
+                throw new IOException("Offering an update shifted or resized the compact viewport.");
+            ShowUpdateOffers("Update", null, enabled: true);
+            root.UpdateLayout();
             double gap=root.ActualHeight-top-list.ActualHeight;
             if(pageScroll.Visibility!=Microsoft.UI.Xaml.Visibility.Collapsed||list.ActualHeight<200||Math.Abs(gap)>2)
                 throw new IOException($"The Sync list does not reach the bottom of the popup (gap {gap:F1}, list height {list.ActualHeight:F1}).");

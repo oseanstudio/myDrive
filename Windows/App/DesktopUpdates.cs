@@ -2,6 +2,7 @@ using System.Text.Json;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Automation;
 using Microsoft.Win32;
 
 namespace MyDrive;
@@ -10,10 +11,18 @@ public sealed partial class MainWindow
 {
     private readonly DispatcherTimer updateTimer = new() { Interval = TimeSpan.FromHours(6) };
     private readonly DispatcherTimer autoUpdateTimer = new() { Interval = TimeSpan.FromSeconds(30) };
-    private readonly Button updateOffer = new()
+    private readonly Button updateOffer = CreateUpdateOffer();
+    private readonly Button quickUpdateOffer = CreateUpdateOffer();
+
+    private static Button CreateUpdateOffer() => new()
     {
         Visibility = Visibility.Collapsed,
-        Margin = new Thickness(8, 0, 8, 0),
+        Height = 26,
+        MinHeight = 0,
+        MinWidth = 0,
+        FontSize = 11,
+        Padding = new Thickness(7, 0, 7, 0),
+        VerticalAlignment = VerticalAlignment.Center,
     };
     private DateTime autoUpdateAfter;
     private bool updateChecksStarted;
@@ -27,6 +36,7 @@ public sealed partial class MainWindow
     private async void StartUpdateChecks()
     {
         updateOffer.Click += (_, _) => _ = InstallUpdate();
+        quickUpdateOffer.Click += (_, _) => _ = InstallUpdate();
         updateTimer.Tick += (_, _) => _ = CheckForUpdate();
         autoUpdateTimer.Tick += (_, _) =>
         {
@@ -126,11 +136,23 @@ public sealed partial class MainWindow
 
     private void UpdateOfferLabel()
     {
-        updateOffer.IsEnabled = !updatingApp;
-        updateOffer.Visibility = offeredAppVersion is null ? Visibility.Collapsed : Visibility.Visible;
-        if (offeredAppVersion is { } version)
-            updateOffer.Content = preparedUpdatePath is null ? $"Update to myDrive {version}" : $"Install myDrive {version}";
+        string? title = offeredAppVersion is { } version
+            ? preparedUpdatePath is null ? $"Update to myDrive {version}" : $"Install myDrive {version}"
+            : null;
+        ShowUpdateOffers(preparedUpdatePath is null ? "Update" : "Install", title, enabled: !updatingApp);
         UpdateAutoInstallTimer();
+    }
+
+    private void ShowUpdateOffers(string label, string? title, bool enabled)
+    {
+        foreach (var button in new[] { quickUpdateOffer, updateOffer })
+        {
+            button.Visibility = title is null ? Visibility.Collapsed : Visibility.Visible;
+            button.Content = label;
+            button.IsEnabled = enabled;
+            ToolTipService.SetToolTip(button, title);
+            AutomationProperties.SetName(button, title ?? label);
+        }
     }
 
     private void UpdateAutoInstallTimer()
@@ -162,12 +184,11 @@ public sealed partial class MainWindow
         }
         updatingApp = true;
         manualUpdateRequested |= !automatic;
-        updateOffer.IsEnabled = false;
         try
         {
             if (preparedUpdatePath is null)
             {
-                updateOffer.Content = $"Downloading myDrive {version}…";
+                ShowUpdateOffers("Updating…", $"Downloading myDrive {version}…", enabled: false);
                 using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(11));
                 var prepared = await CoreBridge.Call(new
                 {
@@ -183,7 +204,7 @@ public sealed partial class MainWindow
                 return;
             }
             if (!UpdateIdle() || (automatic && !CanAutoInstall())) return;
-            updateOffer.Content = "Installing update…";
+            ShowUpdateOffers("Updating…", $"Installing myDrive {version}…", enabled: false);
             await UsePreparedUpdate("update.apply", preparedUpdatePath!);
             preparedUpdatePath = null;
             Quit();

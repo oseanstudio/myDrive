@@ -93,13 +93,12 @@ public sealed partial class MainWindow : Window
         navigation.MenuItems.Add(new NavigationViewItem{Content=SyncViewName,Icon=new SymbolIcon(Symbol.Switch),Tag="sync"});
         navigation.MenuItems.Add(new NavigationViewItem{Content=StorageViewName,Icon=new SymbolIcon(Symbol.World),Tag="connections"});
         navigation.MenuItems.Add(new NavigationViewItem{Content="Activity",Icon=new SymbolIcon(Symbol.Sync),Tag="activity"});
-        navigation.PaneFooter=Text($"  myDrive {DisplayVersion}",12);
-        var content=new Grid();content.RowDefinitions.Add(new(){Height=GridLength.Auto});content.RowDefinitions.Add(new(){Height=GridLength.Auto});content.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});
-        content.Children.Add(notice);Grid.SetRow(updateOffer,1);content.Children.Add(updateOffer);
-        pageScroll.Content=page;Grid.SetRow(pageScroll,2);content.Children.Add(pageScroll);
+        var content=new Grid();content.RowDefinitions.Add(new(){Height=GridLength.Auto});content.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});
+        content.Children.Add(notice);
+        pageScroll.Content=page;Grid.SetRow(pageScroll,1);content.Children.Add(pageScroll);
         quickSyncPane.RowDefinitions.Add(new(){Height=GridLength.Auto});
         quickSyncPane.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});
-        Grid.SetRow(quickSyncPane,2);content.Children.Add(quickSyncPane);navigation.Content=content;
+        Grid.SetRow(quickSyncPane,1);content.Children.Add(quickSyncPane);navigation.Content=content;
         navigation.SelectionChanged+=(sender,e)=>{if(busy)return;currentView=e.IsSettingsSelected?"settings":(e.SelectedItem as NavigationViewItem)?.Tag?.ToString()??"transfers";Render();if(!diagnosticMode&&currentView=="sync"&&Environment.TickCount64-lastSyncRefresh>=10_000)_=RefreshSyncthing();if(currentView=="transfers")_=RefreshBlip();};
         Grid.SetRow(navigation,1);root.Children.Add(navigation);
         BuildQuickHeader();root.Children.Add(quickHeader);
@@ -135,7 +134,7 @@ public sealed partial class MainWindow : Window
         compact=small;quickHeader.Visibility=small?Visibility.Visible:Visibility.Collapsed;
         navigation.PaneDisplayMode=small?NavigationViewPaneDisplayMode.LeftMinimal:NavigationViewPaneDisplayMode.Left;navigation.IsPaneVisible=!small;navigation.IsPaneOpen=!small;
         navigation.PaneHeader=small?null:branding;
-        navigation.PaneFooter=small?null:Text($"  myDrive {DisplayVersion}",12);
+        navigation.PaneFooter=small?null:fullVersionFooter;
         page.Padding=new Thickness(small?8:36,small?4:28,small?8:36,small?8:32);page.Spacing=small?6:20;
         notice.Margin=new Thickness(small?16:36,8,small?16:36,0);
         status.MaxWidth=small?260:double.PositiveInfinity;status.TextTrimming=TextTrimming.CharacterEllipsis;

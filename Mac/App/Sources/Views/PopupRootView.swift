@@ -21,16 +21,6 @@ struct PopupRootView: View {
         VStack(spacing: 0) {
             header
             sectionBar
-            if let update = app.availableAppUpdate {
-                Button(app.updateOfferTitle(update)) {
-                    app.installAppUpdate()
-                }
-                    .disabled(app.installingAppUpdate || app.busy != nil)
-                    .font(.system(size: 12))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 4)
-            }
             if let banner = app.banner {
                 BannerRow(banner: banner) { app.banner = nil }
             }
@@ -124,6 +114,17 @@ struct PopupRootView: View {
                 Text("myDrive").font(.system(size: 13, weight: .semibold))
                 if let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String {
                     Text(version).font(.system(size: 10)).foregroundStyle(.secondary)
+                }
+                if let update = app.availableAppUpdate {
+                    let title = app.updateOfferTitle(update)
+                    Button(app.updateOfferLabel) { app.installAppUpdate() }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .font(.system(size: 11))
+                        .frame(height: 24)
+                        .disabled(app.installingAppUpdate || app.busy != nil)
+                        .help(title)
+                        .accessibilityLabel(title)
                 }
             }
             .fixedSize()
