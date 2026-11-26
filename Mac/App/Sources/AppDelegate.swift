@@ -14,6 +14,7 @@ extension Notification.Name {
 final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     let appState = AppState()
     private var statusItem: NSStatusItem?
+    private var parsecDrop: ParsecDrop?
     private let popover = NSPopover()
     private var fullWindow: NSWindow?
     private lazy var blipNotice=BlipReceiveNotice(receiver:appState.blip,openTransfers:{[weak self] in self?.showPopover(view:.transfers)},anchor:{[weak self] in guard let button=self?.statusItem?.button,let window=button.window else{return nil};return window.convertToScreen(button.convert(button.bounds,to:nil))})
@@ -24,6 +25,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var outsidePress: (point: NSPoint, button: Int, dragged: Bool)?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        appState.blip.assignParsecDrop = { [weak self] peer in
+            guard let self else { return }
+            if self.parsecDrop == nil { self.parsecDrop = ParsecDrop(receiver: self.appState.blip) }
+            self.parsecDrop?.assign(peer)
+        }
         SingleInstance.install { [weak self] in self?.showPopover() }
         setupStatusItem()
         setupPopover()
@@ -85,6 +91,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        parsecDrop?.stop()
         timer?.invalidate()
         networkMonitor.cancel()
         SmbMonitor.shared.stop()
@@ -314,6 +321,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     private func observePopoverClick(_ event: NSEvent, isLocal: Bool) {
+        if event.type == .leftMouseDown { parsecDrop?.beginPointerPress() }
         guard popover.isShown, NSApp.modalWindow == nil else { outsidePress = nil; return }
         let point = NSEvent.mouseLocation
         let inside = isLocal && (event.window === popover.contentViewController?.view.window ||

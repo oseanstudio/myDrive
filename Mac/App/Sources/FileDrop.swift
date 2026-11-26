@@ -37,6 +37,17 @@ import UniformTypeIdentifiers
 }
 
 @MainActor enum FileDropInput {
+    static func localFiles(_ candidates: [URL]) -> [URL]? {
+        guard (1...256).contains(candidates.count) else { return nil }
+        var seen = Set<URL>()
+        var urls = [URL]()
+        for path in candidates.map(\.standardizedFileURL) {
+            guard path.isFileURL, (path.host ?? "").isEmpty, FileManager.default.fileExists(atPath: path.path) else { return nil }
+            if seen.insert(path).inserted { urls.append(path) }
+        }
+        return urls
+    }
+
     static func receive(_ providers: [NSItemProvider], then handle: @escaping @MainActor ([URL]) -> Void) -> Bool {
         let files = providers.filter { $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) }
         guard !files.isEmpty else { return false }

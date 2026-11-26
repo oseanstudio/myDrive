@@ -80,6 +80,7 @@ class TransferView:
         self.next_relay_discovery = 0
         self.next_poll = 0
         self.delivery = None
+        self.parsec_drop = None
         self.error = ""
         self.connecting_to_send = False
         self.cancelling_sends = set()
@@ -607,6 +608,7 @@ class TransferView:
             drop.connect("drop", lambda _, value, x, y: self.drop_on_recipient(owner, peer, value))
             controls.add_controller(drop)
             actions.append(("Send folder…", lambda: self.choose_files(folder=True, peer=peer, owner=owner)))
+            actions.append(("Open Parsec drop target…", lambda: self.open_parsec_drop(owner, peer, name)))
         else:
             name_label = label(name, "heading" if person else None)
             name_label.set_hexpand(True)
@@ -639,6 +641,38 @@ class TransferView:
             return False
         self.send(peer, paths, expected_owner=owner)
         return True
+
+    def open_parsec_drop(self, owner, peer, name):
+        if owner != self.owner(self.snapshot) or self.app.fixture:
+            return
+        if self.parsec_drop:
+            self.parsec_drop.close()
+        window = Gtk.Window(application=self.app, title="myDrive · Parsec", resizable=False)
+        window.set_default_size(248, 110)
+        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6,
+                          margin_top=12, margin_bottom=12, margin_start=12, margin_end=12)
+        content.append(label("Send to " + name, "heading"))
+        content.append(Gtk.Label(label="Drop files or folders here", xalign=0))
+        window.set_child(content)
+        drop = Gtk.DropTarget.new(Gdk.FileList.__gtype__, Gdk.DragAction.COPY)
+
+        def dropped(_, value, x, y):
+            if not self.drop_on_recipient(owner, peer, value):
+                return False
+            window.close()
+            return True
+
+        def closed(_):
+            if self.parsec_drop is window:
+                self.parsec_drop = None
+            return False
+
+        drop.connect("drop", dropped)
+        content.add_controller(drop)
+        window.connect("close-request", closed)
+        self.parsec_drop = window
+        window.present()
+        self.app.dismiss_compact()
 
     def accept(self, transfer):
         self.app.work("blip", "Receive transfer", lambda: self.blip.request("accept-manual", transfer["transfer_id"]),

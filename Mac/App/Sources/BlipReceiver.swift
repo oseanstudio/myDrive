@@ -44,6 +44,7 @@ struct BlipQueuedSend: Codable, Identifiable {
     @Published private(set) var people: [BlipPeer] = []
     @Published var transfers: [BlipTransfer] = []
     @Published var problem: String?
+    var assignParsecDrop: ((BlipPeer) -> Void)?
     @Published private(set) var policy = BlipPolicy()
     @Published var autoOpen = PrefStore.shared.preferences.blipAutoOpenLinks
     @Published private(set) var backgroundEnabled = PrefStore.shared.preferences.blipBackgroundReceiving ?? true

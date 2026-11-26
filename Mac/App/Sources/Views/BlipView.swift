@@ -208,7 +208,12 @@ struct BlipView: View {
         .help(tooltip)
         .buttonStyle(.plain)
         .disabled(receiver.sending || receiver.preparingSend)
-        .contextMenu { Button("Paste and send") { receiver.pasteAndSend(to: peer) } }
+        .contextMenu {
+            Button("Paste and send") { receiver.pasteAndSend(to: peer) }
+            if let assign = receiver.assignParsecDrop {
+                Button("Assign to Parsec window…") { assign(peer) }
+            }
+        }
     }
 
     private func recipientRow(_ name: String, peer: BlipPeer?, removing: String? = nil,
@@ -235,6 +240,9 @@ struct BlipView: View {
                     }
                     if let removing {
                         Button("Remove") { receiver.archiveRecipient(removing, peer: peer) }
+                    }
+                    if let peer, let assign = receiver.assignParsecDrop {
+                        Button("Assign to Parsec window…") { assign(peer) }
                     }
                 } label: { Image(systemName: "gearshape").frame(width: 24, height: 24) }
                 .menuStyle(.borderlessButton)

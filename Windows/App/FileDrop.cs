@@ -9,7 +9,7 @@ public sealed partial class MainWindow
 {
     private void EnableFileDrop()
     {
-        if (tray != null && !diagnosticMode) EnableTrayDragHover();
+        if (!diagnosticMode) EnableTrayDragHover();
         root.AllowDrop = true;
         root.DragOver += (_, e) =>
         {
@@ -82,12 +82,14 @@ public sealed partial class MainWindow
             if (!GetCursorPos(out var pointer)) return;
             if (!LeftMousePressed())
             {
+                TrackParsecHover(new(pointer.X, pointer.Y), null);
                 lastIdlePosition = pointer;
                 start = null;
                 hover = 0;
                 return;
             }
             start ??= lastIdlePosition ?? pointer;
+            if (TrackParsecHover(new(pointer.X, pointer.Y), new(start.Value.X, start.Value.Y))) return;
             if (AppWindow.IsVisible || busy || modalDepth > 0 ||
                 Math.Abs(pointer.X - start.Value.X) + Math.Abs(pointer.Y - start.Value.Y) < 20 ||
                 tray?.Contains(new(pointer.X, pointer.Y)) != true)
