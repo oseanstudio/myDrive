@@ -13,6 +13,8 @@ public sealed partial class MainWindow
         if (payload != "mydrive-parsec-v1:11111111111141118111111111111111:22222222222242228222222222222222:100" ||
             ParsecHostLog.Badge("invalid", now) != null)
             throw new IOException("The Parsec badge must encode only an exact Blip device and time.");
+        using (var badge = new ParsecBadgeWindow())
+            badge.Show(new Windows.Graphics.RectInt32(-300, -300, 110, 110), ParsecBadgeWindow.MakeMatrix(payload));
         string folder = Path.Combine(Path.GetTempPath(), "myDrive-parsec-fixture-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(folder);
         try

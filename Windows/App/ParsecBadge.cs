@@ -2,21 +2,16 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
-using Microsoft.UI;
-using Microsoft.UI.Windowing;
-using Microsoft.UI.Xaml;
-using Microsoft.UI.Xaml.Controls;
-using Microsoft.UI.Xaml.Media;
-using Windows.Foundation;
 using Windows.Graphics;
-using WinRT.Interop;
+using ZXing.Common;
 
 namespace MyDrive;
 
 public sealed partial class MainWindow
 {
-    private readonly Dictionary<ulong, Window> parsecBadges = new();
+    private readonly Dictionary<nint, ParsecBadgeWindow> parsecBadges = new();
     private long nextParsecBadgeProbe;
+    private BitMatrix? parsecBadgeMatrix;
     private volatile string shownParsecBadge = "";
 
     private void RefreshParsecBadge()
@@ -44,81 +39,206 @@ public sealed partial class MainWindow
 
     private void ShowParsecBadges(string payload)
     {
-        var displays = DisplayArea.FindAll();
-        var ids = displays.Select(display => display.DisplayId.Value).ToHashSet();
-        foreach (ulong id in parsecBadges.Keys.Where(id => !ids.Contains(id)).ToArray())
+        var displays = ParsecBadgeWindow.WorkAreas();
+        foreach (nint id in parsecBadges.Keys.Where(id => !displays.ContainsKey(id)).ToArray())
         {
-            parsecBadges[id].Close();
+            parsecBadges[id].Dispose();
             parsecBadges.Remove(id);
         }
-        bool changed = payload != shownParsecBadge;
-        shownParsecBadge = payload;
-        foreach (var display in displays)
-        {
-            ulong id = display.DisplayId.Value;
-            if (!parsecBadges.TryGetValue(id, out var window))
-            {
-                window = new Window { Title = "myDrive Parsec badge" };
-                if (window.AppWindow.Presenter is OverlappedPresenter presenter)
-                {
-                    presenter.SetBorderAndTitleBar(false, false);
-                    presenter.IsResizable = false;
-                    presenter.IsAlwaysOnTop = true;
-                }
-                window.AppWindow.IsShownInSwitchers = false;
-                nint handle = WindowNative.GetWindowHandle(window);
-                SetBadgeStyle(handle, -20, GetBadgeStyle(handle, -20) | 0x08000020);
-                parsecBadges[id] = window;
-            }
-            if (changed || window.Content == null) window.Content = BadgeView(payload);
-            var area = display.WorkArea;
-            int side = Math.Clamp(area.Width / 12, 104, 144);
-            var bounds = new RectInt32(area.X + area.Width - side - 12, area.Y + area.Height - side - 12, side, side);
-            if (window.AppWindow.Position.X != bounds.X || window.AppWindow.Position.Y != bounds.Y ||
-                window.AppWindow.Size.Width != side || window.AppWindow.Size.Height != side)
-                window.AppWindow.MoveAndResize(bounds);
-            if (!window.AppWindow.IsVisible) window.AppWindow.Show(false);
-        }
-    }
 
-    private static Grid BadgeView(string payload)
-    {
-        var matrix = new ZXing.QrCode.QRCodeWriter().encode(payload, ZXing.BarcodeFormat.QR_CODE, 0, 0,
-            new Dictionary<ZXing.EncodeHintType, object> { [ZXing.EncodeHintType.ERROR_CORRECTION] = "M" });
-        var geometry = new GeometryGroup();
-        for (int y = 0; y < matrix.Height; y++)
+        try
         {
-            for (int x = 0; x < matrix.Width;)
+            if (payload != shownParsecBadge || parsecBadgeMatrix == null)
             {
-                if (!matrix[x, y]) { x++; continue; }
-                int start = x++;
-                while (x < matrix.Width && matrix[x, y]) x++;
-                geometry.Children.Add(new RectangleGeometry { Rect = new Rect(start, y, x - start, 1) });
+                parsecBadgeMatrix = ParsecBadgeWindow.MakeMatrix(payload);
+                shownParsecBadge = payload;
+            }
+            foreach (var (id, area) in displays)
+            {
+                if (!parsecBadges.TryGetValue(id, out var window))
+                {
+                    window = new ParsecBadgeWindow();
+                    parsecBadges[id] = window;
+                }
+                int side = Math.Clamp(area.Width / 12, 104, 144);
+                window.Show(new RectInt32(area.X + area.Width - side - 12,
+                    area.Y + area.Height - side - 12, side, side), parsecBadgeMatrix);
             }
         }
-        // The border keeps the quiet zone outside the black path.
-        var grid = new Grid { Background = new SolidColorBrush(Colors.White), Padding = new Thickness(13) };
-        grid.Children.Add(new Microsoft.UI.Xaml.Shapes.Path
+        catch (Exception error) when (error is System.ComponentModel.Win32Exception or ArgumentException)
         {
-            Data = geometry,
-            Fill = new SolidColorBrush(Colors.Black),
-            Stretch = Stretch.Uniform,
-            IsHitTestVisible = false,
-        });
-        return grid;
+            HideParsecBadges();
+        }
     }
 
     private void HideParsecBadges()
     {
-        foreach (var window in parsecBadges.Values) window.Close();
+        foreach (var window in parsecBadges.Values) window.Dispose();
         parsecBadges.Clear();
+        parsecBadgeMatrix = null;
         shownParsecBadge = "";
     }
+}
 
-    [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")]
-    private static extern nint GetBadgeStyle(nint window, int index);
-    [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW")]
-    private static extern nint SetBadgeStyle(nint window, int index, nint value);
+internal sealed class ParsecBadgeWindow : IDisposable
+{
+    private const string ClassName = "myDrive.ParsecBadge";
+    private static readonly nint Module = GetModuleHandle(null);
+    private static readonly WindowProcedure Handler = OnMessage;
+    private static readonly Dictionary<nint, ParsecBadgeWindow> Windows = new();
+    private static bool registered;
+    private readonly nint handle;
+    private BitMatrix? matrix;
+    private RectInt32 bounds;
+
+    public ParsecBadgeWindow()
+    {
+        if (!registered)
+        {
+            var windowClass = new WindowClass { Procedure = Handler, Instance = Module, Name = ClassName };
+            if (RegisterClass(ref windowClass) == 0) throw new System.ComponentModel.Win32Exception();
+            registered = true;
+        }
+        const uint toolWindow = 0x80, noActivate = 0x08000000, layered = 0x80000, transparent = 0x20;
+        handle = CreateWindowEx(toolWindow | noActivate | layered | transparent, ClassName,
+            "myDrive Parsec badge", 0x80000000, 0, 0, 1, 1, 0, 0, Module, 0);
+        if (handle == 0) throw new System.ComponentModel.Win32Exception();
+        if (!SetLayeredWindowAttributes(handle, 0, 255, 2))
+        {
+            var error = new System.ComponentModel.Win32Exception();
+            DestroyWindow(handle);
+            throw error;
+        }
+        Windows.Add(handle, this);
+    }
+
+    public static Dictionary<nint, RectInt32> WorkAreas()
+    {
+        var workAreas = new Dictionary<nint, RectInt32>();
+        EnumerateMonitors(0, 0, (monitor, dc, rectangle, data) =>
+        {
+            var info = new MonitorInfo { Size = Marshal.SizeOf<MonitorInfo>() };
+            if (GetMonitorInfo(monitor, ref info))
+            {
+                var work = info.Work;
+                workAreas[monitor] = new RectInt32(work.Left, work.Top, work.Right - work.Left, work.Bottom - work.Top);
+            }
+            return true;
+        }, 0);
+        return workAreas;
+    }
+
+    public static BitMatrix MakeMatrix(string payload) =>
+        new ZXing.QrCode.QRCodeWriter().encode(payload, ZXing.BarcodeFormat.QR_CODE, 0, 0,
+            new Dictionary<ZXing.EncodeHintType, object> { [ZXing.EncodeHintType.ERROR_CORRECTION] = "M" });
+
+    public void Show(RectInt32 position, BitMatrix code)
+    {
+        if (!ReferenceEquals(matrix, code)) { matrix = code; InvalidateRect(handle, 0, false); }
+        if (bounds.Equals(position)) return;
+        if (!SetWindowPos(handle, -1, position.X, position.Y, position.Width, position.Height, 0x10 | 0x40))
+            throw new System.ComponentModel.Win32Exception();
+        bounds = position;
+    }
+
+    public void Dispose()
+    {
+        if (Windows.Remove(handle)) DestroyWindow(handle);
+    }
+
+    private static nint OnMessage(nint hwnd, uint message, nint wParam, nint lParam)
+    {
+        if (message != 0x000f || !Windows.TryGetValue(hwnd, out var window))
+            return DefWindowProc(hwnd, message, wParam, lParam);
+        var paint = new Paint { Reserved = new byte[32] };
+        nint dc = BeginPaint(hwnd, ref paint);
+        try
+        {
+            if (dc == 0 || !GetClientRect(hwnd, out var area)) return 0;
+            FillRect(dc, ref area, GetStockObject(0));
+            if (window.matrix is not { } code) return 0;
+            int step = Math.Min(area.Right / code.Width, area.Bottom / code.Height);
+            if (step == 0) return 0;
+            int left = (area.Right - code.Width * step) / 2;
+            int top = (area.Bottom - code.Height * step) / 2;
+            for (int y = 0; y < code.Height; y++)
+            {
+                for (int x = 0; x < code.Width;)
+                {
+                    if (!code[x, y]) { x++; continue; }
+                    int start = x++;
+                    while (x < code.Width && code[x, y]) x++;
+                    PatBlt(dc, left + start * step, top + y * step, (x - start) * step, step, 0x00000042);
+                }
+            }
+            return 0;
+        }
+        finally { EndPaint(hwnd, ref paint); }
+    }
+
+    private delegate nint WindowProcedure(nint hwnd, uint message, nint wParam, nint lParam);
+    private delegate bool MonitorProcedure(nint monitor, nint dc, nint rect, nint data);
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MonitorInfo
+    {
+        public int Size;
+        public Rect Monitor, Work;
+        public uint Flags;
+    }
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct WindowClass
+    {
+        public uint Style;
+        public WindowProcedure Procedure;
+        public int ClassExtra, WindowExtra;
+        public nint Instance, Icon, Cursor, Background;
+        public string? Menu;
+        public string Name;
+    }
+    [StructLayout(LayoutKind.Sequential)]
+    private struct Rect { public int Left, Top, Right, Bottom; }
+    [StructLayout(LayoutKind.Sequential)]
+    private struct Paint
+    {
+        public nint Dc;
+        public int Erase;
+        public Rect Clip;
+        public int Restore, Update;
+        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 32)] public byte[] Reserved;
+    }
+    [DllImport("user32.dll", EntryPoint = "EnumDisplayMonitors")]
+    private static extern bool EnumerateMonitors(nint dc, nint rect, MonitorProcedure callback, nint data);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern bool GetMonitorInfo(nint monitor, ref MonitorInfo info);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+    private static extern nint GetModuleHandle(string? module);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern ushort RegisterClass(ref WindowClass value);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern nint CreateWindowEx(uint exStyle, string cls, string name, uint style,
+        int x, int y, int width, int height, nint parent, nint menu, nint instance, nint parameter);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern nint DefWindowProc(nint hwnd, uint message, nint wParam, nint lParam);
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool SetWindowPos(nint hwnd, nint behind, int x, int y, int width, int height, uint flags);
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool SetLayeredWindowAttributes(nint hwnd, uint color, byte alpha, uint flags);
+    [DllImport("user32.dll")]
+    private static extern bool DestroyWindow(nint hwnd);
+    [DllImport("user32.dll")]
+    private static extern bool InvalidateRect(nint hwnd, nint rect, bool erase);
+    [DllImport("user32.dll")]
+    private static extern nint BeginPaint(nint hwnd, ref Paint paint);
+    [DllImport("user32.dll")]
+    private static extern bool EndPaint(nint hwnd, ref Paint paint);
+    [DllImport("user32.dll")]
+    private static extern bool GetClientRect(nint hwnd, out Rect rect);
+    [DllImport("user32.dll")]
+    private static extern int FillRect(nint dc, ref Rect rect, nint brush);
+    [DllImport("gdi32.dll")]
+    private static extern nint GetStockObject(int index);
+    [DllImport("gdi32.dll")]
+    private static extern bool PatBlt(nint dc, int x, int y, int width, int height, uint operation);
 }
 
 internal static class ParsecHostLog
