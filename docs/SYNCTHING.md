@@ -36,6 +36,17 @@ The test script uses two fresh loopback-only daemons and fresh directories. It c
 
 References: [Syncthing synchronization](https://docs.syncthing.net/users/syncing.html), [received versioning](https://docs.syncthing.net/users/versioning.html), [ignore rules](https://docs.syncthing.net/users/ignoring.html), [REST API](https://docs.syncthing.net/dev/rest.html).
 
+## Download when needed
+
+Open a folder in myDrive's **Syncthing** view. Use **Download options → Download when needed** to leave unselected files online on this computer. The option keeps local files and existing selections. Other devices keep their own settings.
+
+- **Open** requests an online file and opens it when it downloads within a few seconds. For larger files or offline peers, Syncthing continues in the background. Open the file again after it arrives.
+- **Pin** keeps a file or folder syncing here so downloaded files are available offline. Opening an online file also keeps it on this device. A pin waiting for a download needs an online peer.
+- **Unpin** stops syncing the selected file or folder here and keeps files already downloaded. More specific selections can override a folder selection.
+- **Resume default syncing** restores the previous default behavior and keeps individual selections.
+
+Online files are listed in myDrive. Local copies open in the usual desktop apps. Contents are never removed automatically when switching modes or unpinning.
+
 ## Local browser data and sync locks (2026-11-16)
 
 Short message: **Local browser data is locked.**

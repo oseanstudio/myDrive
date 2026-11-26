@@ -713,6 +713,26 @@ final class AppState: ObservableObject {
         browseSyncPath(parent.isEmpty ? "" : parent)
     }
 
+    func setDownloadWhenNeeded(_ enabled: Bool) {
+        guard var state = syncBrowse, busy == nil else { return }
+        let title = enabled ? "Download files when needed" : "Resume default syncing"
+        let prompt = NSAlert()
+        prompt.messageText = title + "?"
+        prompt.informativeText = enabled
+            ? "Unselected files stay online. You can open or pin them from myDrive. Existing local copies are kept."
+            : "The folder will use its usual sync rules again. Any existing file selections are kept."
+        prompt.addButton(withTitle: enabled ? "Enable" : "Resume")
+        prompt.addButton(withTitle: "Cancel")
+        guard prompt.runModal() == .alertFirstButtonReturn else { return }
+        perform(title, connection: state.label) {
+            _ = try await self.syncthing.call("selection.mode",
+                payload: ["folder_id": state.folderId, "expected_ignore": state.result.ignore, "on_demand": enabled])
+            let raw = try await self.syncthing.call("browse", payload: ["folder_id": state.folderId, "path": state.path])
+            state.result = BrowseResult(from: raw ?? [:])
+            self.syncBrowse = state
+        }
+    }
+
     func setSelection(_ entry: BrowseEntry, sync enabled: Bool) {
         guard var state = syncBrowse else { return }
         var rules = state.result.rules
@@ -736,11 +756,19 @@ final class AppState: ObservableObject {
         guard let state = syncBrowse else { return }
         perform("Open \(entry.name)", connection: state.label) {
             let raw = try await self.syncthing.call("local_file",
-                                                    payload: ["folder_id": state.folderId, "path": entry.path])
+                                                    payload: ["folder_id": state.folderId, "path": entry.path, "wait_seconds": 6])
             let result = (raw as? JSON) ?? [:]
+            if state.result.onDemand {
+                if let browse = try? await self.syncthing.call("browse",
+                    payload: ["folder_id": state.folderId, "path": state.path]) {
+                    var updated = state
+                    updated.result = BrowseResult(from: browse)
+                    self.syncBrowse = updated
+                }
+            }
             if result.bool("pending") {
-                self.showBanner(.info, "File queued",
-                                "This file has been moved to the front of Syncthing's download queue. It will be available when a device with the file is connected.")
+                self.showBanner(.info, "Download requested",
+                                "Open the file again when Syncthing has downloaded it.")
             } else {
                 let path = result.str("path")
                 if !path.isEmpty {

@@ -48,6 +48,7 @@ import CoreGraphics
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .canJoinAllApplications]
         panel.contentView = target
         target.canDrop = { [weak self] choose in self?.canSend(choose: choose) == true }
+        target.fileEntered = { [weak self] in self?.confirmFileDrag() }
         target.receive = { [weak self] urls, choose in self?.send(urls, choose: choose) == true }
     }
 
@@ -145,6 +146,7 @@ import CoreGraphics
         // The same screen coordinates can belong to Finder before a Space switch
         // and to fullscreen Parsec after it. Track the source process.
         sourceProcess = window(at: point)?.0.process
+        probedBadge = false
         clearCandidate()
         hide()
         start()
@@ -200,25 +202,20 @@ import CoreGraphics
         }
         let elapsed = now.timeIntervalSince(hoverSince)
         guard elapsed >= 0.24 else { return }
-        if shown == nil, !probedBadge,
-           receiver.parsecAutomaticMatching, CGPreflightScreenCaptureAccess() {
-            probeBadge(session, owner: receiver.recipientOwner)
-        }
-        if badgeTask != nil, elapsed < 1.35 { return }
         let screen = NSScreen.screens.first { $0.frame.contains(point) }?.frame ?? bounds
         let area = screen.intersection(bounds)
         let match = route(for: session)
         let route = area.width >= 342 ? match : Route(session: session, owner: match.owner, peer: nil)
         if let shown, shown.session == session, panel.frame.contains(point),
-           shown.peer == nil || shown.peer?.peer == route.peer?.peer { return }
+           shown.peer?.peer == route.peer?.peer { return }
         hide()
         shown = route
-        target.label.stringValue = route.peer.map { "Send to " + receiver.recipientLabel($0) } ?? "Send with Blip"
-        target.computer.stringValue = route.peer == nil ? "Drop to choose a recipient" : "Parsec connection · Blip"
-        target.showChoice(route.peer != nil)
+        target.label.stringValue = route.peer == nil ? "Send with Blip" : "Choose recipient"
+        target.computer.stringValue = "Drop to open the picker"
+        target.setDirectRecipient(route.peer.map(receiver.recipientLabel), cursor: point)
         let size = CGSize(width: route.peer == nil ? min(230, area.width) : 342, height: min(66, area.height))
-        // Anchor the direct drop zone at the cursor. The picker is to its right.
-        let center = route.peer == nil ? size.width / 2 : (size.width - 105) / 2
+        // Keep the picker under the original hover. Sending directly is a separate target.
+        let center = route.peer == nil ? size.width / 2 : (size.width - 148) / 2
         panel.setFrame(CGRect(x: max(area.minX, min(area.maxX - size.width, point.x - center)),
                               y: max(area.minY, min(area.maxY - size.height, point.y - size.height / 2)),
                               width: size.width, height: size.height), display: true)
@@ -229,6 +226,13 @@ import CoreGraphics
         (receiver.recipients + receiver.directoryRecipients).filter {
             BlipPolicy.exactPeer($0.peer) && $0.online != false && !receiver.isArchived($0)
         }
+    }
+
+    private func confirmFileDrag() {
+        guard !probedBadge, let shown, shown.owner == receiver.recipientOwner,
+              candidate == shown.session, receiver.parsecAutomaticMatching,
+              CGPreflightScreenCaptureAccess() else { return }
+        probeBadge(shown.session, owner: shown.owner)
     }
 
     private func probeBadge(_ session: Session, owner: String) {
@@ -248,7 +252,6 @@ import CoreGraphics
         candidate = nil
         badgeTask?.cancel()
         badgeTask = nil
-        probedBadge = false
         detectedPeer = nil
     }
 
@@ -312,7 +315,9 @@ import CoreGraphics
 @MainActor private final class ParsecDropView: NSView {
     let label = NSTextField(labelWithString: "")
     let computer = NSTextField(labelWithString: "")
-    private let chooseLabel = NSTextField(labelWithString: "Choose recipient")
+    private let directLabel = NSTextField(labelWithString: "")
+    private var directCursor: CGPoint?
+    var fileEntered: () -> Void = {}
     var canDrop: (Bool) -> Bool = { _ in false }
     var receive: ([URL], Bool) -> Bool = { _, _ in false }
 
@@ -331,14 +336,14 @@ import CoreGraphics
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.translatesAutoresizingMaskIntoConstraints = false
-        let body = NSStackView(views: [stack, chooseLabel])
+        let body = NSStackView(views: [stack, directLabel])
         body.spacing = 12
         body.alignment = .centerY
         body.translatesAutoresizingMaskIntoConstraints = false
-        chooseLabel.font = .systemFont(ofSize: 12, weight: .medium)
-        chooseLabel.textColor = .controlAccentColor
-        chooseLabel.alignment = .center
-        chooseLabel.isHidden = true
+        directLabel.font = .systemFont(ofSize: 12, weight: .medium)
+        directLabel.textColor = .controlAccentColor
+        directLabel.alignment = .center
+        directLabel.isHidden = true
         addSubview(body)
         NSLayoutConstraint.activate([
             background.leadingAnchor.constraint(equalTo: leadingAnchor),
@@ -348,25 +353,37 @@ import CoreGraphics
             body.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
             body.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
             body.centerYAnchor.constraint(equalTo: centerYAnchor),
-            chooseLabel.widthAnchor.constraint(equalToConstant: 93)
+            directLabel.widthAnchor.constraint(equalToConstant: 136)
         ])
         registerForDraggedTypes([.fileURL])
     }
 
     required init?(coder: NSCoder) { nil }
 
-    func showChoice(_ show: Bool) { chooseLabel.isHidden = !show }
+    func setDirectRecipient(_ name: String?, cursor: CGPoint) {
+        directLabel.stringValue = name.map { "Send to " + $0 } ?? ""
+        directLabel.toolTip = directLabel.stringValue
+        directLabel.isHidden = name == nil
+        directCursor = name == nil ? nil : cursor
+    }
 
     private func choosingRecipient(_ sender: NSDraggingInfo) -> Bool {
-        !chooseLabel.isHidden && convert(sender.draggingLocation, from: nil).x >= bounds.maxX - 105
+        guard let cursor = directCursor else { return true }
+        let moved = hypot(NSEvent.mouseLocation.x - cursor.x, NSEvent.mouseLocation.y - cursor.y) >= 8
+        let local = convert(sender.draggingLocation, from: nil)
+        return !moved || local.x < bounds.maxX - 148
     }
 
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
-        canDrop(choosingRecipient(sender)) && sender.draggingPasteboard.canReadObject(forClasses: [NSURL.self],
-            options: [.urlReadingFileURLsOnly: true]) ? .copy : []
+        guard sender.draggingPasteboard.canReadObject(forClasses: [NSURL.self],
+            options: [.urlReadingFileURLsOnly: true]), canDrop(choosingRecipient(sender)) else { return [] }
+        fileEntered()
+        return .copy
     }
 
-    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation { draggingEntered(sender) }
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        canDrop(choosingRecipient(sender)) ? .copy : []
+    }
 
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
         let urls = sender.draggingPasteboard.readObjects(forClasses: [NSURL.self],

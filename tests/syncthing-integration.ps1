@@ -165,6 +165,43 @@ try {
     $oldVersioning=Test-Api GET "config/folders/$folderId"
     Core-Call 'protect' @{folder_id=$folderId}|Out-Null
     Assert-That ((Test-Api GET "config/folders/$folderId").versioning.type -eq $oldVersioning.versioning.type) 'protect history preserves an existing versioning policy'
+    $beforeDemand = Core-Call 'browse' @{folder_id=$folderId;path=''}
+    $cold = Core-Call 'selection.mode' @{folder_id=$folderId;expected_ignore=@($beforeDemand.ignore);on_demand=$true}
+    Assert-That ($cold.on_demand -and (Test-Path -LiteralPath $sourceFile)) 'download mode preserves existing local copies'
+    $onlineDir = Join-Path $receiver 'online-fixture'
+    New-Item -ItemType Directory -Path $onlineDir | Out-Null
+    Set-Content -LiteralPath (Join-Path $onlineDir 'open.txt') -Value 'download this on open'
+    Set-Content -LiteralPath (Join-Path $onlineDir 'pin.txt') -Value 'keep this offline'
+    Set-Content -LiteralPath (Join-Path $onlineDir 'untouched.txt') -Value 'keep this online'
+    Peer-Api POST "db/scan?folder=$folderId" | Out-Null
+    Wait-Until {
+        $browse = Core-Call 'browse' @{folder_id=$folderId;path='online-fixture'}
+        $browse.on_demand -and @($browse.entries | Where-Object {$_.remote -and !$_.local}).Count -eq 3
+    } 'on-demand mode lists remote nested files without downloading them'
+    $target = Join-Path $source 'online-fixture/open.txt'
+    Core-Call 'local_file' @{folder_id=$folderId;path='online-fixture/open.txt';wait_seconds=6} | Out-Null
+    Wait-Until { (Test-Path -LiteralPath $target) -and (Get-Content -LiteralPath $target -Raw).Trim() -eq 'download this on open' } 'opening a cloud-only file hydrates it'
+    $state = Core-Call 'browse' @{folder_id=$folderId;path='online-fixture'}
+    $pin = @{path='online-fixture/pin.txt';sync=$true;is_dir=$false}
+    Core-Call 'selection.apply' @{folder_id=$folderId;expected_ignore=@($state.ignore);rules=@($state.rules)+@($pin)} | Out-Null
+    $pinned = Join-Path $source 'online-fixture/pin.txt'
+    Wait-Until { (Test-Path -LiteralPath $pinned) -and (Get-Content -LiteralPath $pinned -Raw).Trim() -eq 'keep this offline' } 'pin downloads the selected file'
+    $stillOnline = Join-Path $source 'online-fixture/untouched.txt'
+    Assert-That (!(Test-Path -LiteralPath $stillOnline)) 'unselected sibling stays online after other files hydrate'
+    $state = Core-Call 'browse' @{folder_id=$folderId;path='online-fixture'}
+    Assert-That (@($state.entries | Where-Object {$_.pinned -and $_.local}).Count -eq 2) 'browse identifies both offline files'
+    Test-Api PATCH "config/devices/$testPeerId" @{paused=$true} | Out-Null
+    Wait-Until {!((Test-Api GET 'system/connections').connections.$testPeerId.connected)} 'on-demand test peer is offline'
+    $offline = Core-Call 'local_file' @{folder_id=$folderId;path='online-fixture/pin.txt'}
+    Assert-That (!$offline.pending -and (Test-Path -LiteralPath $offline.path)) 'a downloaded pin opens with the peer offline'
+    Test-Api PATCH "config/devices/$testPeerId" @{paused=$false} | Out-Null
+    $state = Core-Call 'browse' @{folder_id=$folderId;path='online-fixture'}
+    $unpin = @{path='online-fixture/pin.txt';sync=$false;is_dir=$false}
+    $rules = @($state.rules | Where-Object path -ne $unpin.path) + @($unpin)
+    $selection = Core-Call 'selection.apply' @{folder_id=$folderId;expected_ignore=@($state.ignore);rules=$rules}
+    Assert-That ($selection.on_demand -and (Test-Path -LiteralPath $pinned)) 'unpin preserves the downloaded file and the folder mode'
+    Core-Call 'selection.mode' @{folder_id=$folderId;expected_ignore=@($selection.ignore);on_demand=$false} | Out-Null
+    Wait-Until {Test-Path -LiteralPath $stillOnline} 'resuming default sync downloads the unselected sibling'
     $staleStop=Core-Call 'stop' @{folder_id=$folderId;expected_path=(Join-Path $testRoot 'wrong-folder')} -ExpectError
     Assert-That ($staleStop -match 'changed' -and (Test-Api GET "config/folders/$folderId").id -eq $folderId) 'Stop rejects a stale folder path without removing its configuration'
     $otherRoot=Join-Path $testRoot 'unrelated';New-Item -ItemType Directory -Path $otherRoot|Out-Null

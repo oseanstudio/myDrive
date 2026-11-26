@@ -224,6 +224,7 @@ struct BrowseEntry: Identifiable {
     let local: Bool
     let alternativeFor: String
     let selection: String
+    let pinned: Bool
     var id: String { path }
     var isAlternative: Bool { !alternativeFor.isEmpty }
     /// Display order per the Windows reference: directories first, then name.
@@ -237,6 +238,7 @@ struct SyncRule: Codable, Equatable {
 }
 
 struct BrowseResult {
+    let onDemand: Bool
     let localLimitReached: Bool
     let entries: [BrowseEntry]
     let rules: [SyncRule]
@@ -247,6 +249,7 @@ struct BrowseResult {
 
     init(from raw: Any) {
         let dict = raw as? JSON ?? [:]
+        onDemand = dict.bool("on_demand")
         localLimitReached = dict.bool("local_limit_reached")
         entries = dict.array("entries").map { raw in
             let e = raw as? JSON ?? [:]
@@ -259,7 +262,8 @@ struct BrowseResult {
                 remote: e.bool("remote"),
                 local: e.bool("local"),
                 alternativeFor: e.str("alternative_for"),
-                selection: e.str("selection")
+                selection: e.str("selection"),
+                pinned: e.bool("pinned")
             )
         }
         let decoder = JSONDecoder()

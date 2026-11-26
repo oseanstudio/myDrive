@@ -400,6 +400,7 @@ impl Api {
         )?;
         let lines = self.ignores(id)?;
         let rules = parse_managed(&lines)?;
+        let on_demand = on_demand_mode(&lines)?;
         let mut entries = std::collections::BTreeMap::<String, Value>::new();
         let mut local_limit_reached = false;
         if let Some(items) = remote.as_array() {
@@ -452,23 +453,30 @@ impl Api {
                 }
             }
         }
-        let mut rule_selections = std::collections::HashMap::new();
-        for rule in &rules {
-            rule_selections
-                .entry(rule.path.as_str())
-                .or_insert(if rule.sync { "sync" } else { "exclude" });
-        }
+        let by_path: std::collections::HashMap<_, _> =
+            rules.iter().map(|rule| (rule.path.as_str(), rule)).collect();
         let mut entries = entries
             .into_values()
             .map(|mut entry| {
                 if let Some(original) = entry["name"].as_str().and_then(alternative_name) {
                     entry["alternative_for"] = json!(original);
                 }
-                entry["selection"] = json!(entry["path"]
-                    .as_str()
-                    .and_then(|path| rule_selections.get(path))
-                    .copied()
-                    .unwrap_or("existing"));
+                let path = entry["path"].as_str().unwrap_or("");
+                let direct = by_path.get(path);
+                entry["selection"] = json!(match direct {
+                    Some(rule) if rule.sync => "sync",
+                    Some(_) => "exclude",
+                    None => "existing",
+                });
+                let path = entry["path"].as_str().unwrap_or("");
+                let mut ancestor = path;
+                let mut effective = by_path.get(path).copied();
+                while effective.is_none() {
+                    let Some((parent, _)) = ancestor.rsplit_once('/') else { break };
+                    ancestor = parent;
+                    effective = by_path.get(parent).copied().filter(|rule| rule.is_dir);
+                }
+                entry["pinned"] = json!(on_demand && effective.is_some_and(|rule| rule.sync));
                 entry
             })
             .collect::<Vec<_>>();
@@ -479,7 +487,7 @@ impl Api {
                 .then(a["name"].as_str().cmp(&b["name"].as_str()))
         });
         Ok(
-            json!({"entries":entries,"rules":rules,"ignore":lines,"path":path,"local_limit_reached":local_limit_reached,"folder":pick(&folder,&["id","label","path","type"])}),
+            json!({"entries":entries,"rules":rules,"ignore":lines,"on_demand":on_demand,"path":path,"local_limit_reached":local_limit_reached,"folder":pick(&folder,&["id","label","path","type"])}),
         )
     }
     pub fn ignores(&self, id: &str) -> Result<Vec<String>, String> {
@@ -630,35 +638,7 @@ impl Api {
                 )?;
                 Ok(json!({"versioning":versioning,"max_conflicts":-1}))
             }
-            "local_file" => {
-                let folder = self.folder(id)?;
-                let path =
-                    crate::model::clean_path(data["path"].as_str().ok_or("Choose a file.")?)?;
-                let root = Path::new(
-                    folder["path"]
-                        .as_str()
-                        .ok_or("The sync folder path is missing.")?,
-                )
-                .canonicalize()
-                .map_err(|_| "The local sync folder is unavailable.")?;
-                let target = root.join(&path);
-                if !target.exists() {
-                    self.call(
-                        "POST",
-                        &["rest", "db", "prio"],
-                        &[("folder", id), ("file", &path)],
-                        None,
-                    )?;
-                    return Ok(json!({"pending":true}));
-                }
-                let target = target.canonicalize().map_err(|e| e.to_string())?;
-                if !target.starts_with(&root) || !target.is_file() {
-                    return Err(
-                        "The file is outside the sync root or is not a regular file.".into(),
-                    );
-                }
-                Ok(json!({"pending":false,"path":friendly_path(&target)}))
-            }
+            "local_file" => self.open_local_file(id, data, data_dir),
             "restore" => {
                 let folder = self.folder(id)?;
                 let path = crate::model::clean_path(
@@ -745,50 +725,103 @@ impl Api {
                 )?;
                 Ok(json!({"restored":true,"backup":backup}))
             }
-            "selection.preview" | "selection.apply" => {
-                self.folder(id)?;
+            "selection.preview" | "selection.apply" | "selection.mode" => {
                 let expected: Vec<String> = serde_json::from_value(data["expected_ignore"].clone())
                     .map_err(|_| "Reload the folder before editing its selection.")?;
-                let current = self.ignores(id)?;
-                if current != expected {
-                    return Err("Ignore rules changed in Syncthing or another window. Reload the folder before applying your selection.".into());
-                }
-                let rules: Vec<SelectionRule> = serde_json::from_value(data["rules"].clone())
-                    .map_err(|_| "Invalid selection rules.")?;
-                let os = self.get(&["rest", "system", "version"], &[])?;
-                let updated = render_rules(&current, &rules, os["os"].as_str() == Some("windows"))?;
-                if action == "selection.preview" {
-                    return Ok(json!({"ignore":updated,"rules":rules}));
-                }
-                // Preserve a recoverable copy before any live API mutation.
-                fs::create_dir_all(data_dir.join("syncthing-backups"))
-                    .map_err(|e| e.to_string())?;
-                let backup = data_dir.join("syncthing-backups").join(format!(
-                    "{}-{}.json",
-                    hex::encode(sha2::Sha256::digest(id.as_bytes())),
-                    chrono::Utc::now().format("%Y%m%dT%H%M%S%.9f")
-                ));
-                fs::write(&backup,serde_json::to_vec_pretty(&json!({"folder_id":id,"ignore":current,"created":chrono::Utc::now().to_rfc3339()})).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
-                if self.ignores(id)? != expected {
-                    return Err(
-                        "Ignore rules changed while preparing the update. No changes were applied."
-                            .into(),
-                    );
-                }
-                self.call(
-                    "POST",
-                    &["rest", "db", "ignores"],
-                    &[("folder", id)],
-                    Some(&json!({"ignore":updated})),
-                )?;
-                if self.ignores(id)? != updated {
-                    return Err("Syncthing's saved rules differ from the requested selection. Reload the folder and inspect its ignore rules.".into());
-                }
-                Ok(json!({"ignore":updated,"backup":backup.to_string_lossy()}))
+                let rules = if action == "selection.mode" {
+                    parse_managed(&expected)?
+                } else {
+                    serde_json::from_value(data["rules"].clone())
+                        .map_err(|_| "Invalid selection rules.")?
+                };
+                let mode = if action == "selection.mode" {
+                    data["on_demand"].as_bool().ok_or("Choose a download mode.")?
+                } else {
+                    on_demand_mode(&expected)?
+                };
+                self.update_selection(id, &expected, &rules, mode, data_dir, action == "selection.preview")
             }
             _ => Err("Unknown Syncthing action.".into()),
         }
     }
+    fn update_selection(
+        &self,
+        id: &str,
+        expected: &[String],
+        rules: &[SelectionRule],
+        mode: bool,
+        data_dir: &Path,
+        preview: bool,
+    ) -> Result<Value, String> {
+        let folder = self.folder(id)?;
+        if mode && matches!(folder["type"].as_str(), Some("sendonly" | "receiveencrypted")) {
+            return Err("Download when needed requires a folder that can receive ordinary files.".into());
+        }
+        let directory = data_dir.join("syncthing-backups");
+        fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
+        let key = hex::encode(sha2::Sha256::digest(id.as_bytes()));
+        let lock = fs::OpenOptions::new().read(true).write(true).create(true).truncate(false)
+            .open(directory.join(format!("{key}.lock"))).map_err(|e| e.to_string())?;
+        lock.try_lock().map_err(|_| "Another myDrive operation is changing these selections. Refresh and try again.")?;
+        let current = self.ignores(id)?;
+        if current != expected {
+            return Err("Ignore rules changed. Reload the folder before applying your selection.".into());
+        }
+        let os = self.get(&["rest", "system", "version"], &[])?;
+        let updated = render_rules_for_mode(&current, rules, os["os"].as_str() == Some("windows"), mode)?;
+        if preview || updated == current {
+            return Ok(json!({"ignore":updated,"rules":rules,"on_demand":mode}));
+        }
+        let backup = directory.join(format!("{key}-{}.json", chrono::Utc::now().format("%Y%m%dT%H%M%S%.9f")));
+        fs::write(&backup, serde_json::to_vec_pretty(&json!({"folder_id":id,"ignore":current}))
+            .map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+        if self.ignores(id)? != expected || self.folder(id)?["path"] != folder["path"] {
+            return Err("The folder changed while preparing the update. No selection was changed.".into());
+        }
+        self.call("POST", &["rest", "db", "ignores"], &[("folder", id)], Some(&json!({"ignore":updated})))?;
+        if self.ignores(id)? != updated {
+            return Err("Syncthing did not confirm the new selection. Refresh the folder.".into());
+        }
+        Ok(json!({"ignore":updated,"rules":rules,"on_demand":mode,"backup":backup.to_string_lossy()}))
+    }
+
+    fn open_local_file(&self, id: &str, data: &Value, data_dir: &Path) -> Result<Value, String> {
+        let path = crate::model::clean_path(data["path"].as_str().ok_or("Choose a file.")?)?;
+        if path.is_empty() { return Err("Choose a file.".into()); }
+        let folder = self.folder(id)?;
+        let root = Path::new(folder["path"].as_str().ok_or("The sync folder path is missing.")?)
+            .canonicalize().map_err(|_| "The local sync folder is unavailable.")?;
+        let target = root.join(&path);
+        if let Some(path) = openable_sync_file(&root, &target)? {
+            return Ok(json!({"pending":false,"path":path}));
+        }
+        if folder["paused"].as_bool() == Some(true) {
+            return Err("Resume this folder to download its files.".into());
+        }
+        let current = self.ignores(id)?;
+        if on_demand_mode(&current)? {
+            let catalog = self.get(&["rest", "db", "file"], &[("folder", id), ("file", &path)])?;
+            if catalog["global"]["type"].as_str() != Some("FILE_INFO_TYPE_FILE")
+                || catalog["global"]["deleted"].as_bool() == Some(true)
+                || catalog["global"]["invalid"].as_bool() == Some(true) {
+                return Err("A device has not announced a downloadable version of this file.".into());
+            }
+            let mut rules = parse_managed(&current)?;
+            set_download_rule(&mut rules, &path);
+            self.update_selection(id, &current, &rules, true, data_dir, false)?;
+        }
+        self.call("POST", &["rest", "db", "prio"], &[("folder", id), ("file", &path)], None)?;
+        let seconds = data["wait_seconds"].as_u64().unwrap_or(0).min(8);
+        let deadline = std::time::Instant::now() + Duration::from_secs(seconds);
+        while std::time::Instant::now() < deadline {
+            if let Some(path) = openable_sync_file(&root, &target)? {
+                return Ok(json!({"pending":false,"path":path}));
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        Ok(json!({"pending":true}))
+    }
+
     fn relocate(&self, id: &str, data: &Value) -> Result<Value, String> {
         let folder = self.folder(id)?;
         let old = folder["path"].as_str().ok_or("The configured folder has no path.")?;
@@ -1269,6 +1302,25 @@ fn pick(value: &Value, keys: &[&str]) -> Value {
 
 const BEGIN: &str = "// myDrive selection begin v1";
 const END: &str = "// myDrive selection end v1";
+const ON_DEMAND: &str = "// download when needed";
+
+fn openable_sync_file(root: &Path, target: &Path) -> Result<Option<String>, String> {
+    let resolved = match target.canonicalize() {
+        Ok(path) => path,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.to_string()),
+    };
+    if !resolved.starts_with(root) || !resolved.is_file() {
+        return Err("The file is outside the sync root or is not a regular file.".into());
+    }
+    Ok(Some(friendly_path(&resolved)))
+}
+
+fn set_download_rule(rules: &mut Vec<SelectionRule>, path: &str) {
+    rules.retain(|rule| rule.path != path);
+    rules.push(SelectionRule { path: path.to_string(), sync: true, is_dir: false });
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SelectionRule {
     pub path: String,
@@ -1297,6 +1349,10 @@ fn bounds(lines: &[String]) -> Result<Option<(usize, usize)>, String> {
     }
     Ok(Some((starts[0], ends[0])))
 }
+fn on_demand_mode(lines: &[String]) -> Result<bool, String> {
+    Ok(bounds(lines)?.is_some_and(|(start, end)|
+        end - start >= 3 && lines[end - 2] == ON_DEMAND && lines[end - 1] == "**"))
+}
 fn parse_managed(lines: &[String]) -> Result<Vec<SelectionRule>, String> {
     let Some((start, end)) = bounds(lines)? else {
         return Ok(vec![]);
@@ -1320,8 +1376,8 @@ fn escaped_path(path: &str, escape: char) -> String {
     }
     output
 }
-fn block(rules: &[SelectionRule], escape: char) -> Result<Vec<String>, String> {
-    if rules.is_empty() {
+fn block(rules: &[SelectionRule], escape: char, on_demand: bool) -> Result<Vec<String>, String> {
+    if rules.is_empty() && !on_demand {
         return Ok(vec![]);
     }
     let mut rules = rules.to_vec();
@@ -1356,13 +1412,26 @@ fn block(rules: &[SelectionRule], escape: char) -> Result<Vec<String>, String> {
             output.push(format!("{prefix}/{path}/**"));
         }
     }
+    if on_demand {
+        output.extend([ON_DEMAND.to_string(), "**".to_string()]);
+    }
     output.push(END.to_string());
     Ok(output)
 }
-pub fn render_rules(
+#[cfg(test)]
+fn render_rules(
     existing: &[String],
     rules: &[SelectionRule],
     windows: bool,
+) -> Result<Vec<String>, String> {
+    render_rules_for_mode(existing, rules, windows, on_demand_mode(existing)?)
+}
+
+fn render_rules_for_mode(
+    existing: &[String],
+    rules: &[SelectionRule],
+    windows: bool,
+    on_demand: bool,
 ) -> Result<Vec<String>, String> {
     let escape = existing
         .iter()
@@ -1371,12 +1440,12 @@ pub fn render_rules(
     let mut untouched = existing.to_vec();
     if let Some((start, end)) = bounds(existing)? {
         let parsed = parse_managed(existing)?;
-        if block(&parsed, escape)? != existing[start..=end] {
+        if block(&parsed, escape, on_demand_mode(existing)?)? != existing[start..=end] {
             return Err("The generated myDrive rules were changed manually. Resolve that block in Syncthing before applying selections.".into());
         }
         untouched.drain(start..=end);
     }
-    let generated = block(rules, escape)?;
+    let generated = block(rules, escape, on_demand)?;
     if generated.is_empty() {
         return Ok(untouched);
     }
@@ -1390,6 +1459,23 @@ pub fn render_rules(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn on_demand_preserves_other_rules_and_explicit_pins() {
+        let existing = vec!["*.tmp".to_string()];
+        let mut rules = vec![];
+        let cold = render_rules_for_mode(&existing, &rules, false, true).unwrap();
+        assert!(on_demand_mode(&cold).unwrap());
+        set_download_rule(&mut rules, "docs/report.txt");
+        let pinned = render_rules(&cold, &rules, false).unwrap();
+        assert_eq!(parse_managed(&pinned).unwrap(), rules);
+        assert!(pinned.iter().position(|line| line == "!/docs/report.txt") <
+                pinned.iter().position(|line| line == "**"));
+        let warm = render_rules_for_mode(&pinned, &rules, false, false).unwrap();
+        assert!(!on_demand_mode(&warm).unwrap());
+        assert!(warm.contains(&existing[0]));
+        assert_eq!(parse_managed(&warm).unwrap(), rules);
+    }
+
     fn share_fixture(path: &Path, id: &str, peers: &[&str]) -> Value {
         json!({"id":id,"label":id,"path":path,"devices":peers.iter().map(|id|json!({"deviceID":id})).collect::<Vec<_>>()})
     }

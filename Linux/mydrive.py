@@ -788,35 +788,75 @@ class MyDrive(Gtk.Application):
             else:
                 self.browse = None
                 self.render_sync()
-        page.append(row(path or folder.get("label") or folder["id"], "", button("Back", back),
-                        button("Refresh", lambda: self.browse_folder(folder, path))))
+        heading = row(path or folder.get("label") or folder["id"], "", button("Back", back),
+                      button("Refresh", lambda: self.browse_folder(folder, path)))
+        page.append(heading)
+
         def loaded(result):
             if self.browse != (folder["id"], path):
                 return
+            page.remove(heading)
+            on_demand = bool(result.get("on_demand"))
+            title = path or folder.get("label") or folder["id"]
+            mode_action = "Resume default syncing…" if on_demand else "Download when needed…"
+            options = menu([(mode_action, lambda: self.change_download_mode(folder, path, result))])
+            page.append(row(title, "Download when needed" if on_demand else "", button("Back", back),
+                            button("Refresh", lambda: self.browse_folder(folder, path)), options))
             for entry in result.get("entries", []):
                 relative = entry["path"]
-                if entry.get("is_dir"):
+                directory = bool(entry.get("is_dir"))
+                if directory:
                     open_item = lambda p=relative: self.browse_folder(folder, p)
                 else:
-                    open_item = lambda p=relative: self.work(
-                        "sync", "Open synced file", lambda: self.sync.request("local_file", folder_id=folder["id"], path=p),
-                        lambda item: self.open_path(item.get("path")))
-                entries = [("Sync", lambda e=entry: self.rule(folder, path, e, "sync")),
-                           ("Stop", lambda e=entry: self.rule(folder, path, e, "ignore"))]
-                if entry.get("is_dir"):
+                    open_item = lambda p=relative: self.open_synced_file(folder, path, p, on_demand)
+                entries = []
+                detail = "Folder" if directory else ""
+                if on_demand:
+                    if entry.get("pinned"):
+                        detail = "Pinned folder" if directory else (
+                            "Kept offline" if entry.get("local") else "Pinned, waiting for download"
+                        )
+                        entries.append(("Unpin and keep local copy", lambda e=entry: self.rule(folder, path, e, "ignore")))
+                    else:
+                        detail = "On this device" if entry.get("local") else "Online"
+                        entries.append(("Keep offline", lambda e=entry: self.rule(folder, path, e, "sync")))
+                else:
+                    entries.extend([("Sync", lambda e=entry: self.rule(folder, path, e, "sync")),
+                                    ("Stop", lambda e=entry: self.rule(folder, path, e, "ignore"))])
+                if directory:
                     entries.append(("Sync with another device…", lambda p=relative: self.share_folder(Path(folder["path"]) / p)))
-                page.append(row(entry["name"], "Folder" if entry.get("is_dir") else "",
-                                button("Open", open_item), menu(entries)))
+                page.append(row(entry["name"], detail, button("Open", open_item), menu(entries)))
             if not result.get("entries"):
                 page.append(label("This folder has no visible entries."))
         self.work("sync", "Browse synced folder", lambda: self.sync.request("browse", folder_id=folder["id"], path=path), loaded)
 
+    def change_download_mode(self, folder, path, result):
+        enabled = not result.get("on_demand")
+        title = "Download files when needed" if enabled else "Resume default syncing"
+        message = ("Unselected files stay online. Open or pin them from myDrive. Existing local copies are kept."
+                   if enabled else "The folder will use its usual sync rules again. Existing file selections are kept.")
+        self.confirm(title + "?", message, "Enable" if enabled else "Resume",
+                     lambda: self.work("sync", title, lambda: self.sync.request(
+                         "selection.mode", folder_id=folder["id"], expected_ignore=result["ignore"], on_demand=enabled),
+                         lambda _: self.browse_folder(folder, path)))
+
+    def open_synced_file(self, folder, path, relative, on_demand):
+        def opened(result):
+            if result.get("pending"):
+                self.announce("Download requested. Open the file again when Syncthing has downloaded it.")
+            else:
+                self.open_path(result.get("path"))
+            if on_demand and self.browse == (folder["id"], path):
+                self.browse_folder(folder, path)
+        self.work("sync", "Open synced file", lambda: self.sync.request(
+            "local_file", folder_id=folder["id"], path=relative, wait_seconds=6), opened)
+
     def rule(self, folder, path, entry, mode):
         def apply():
             identifier = folder["id"]
-            current = self.sync.request("ignores", folder_id=identifier)["ignore"]
-            selection = self.sync.request("browse", folder_id=identifier, path=path).get("rules", [])
-            changed = [rule for rule in selection if rule["path"] != entry["path"]]
+            snapshot = self.sync.request("browse", folder_id=identifier, path=path)
+            current = snapshot["ignore"]
+            changed = [rule for rule in snapshot["rules"] if rule["path"] != entry["path"]]
             changed.append({"path": entry["path"], "is_dir": bool(entry.get("is_dir")), "sync": mode == "sync"})
             return self.sync.request("selection.apply", folder_id=identifier, expected_ignore=current, rules=changed)
         self.work("sync", "Change file selection", apply, lambda _: self.browse_folder(folder, path))

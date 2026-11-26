@@ -266,7 +266,12 @@ public sealed partial class MainWindow
         toolbar.Children.Add(QuickIcon("\uE72B","Back to synced folders",()=>NavigateQuick("sync")));
         var title=QuickText(syncPath.Length==0?syncFolderLabel:Path.GetFileName(syncPath),13,true);title.VerticalAlignment=VerticalAlignment.Center;ToolTipService.SetToolTip(title,syncFolderLabel+" /"+syncPath);Grid.SetColumn(title,1);toolbar.Children.Add(title);
         var up=QuickIcon("\uE74A","Parent folder",()=>_=OpenSyncFolder(syncFolderId,syncFolderLabel,syncPath.Contains('/')?syncPath[..syncPath.LastIndexOf('/')]:""));up.IsEnabled=syncPath.Length>0;Grid.SetColumn(up,2);toolbar.Children.Add(up);
-        var refresh=QuickIcon("\uE72C","Refresh files",()=>_=OpenSyncFolder(syncFolderId,syncFolderLabel,syncPath));Grid.SetColumn(refresh,3);toolbar.Children.Add(refresh);page.Children.Add(toolbar);
+        var refresh=QuickIcon("\uE72C","Refresh files",()=>_=OpenSyncFolder(syncFolderId,syncFolderLabel,syncPath));Grid.SetColumn(refresh,3);toolbar.Children.Add(refresh);
+        toolbar.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
+        var downloadOptions = SyncDownloadOptions();
+        Grid.SetColumn(downloadOptions, 4);
+        toolbar.Children.Add(downloadOptions);
+        page.Children.Add(toolbar);
         if(syncPath.Length>0)page.Children.Add(QuickButton("Sync this subfolder with another device…",()=>_=ShareBrowsedSubfolder()));
         if(syncBrowse==null)return;
         if(B(syncBrowse.Value,"local_limit_reached"))page.Children.Add(Text("Some local files are not shown. Open a smaller subfolder or use Explorer.",11));

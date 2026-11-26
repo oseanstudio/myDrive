@@ -326,6 +326,16 @@ struct SyncFilesView: View {
                     .buttonStyle(.plain)
                     .disabled(app.busy != nil)
                     .accessibilityLabel("Refresh files")
+                    Menu {
+                        Button(state.result.onDemand ? "Resume default syncing…" : "Download when needed…") {
+                            app.setDownloadWhenNeeded(!state.result.onDemand)
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis.circle").frame(width: 22, height: 22)
+                    }
+                    .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+                    .disabled(app.busy != nil)
+                    .accessibilityLabel("Download options")
                 }
                 Text(state.path.isEmpty ? "All files" : state.path)
                     .font(.system(size: 10))
@@ -349,7 +359,7 @@ struct SyncFilesView: View {
                         .padding(.vertical, 10)
                 } else {
                     ForEach(visible.sorted { $0.sortKey < $1.sortKey }) { entry in
-                        SelectionRow(entry: entry)
+                        SelectionRow(entry: entry, onDemand: state.result.onDemand)
                     }
                 }
                 let alternatives = state.result.entries.filter(\.isAlternative)
@@ -368,7 +378,7 @@ struct SyncFilesView: View {
                     Spacer()
                     Button("Selection help") { app.dialog = .selectionHelp }
                         .font(.system(size: 10))
-                    Text("Sync and Stop apply immediately on this computer, for all devices sharing this folder.")
+                    Text(state.result.onDemand ? "Download when needed is on." : "Selections apply on this computer.")
                         .font(.system(size: 9))
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
@@ -387,6 +397,7 @@ struct SyncFilesView: View {
 struct SelectionRow: View {
     @EnvironmentObject var app: AppState
     let entry: BrowseEntry
+    let onDemand: Bool
 
     var body: some View {
         HStack(spacing: 6) {
@@ -406,16 +417,18 @@ struct SelectionRow: View {
                     .lineLimit(1)
             }
             Spacer(minLength: 4)
-            Button("Sync") { app.setSelection(entry, sync: true) }
+            Button(onDemand ? "Pin" : "Sync") { app.setSelection(entry, sync: true) }
+                .help(onDemand ? "Keep offline" : "Sync this item")
                 .font(.system(size: 10))
                 .controlSize(.small)
                 .foregroundStyle(entry.selection == "sync" ? Color.accentColor : Color.primary)
-                .disabled(app.busy != nil || entry.selection == "sync")
-            Button("Stop") { app.setSelection(entry, sync: false) }
+                .disabled(app.busy != nil || (onDemand ? entry.pinned : entry.selection == "sync"))
+            Button(onDemand ? "Unpin" : "Stop") { app.setSelection(entry, sync: false) }
+                .help(onDemand ? "Unpin and keep any downloaded copy" : "Stop syncing and keep any downloaded copy")
                 .font(.system(size: 10))
                 .controlSize(.small)
                 .foregroundStyle(entry.selection == "exclude" ? Color.accentColor : Color.primary)
-                .disabled(app.busy != nil || entry.selection == "exclude")
+                .disabled(app.busy != nil || (onDemand ? !entry.pinned : entry.selection == "exclude"))
         }
         .padding(.horizontal, 2)
         .frame(minHeight: 38)
@@ -427,6 +440,12 @@ struct SelectionRow: View {
 
     private var note: String {
         let kind = entry.isDir ? "Folder" : Format.bytes(entry.size)
+        if onDemand {
+            if entry.pinned {
+                return kind + (entry.isDir ? " · Pinned folder" : entry.local ? " · Kept offline" : " · Pinned, waiting for download")
+            }
+            return kind + (entry.local ? " · On this device" : " · Online")
+        }
         let rule: String
         switch entry.selection {
         case "sync": rule = "Sync enabled"

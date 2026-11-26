@@ -149,7 +149,7 @@ public sealed partial class MainWindow
     {
         if(compact){RenderQuickSyncFiles();return;}
         Heading(syncFolderLabel,"Choose files and folders to sync on this computer.");
-        var top=new StackPanel{Orientation=Orientation.Horizontal,Spacing=8};top.Children.Add(Button("← Folders",()=>{if(busy)return;currentView="sync";Render();}));top.Children.Add(Button("↑ Up",()=>_=OpenSyncFolder(syncFolderId,syncFolderLabel,syncPath.Contains('/')?syncPath[..syncPath.LastIndexOf('/')]:"")));top.Children.Add(Button("Refresh",()=>_=OpenSyncFolder(syncFolderId,syncFolderLabel,syncPath)));page.Children.Add(top);
+        var top=new StackPanel{Orientation=Orientation.Horizontal,Spacing=8};top.Children.Add(Button("← Folders",()=>{if(busy)return;currentView="sync";Render();}));top.Children.Add(Button("↑ Up",()=>_=OpenSyncFolder(syncFolderId,syncFolderLabel,syncPath.Contains('/')?syncPath[..syncPath.LastIndexOf('/')]:"")));top.Children.Add(Button("Refresh",()=>_=OpenSyncFolder(syncFolderId,syncFolderLabel,syncPath)));top.Children.Add(SyncDownloadOptions());page.Children.Add(top);
         page.Children.Add(Text("/"+syncPath,13,true));
         if(syncPath.Length>0)page.Children.Add(Button("Sync this subfolder with another device…",()=>_=ShareBrowsedSubfolder()));
         if(syncBrowse==null)return;
@@ -158,7 +158,53 @@ public sealed partial class MainWindow
         var alternatives=Items(syncBrowse.Value,"entries").Where(e=>S(e,"alternative_for").Length>0).ToList();if(alternatives.Count>0){var saved=new StackPanel{Spacing=8};foreach(var version in alternatives){var path=S(version,"path");saved.Children.Add(Button("Open saved edit of "+S(version,"alternative_for"),()=>_=OpenSyncedFile(path)));}page.Children.Add(new Expander{Header=$"Saved alternative edits · {alternatives.Count}",Content=saved,HorizontalAlignment=HorizontalAlignment.Stretch});}
         page.Children.Add(Text("Sync and Stop apply immediately. Stopping keeps existing copies and stops future syncing on this computer. More specific file selections override a containing folder. These local selections affect all devices sharing this Syncthing folder.",12));
     }
-    private async Task OpenSyncedFile(string path)=>await Run("Open synced file",async token=>{var result=await SyncthingService.Call("local_file",new{folder_id=syncFolderId,path},token);if(B(result,"pending")){Info("File queued","This file has been moved to the front of Syncthing's download queue. It will be available when a device with the file is connected.");return;}Process.Start(new ProcessStartInfo(S(result,"path")){UseShellExecute=true});});
+    private bool SyncOnDemand => syncBrowse is { } data && B(data, "on_demand");
+
+    private Button SyncDownloadOptions()
+    {
+        var button = QuickIcon("\uE712", "Download options", () => { });
+        var menu = new MenuFlyout();
+        MenuAction(menu, SyncOnDemand ? "Resume default syncing…" : "Download when needed…",
+            () => _ = SetDownloadWhenNeeded(!SyncOnDemand));
+        button.Flyout = menu;
+        return button;
+    }
+
+    private async Task SetDownloadWhenNeeded(bool enabled)
+    {
+        if (busy || modalDepth > 0) return;
+        string title = enabled ? "Download files when needed" : "Resume default syncing";
+        var dialog = new ContentDialog { XamlRoot = root.XamlRoot, Title = title + "?",
+            Content = Text(enabled
+                ? "Unselected files stay online. Open or pin files from myDrive. Existing local copies are kept."
+                : "The folder will use its usual sync rules again. Existing file selections are kept."),
+            PrimaryButtonText = enabled ? "Enable" : "Resume", CloseButtonText = "Cancel" };
+        if (await ShowDialog(dialog) != ContentDialogResult.Primary) return;
+        string id = syncFolderId, name = syncFolderLabel, path = syncPath;
+        await Run(title, async token =>
+        {
+            await SyncthingService.Call("selection.mode",
+                new { folder_id = id, expected_ignore = syncExpectedIgnore, on_demand = enabled }, token);
+        });
+        await OpenSyncFolder(id, name, path);
+    }
+
+    private async Task OpenSyncedFile(string path)
+    {
+        bool reload = SyncOnDemand;
+        string id = syncFolderId, label = syncFolderLabel, folder = syncPath;
+        await Run("Open synced file", async token =>
+        {
+            var result = await SyncthingService.Call("local_file", new { folder_id = id, path, wait_seconds = 6 }, token);
+            if (B(result, "pending"))
+            {
+                Info("Download requested", "Open the file again when Syncthing has downloaded it.");
+                return;
+            }
+            Process.Start(new ProcessStartInfo(S(result, "path")) { UseShellExecute = true });
+        });
+        if (reload) await OpenSyncFolder(id, label, folder);
+    }
     private async Task ShowSyncVersions(string id,string label)
     {
         if(busy||modalDepth>0)return;modalDepth++;SizeQuickMenu();

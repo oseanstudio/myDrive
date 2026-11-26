@@ -28,8 +28,13 @@ public sealed partial class MainWindow
         public string PauseGlyph {get;private set;}="";
         public string PauseLabel {get;private set;}="";
         public string OpenLabel=>"Open "+Label+"; "+Detail+(PeerDetail.Length==0?"":"; "+PeerDetail);
-        public string SyncLabel=>"Sync "+Label;
-        public string StopLabel=>"Stop syncing "+Label+"; keep copies";
+        public string SyncLabel=>(OnDemand ? "Keep offline: " : "Sync ") + Label;
+        public string StopLabel=>(OnDemand ? "Unpin " : "Stop syncing ") + Label + "; keep copies";
+        public string SyncButtonText => OnDemand ? "Pin" : "Sync";
+        public string StopButtonText => OnDemand ? "Unpin" : "Stop";
+        public bool OnDemand { get; init; }
+        public bool CanPin { get; init; } = true;
+        public bool CanUnpin { get; init; } = true;
         public ICommand Open {get;init;}=null!;
         public ICommand Pause {get;init;}=null!;
         public ICommand Enable {get;init;}=null!;
@@ -89,8 +94,8 @@ public sealed partial class MainWindow
             <Button Command="{Binding Open}" ToolTipService.ToolTip="{Binding Hint}" AutomationProperties.Name="{Binding OpenLabel}" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch" Background="Transparent" BorderThickness="0" Padding="3,1" MinWidth="0">
               <StackPanel Spacing="1"><TextBlock Text="{Binding Label}" FontSize="12" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/><TextBlock Text="{Binding Detail}" FontSize="10" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextTrimming="CharacterEllipsis"/></StackPanel>
             </Button>
-            <Button Grid.Column="1" Command="{Binding Enable}" AutomationProperties.Name="{Binding SyncLabel}" Content="Sync" FontSize="12" MinWidth="0" MinHeight="28" Padding="7,2"/>
-            <Button Grid.Column="2" Command="{Binding Stop}" AutomationProperties.Name="{Binding StopLabel}" Content="Stop" FontSize="12" MinWidth="0" MinHeight="28" Padding="7,2"/>
+            <Button Grid.Column="1" Command="{Binding Enable}" AutomationProperties.Name="{Binding SyncLabel}" ToolTipService.ToolTip="{Binding SyncLabel}" Content="{Binding SyncButtonText}" IsEnabled="{Binding CanPin}" FontSize="12" MinWidth="0" MinHeight="28" Padding="7,2"/>
+            <Button Grid.Column="2" Command="{Binding Stop}" AutomationProperties.Name="{Binding StopLabel}" ToolTipService.ToolTip="{Binding StopLabel}" Content="{Binding StopButtonText}" IsEnabled="{Binding CanUnpin}" FontSize="12" MinWidth="0" MinHeight="28" Padding="7,2"/>
           </Grid>
         </DataTemplate>
         """;
@@ -129,9 +134,15 @@ public sealed partial class MainWindow
         foreach(var entry in Items(syncBrowse!.Value,"entries").Where(e=>S(e,"alternative_for").Length==0))
         {
             var name=S(entry,"name");var path=S(entry,"path");var directory=B(entry,"is_dir");rules.TryGetValue(path,out var rule);
-            var row=new SyncRow{Id=path,Open=new RowCommand(()=>{if(directory)_=OpenSyncFolder(syncFolderId,syncFolderLabel,path);else _=OpenSyncedFile(path);}),
+            bool onDemand = SyncOnDemand, pinned = B(entry, "pinned"), local = B(entry, "local");
+            var row=new SyncRow{Id=path,OnDemand=onDemand,CanPin=!onDemand || !pinned,CanUnpin=!onDemand || pinned,
+                Open=new RowCommand(()=>{if(directory)_=OpenSyncFolder(syncFolderId,syncFolderLabel,path);else _=OpenSyncedFile(path);}),
                 Enable=new RowCommand(()=>_=SetSyncPath(path,directory,true)),Stop=new RowCommand(()=>_=SetSyncPath(path,directory,false))};
-            row.Update(entry,(directory?"▰ ":"")+name,(directory?"Folder":Bytes(N(entry,"size")))+" · "+(rule==null?"Default rules":rule.sync?"Sync enabled":"Stopped here"),name);
+            string availability = onDemand
+                ? pinned ? directory ? "Pinned folder" : local ? "Kept offline" : "Pinned, waiting for download"
+                    : local ? "On this device" : "Online"
+                : rule == null ? "Default rules" : rule.sync ? "Sync enabled" : "Stopped here";
+            row.Update(entry,(directory?"▰ ":"")+name,(directory?"Folder":Bytes(N(entry,"size")))+" · "+availability,name);
             rows.Add(row);
         }
         syncFileList=VirtualRows(rows,FileTemplate,compact?270:460);
