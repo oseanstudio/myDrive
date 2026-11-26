@@ -20,6 +20,7 @@ public sealed partial class MainWindow
     private TextBlock? parsecDropTitle, parsecDropComputer;
     private ParsecRoute? visibleParsecRoute;
     private nint parsecCandidate;
+    private uint? parsecDragSource;
     private long parsecHoverStarted, parsecLastPressed;
 
     private async Task ConnectParsec(string owner, BlipDevice peer, bool edit = false)
@@ -103,16 +104,18 @@ public sealed partial class MainWindow
         if (origin == null)
         {
             parsecCandidate = 0;
+            parsecDragSource = null;
             if (now - parsecLastPressed > 300) HideParsecDrop();
             return false;
         }
         parsecLastPressed = now;
-        if (parsecConnection == null || busy || modalDepth > 0 || !BlipRunning ||
-            Math.Abs((long)point.X - origin.Value.X) + Math.Abs((long)point.Y - origin.Value.Y) < 20)
+        if (parsecConnection == null || busy || modalDepth > 0 || !BlipRunning)
         {
             HideParsecDrop();
             return false;
         }
+        parsecDragSource ??= ParsecSession.ProcessAt(origin.Value);
+        if (Math.Abs((long)point.X - origin.Value.X) + Math.Abs((long)point.Y - origin.Value.Y) < 20) return false;
         if (visibleParsecRoute is { } visible && parsecDropWindow is { } panel)
         {
             var position = panel.AppWindow.Position;
@@ -122,7 +125,8 @@ public sealed partial class MainWindow
                 return true;
             HideParsecDrop();
         }
-        if (ParsecSession.At(point) is not { } session || ResolveParsecRoute(session) is not { } route || !CanUse(route, point) || session.Contains(origin.Value))
+        if (ParsecSession.At(point) is not { } session || session.ProcessId == parsecDragSource ||
+            ResolveParsecRoute(session) is not { } route || !CanUse(route, point))
         {
             parsecCandidate = 0;
             return false;
@@ -217,7 +221,15 @@ public sealed partial class MainWindow
 
 internal sealed record ParsecSession(nint Window, uint ProcessId, long Started, string Title)
 {
-    public static ParsecSession? At(PointInt32 point) => Read(GetAncestor(WindowFromPoint(point), 2));
+    public static ParsecSession? At(PointInt32 point) => Read(WindowAt(point));
+
+    public static uint ProcessAt(PointInt32 point)
+    {
+        GetWindowThreadProcessId(WindowAt(point), out uint id);
+        return id;
+    }
+
+    private static nint WindowAt(PointInt32 point) => GetAncestor(WindowFromPoint(point), 2);
 
     public static ParsecSession? Read(nint window)
     {

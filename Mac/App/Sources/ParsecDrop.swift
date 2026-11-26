@@ -31,6 +31,7 @@ import CoreGraphics
     private var timer: Timer?
     private var idlePoint: CGPoint?
     private var startPoint: CGPoint?
+    private var sourceProcess: pid_t?
     private var candidate: Session?
     private var hoverSince = Date.distantFuture
     private var shown: Route?
@@ -38,10 +39,14 @@ import CoreGraphics
 
     init(receiver: BlipReceiver) {
         self.receiver = receiver
-        panel.level = .floating
+        panel.level = .statusBar
+        panel.isFloatingPanel = true
         panel.hidesOnDeactivate = false
         panel.hasShadow = true
-        panel.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        if #available(macOS 26.0, *) {
+            panel.collectionBehavior.insert(.canJoinAllApplications)
+        }
         panel.contentView = target
         target.canDrop = { [weak self] in self?.canSend() == true }
         target.receive = { [weak self] urls in self?.send(urls) == true }
@@ -125,8 +130,15 @@ import CoreGraphics
     }
 
     func beginPointerPress() {
-        guard connection?.app.isTerminated == false, timer == nil else { return }
-        idlePoint = NSEvent.mouseLocation
+        guard connection?.app.isTerminated == false else { return }
+        let point = NSEvent.mouseLocation
+        idlePoint = point
+        startPoint = point
+        // The same screen coordinates can belong to Finder before a Space switch
+        // and to fullscreen Parsec after it. Track the source process.
+        sourceProcess = window(at: point)?.0.process
+        candidate = nil
+        hide()
         start()
     }
 
@@ -152,6 +164,7 @@ import CoreGraphics
         guard NSEvent.pressedMouseButtons & 1 == 1 else {
             idlePoint = point
             startPoint = nil
+            sourceProcess = nil
             candidate = nil
             if now.timeIntervalSince(lastPressed) > 0.3 {
                 hide()
@@ -165,8 +178,11 @@ import CoreGraphics
         guard let startPoint, hypot(point.x - startPoint.x, point.y - startPoint.y) >= 20,
               NSApp.modalWindow == nil, receiver.connected, !receiver.sending,
               let (session, bounds) = window(at: point),
-              let route = route(for: session),
-              !bounds.contains(startPoint) else { candidate = nil; hide(); return }
+              let route = route(for: session), sourceProcess != session.process else {
+            candidate = nil
+            hide()
+            return
+        }
         if shown?.session == session, panel.frame.contains(point) { return }
         hide()
         if candidate != session { candidate = session; hoverSince = now; return }
@@ -174,7 +190,7 @@ import CoreGraphics
         shown = route
         target.label.stringValue = "Send to " + receiver.recipientLabel(route.peer)
         target.computer.stringValue = route.computer + " · Blip"
-        let area = NSScreen.screens.first { $0.frame.contains(point) }?.visibleFrame ?? bounds
+        let area = NSScreen.screens.first { $0.frame.contains(point) }?.frame ?? bounds
         let size = panel.frame.size
         panel.setFrameOrigin(CGPoint(x: max(area.minX, min(area.maxX - size.width, point.x - size.width / 2)),
                                     y: max(area.minY, min(area.maxY - size.height, point.y - size.height / 2))))
@@ -204,13 +220,19 @@ import CoreGraphics
         let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
             as? [[String: Any]] ?? []
         let top = NSScreen.screens.first?.frame.maxY ?? 0
-        for row in list where (row[kCGWindowLayer as String] as? Int) == 0 {
-            guard let id = row[kCGWindowNumber as String] as? CGWindowID,
+        let screen = NSScreen.screens.first { $0.frame.contains(point) }
+        for row in list {
+            guard let layer = row[kCGWindowLayer as String] as? Int, layer >= 0,
+                  let id = row[kCGWindowNumber as String] as? CGWindowID, Int(id) != panel.windowNumber,
                   let pid = row[kCGWindowOwnerPID as String] as? pid_t,
                   let raw = row[kCGWindowBounds as String] as? [String: Any],
                   let bounds = CGRect(dictionaryRepresentation: raw as CFDictionary) else { continue }
             let frame = CGRect(x: bounds.minX, y: top - bounds.maxY, width: bounds.width, height: bounds.height)
             guard frame.contains(point) else { continue }
+            // Fullscreen surfaces can sit above the normal window layer.
+            if layer > 0 {
+                guard let screen, frame.contains(screen.frame.insetBy(dx: 10, dy: 10)) else { continue }
+            }
             guard let app = NSRunningApplication(processIdentifier: pid),
                   ["parsec", "parsecd"].contains(app.executableURL?.lastPathComponent.lowercased() ?? ""),
                   app.bundleURL?.deletingPathExtension().lastPathComponent.lowercased() == "parsec" else { return nil }
