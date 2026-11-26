@@ -376,10 +376,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     private func setupNotifications() {
         NotificationCenter.default.addObserver(forName: .myDriveIncomingBlip, object: nil, queue: .main) { [weak self] notification in
-            guard let self, let id = notification.object as? String,
-                  let button = self.statusItem?.button, self.blipNotice.canShow(id) else { return }
-            self.popover.close()
-            self.blipNotice.show(id, at: button)
+            guard let id = notification.object as? String else { return }
+            Task { @MainActor [weak self] in
+                guard let self, let button = self.statusItem?.button, self.blipNotice.canShow(id) else { return }
+                self.popover.close()
+                self.blipNotice.show(id, at: button)
+            }
         }
         NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification,
                                                object: nil, queue: .main) { [weak self] notification in

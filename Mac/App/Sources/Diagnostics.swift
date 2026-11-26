@@ -72,15 +72,21 @@ enum Diagnostics {
                 guard statusButton.toolTip == "myDrive · 120 items need attention" else {
                     throw BlipReceiverError.message("The menu bar item lost its attention count")
                 }
-                let notice = BlipReceiveNotice(receiver: receiver, openTransfers: {}, anchor: { nil })
-                guard notice.panel.styleMask.contains([.titled, .closable, .nonactivatingPanel]),
-                      !notice.panel.styleMask.contains(.utilityWindow),
-                      let closeButton = notice.panel.standardWindowButton(.closeButton),
-                      let standardClose = NSWindow.standardWindowButton(.closeButton, for: [.titled, .closable]),
-                      closeButton.frame.width >= standardClose.frame.width else {
-                    throw BlipReceiverError.message("The receive notice does not use the standard close control")
-                }
                 if let transfer = receiver.transfers.first {
+                    let notice = BlipReceiveNotice(receiver: receiver, openTransfers: {})
+                    guard notice.canShow(transfer.id), !notice.isShown else {
+                        throw BlipReceiverError.message("The receive popover did not start ready and closed.")
+                    }
+                    if statusButton.window?.isVisible == true {
+                        notice.show(transfer.id, at: statusButton)
+                        guard notice.isShown else {
+                            throw BlipReceiverError.message("The receive popover did not open from the menu bar.")
+                        }
+                        notice.dismiss()
+                        guard !notice.canShow(transfer.id) else {
+                            throw BlipReceiverError.message("A dismissed transfer could reopen its popover.")
+                        }
+                    }
                     let file = "blip-receive-notice.png"
                     let height = renderReceiveNotice(BlipReceiveNoticeView(receiver: receiver, id: transfer.id, openTransfers: {}),
                         to: directory.appendingPathComponent(file))
