@@ -200,6 +200,7 @@ struct BlipSendPayload {
         window.title = "Send with Blip"
         window.delegate = self
         window.isReleasedWhenClosed = false
+        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .canJoinAllApplications]
         cancelButton.target = self
         cancelButton.action = #selector(cancel(_:))
         cancelButton.keyEquivalent = "\u{1b}"

@@ -14,7 +14,7 @@ extension Notification.Name {
 final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     let appState = AppState()
     private var statusItem: NSStatusItem?
-    private var parsecDrop: ParsecDrop?
+    private lazy var parsecDrop = ParsecDrop(receiver: appState.blip)
     private let popover = NSPopover()
     private var fullWindow: NSWindow?
     private lazy var blipNotice = BlipReceiveNotice(receiver: appState.blip) { [weak self] in
@@ -28,9 +28,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         appState.blip.connectParsec = { [weak self] peer, edit in
-            guard let self else { return }
-            if self.parsecDrop == nil { self.parsecDrop = ParsecDrop(receiver: self.appState.blip) }
-            self.parsecDrop?.connect(peer, edit: edit)
+            self?.parsecDrop.connect(peer, edit: edit)
         }
         SingleInstance.install { [weak self] in self?.showPopover() }
         setupStatusItem()
@@ -93,7 +91,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        parsecDrop?.stop()
+        parsecDrop.stop()
         blipNotice.dismiss()
         timer?.invalidate()
         networkMonitor.cancel()
@@ -328,7 +326,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     private func observePopoverClick(_ event: NSEvent, isLocal: Bool) {
-        if event.type == .leftMouseDown { parsecDrop?.beginPointerPress() }
+        if event.type == .leftMouseDown { parsecDrop.beginPointerPress() }
         guard popover.isShown, NSApp.modalWindow == nil else { outsidePress = nil; return }
         let point = NSEvent.mouseLocation
         let inside = isLocal && (event.window === popover.contentViewController?.view.window ||

@@ -13,7 +13,7 @@ namespace MyDrive;
 
 public sealed partial class MainWindow
 {
-    private sealed record ParsecRoute(ParsecSession Session, string Computer, string Owner, BlipDevice Peer);
+    private sealed record ParsecRoute(ParsecSession Session, string Owner, BlipDevice? Peer);
     private sealed record ParsecConnection(int ProcessId, long Started, string Owner, BlipDevice Peer);
     private ParsecConnection? parsecConnection;
     private Window? parsecDropWindow;
@@ -90,12 +90,13 @@ public sealed partial class MainWindow
         }
     }
 
-    private ParsecRoute? ResolveParsecRoute(ParsecSession session)
+    private ParsecRoute ResolveParsecRoute(ParsecSession session)
     {
-        if (parsecConnection is not { } connection || session.ProcessId != connection.ProcessId ||
-            session.Started != connection.Started || connection.Owner != BlipOwner ||
-            IsRecipientArchived(connection.Owner, connection.Peer.Peer)) return null;
-        return new(session, "Parsec connection", connection.Owner, connection.Peer);
+        string owner = BlipOwner;
+        var peer = parsecConnection is { } connection && session.ProcessId == connection.ProcessId &&
+            session.Started == connection.Started && connection.Owner == owner &&
+            !IsRecipientArchived(owner, connection.Peer.Peer) ? connection.Peer : null;
+        return new(session, owner, peer);
     }
 
     private bool TrackParsecHover(PointInt32 point, PointInt32? origin)
@@ -109,7 +110,7 @@ public sealed partial class MainWindow
             return false;
         }
         parsecLastPressed = now;
-        if (parsecConnection == null || busy || modalDepth > 0 || !BlipRunning)
+        if (busy || modalDepth > 0 || !BlipRunning || BlipOwner.Length == 0)
         {
             HideParsecDrop();
             return false;
@@ -125,8 +126,7 @@ public sealed partial class MainWindow
                 return true;
             HideParsecDrop();
         }
-        if (ParsecSession.At(point) is not { } session || session.ProcessId == parsecDragSource ||
-            ResolveParsecRoute(session) is not { } route || !CanUse(route, point))
+        if (ParsecSession.At(point) is not { } session || session.ProcessId == parsecDragSource)
         {
             parsecCandidate = 0;
             return false;
@@ -136,14 +136,14 @@ public sealed partial class MainWindow
             parsecCandidate = session.Window;
             parsecHoverStarted = now;
         }
-        if (now - parsecHoverStarted >= 240) ShowParsecDrop(route, point);
+        if (now - parsecHoverStarted >= 240) ShowParsecDrop(ResolveParsecRoute(session), point);
         return true;
     }
 
     private bool CanUse(ParsecRoute route, PointInt32 point) =>
         !busy && modalDepth == 0 && BlipRunning && route.Owner == BlipOwner &&
         route.Session.Contains(point) && ParsecSession.Read(route.Session.Window) is { } session &&
-        session == route.Session && ResolveParsecRoute(session)?.Peer.Peer == route.Peer.Peer;
+        session == route.Session && ResolveParsecRoute(session).Peer?.Peer == route.Peer?.Peer;
 
     private void ShowParsecDrop(ParsecRoute route, PointInt32 point)
     {
@@ -182,7 +182,8 @@ public sealed partial class MainWindow
                 HideParsecDrop();
                 if (quitting || choice.Owner != BlipOwner || busy) return;
                 OpenTransfers();
-                await DispatchBlipSend(choice.Peer, paths, choice.Owner);
+                if (choice.Peer is { } peer) await DispatchBlipSend(peer, paths, choice.Owner);
+                else await SendDroppedFiles(paths);
             };
             window.Content = surface;
             if (window.AppWindow.Presenter is OverlappedPresenter presenter)
@@ -197,8 +198,8 @@ public sealed partial class MainWindow
         }
         visibleParsecRoute = route;
         ((Border)parsecDropWindow.Content).RequestedTheme = RequestedAppearance;
-        parsecDropTitle!.Text = "Send to " + BlipDeviceCaption(route.Peer);
-        parsecDropComputer!.Text = route.Computer + " · Blip";
+        parsecDropTitle!.Text = route.Peer is { } peer ? "Send to " + BlipDeviceCaption(peer) : "Send with Blip";
+        parsecDropComputer!.Text = route.Peer == null ? "Drop to choose a recipient" : "Parsec connection · Blip";
         var (area, scale) = TrayPopupPlacement.MonitorAt(point, hwnd);
         var sizeAtDpi = new SizeInt32((int)(244 * scale), (int)(72 * scale));
         var anchored = TrayPopupPlacement.Fit(new(point.X - sizeAtDpi.Width / 2, point.Y - sizeAtDpi.Height / 2),
@@ -240,8 +241,8 @@ internal sealed record ParsecSession(nint Window, uint ProcessId, long Started, 
             if (!process.ProcessName.Equals("parsecd", StringComparison.OrdinalIgnoreCase) &&
                 !process.ProcessName.Equals("parsec", StringComparison.OrdinalIgnoreCase)) return null;
             var title = new StringBuilder(512);
-            return GetWindowTextW(window, title, title.Capacity) > 0
-                ? new(window, id, process.StartTime.ToFileTimeUtc(), title.ToString()) : null;
+            GetWindowTextW(window, title, title.Capacity);
+            return new(window, id, process.StartTime.ToFileTimeUtc(), title.ToString());
         }
         catch (Exception error) when (error is ArgumentException or InvalidOperationException or System.ComponentModel.Win32Exception)
         { return null; }

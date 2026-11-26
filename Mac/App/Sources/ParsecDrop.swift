@@ -11,9 +11,8 @@ import CoreGraphics
 
     private struct Route {
         let session: Session
-        let computer: String
         let owner: String
-        let peer: BlipPeer
+        let peer: BlipPeer?
     }
 
     private let receiver: BlipReceiver
@@ -43,10 +42,7 @@ import CoreGraphics
         panel.isFloatingPanel = true
         panel.hidesOnDeactivate = false
         panel.hasShadow = true
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        if #available(macOS 26.0, *) {
-            panel.collectionBehavior.insert(.canJoinAllApplications)
-        }
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .canJoinAllApplications]
         panel.contentView = target
         target.canDrop = { [weak self] in self?.canSend() == true }
         target.receive = { [weak self] urls in self?.send(urls) == true }
@@ -121,16 +117,22 @@ import CoreGraphics
         }
     }
 
-    private func route(for session: Session) -> Route? {
-        guard let connection, !connection.app.isTerminated, connection.owner == receiver.recipientOwner,
-              connection.app.processIdentifier == session.process, connection.app.launchDate == session.launched,
-              let peer = (receiver.recipients + receiver.people + receiver.directoryRecipients)
-                .first(where: { $0.peer == connection.peer.peer && !receiver.isArchived($0) }) else { return nil }
-        return Route(session: session, computer: "Parsec connection", owner: connection.owner, peer: peer)
+    private func route(for session: Session) -> Route {
+        let owner = receiver.recipientOwner
+        let peer: BlipPeer?
+        if let connection, !connection.app.isTerminated, connection.owner == owner,
+           connection.app.processIdentifier == session.process, connection.app.launchDate == session.launched {
+            peer = (receiver.recipients + receiver.people + receiver.directoryRecipients)
+                .first { $0.peer == connection.peer.peer && !receiver.isArchived($0) }
+        } else {
+            peer = nil
+        }
+        return Route(session: session, owner: owner, peer: peer)
     }
 
     func beginPointerPress() {
-        guard connection?.app.isTerminated == false else { return }
+        guard receiver.connected, !receiver.sending, !receiver.preparingSend,
+              NSWorkspace.shared.runningApplications.contains(where: Self.isParsec) else { return }
         let point = NSEvent.mouseLocation
         idlePoint = point
         startPoint = point
@@ -176,20 +178,20 @@ import CoreGraphics
         lastPressed = now
         if startPoint == nil { startPoint = idlePoint ?? point }
         guard let startPoint, hypot(point.x - startPoint.x, point.y - startPoint.y) >= 20,
-              NSApp.modalWindow == nil, receiver.connected, !receiver.sending,
-              let (session, bounds) = window(at: point),
-              let route = route(for: session), sourceProcess != session.process else {
+              NSApp.modalWindow == nil, receiver.connected, !receiver.sending, !receiver.preparingSend,
+              let (session, bounds) = window(at: point), sourceProcess != session.process else {
             candidate = nil
             hide()
             return
         }
-        if shown?.session == session, panel.frame.contains(point) { return }
+        let route = route(for: session)
+        if shown?.session == session, shown?.peer?.peer == route.peer?.peer, panel.frame.contains(point) { return }
         hide()
         if candidate != session { candidate = session; hoverSince = now; return }
         guard now.timeIntervalSince(hoverSince) >= 0.24 else { return }
         shown = route
-        target.label.stringValue = "Send to " + receiver.recipientLabel(route.peer)
-        target.computer.stringValue = route.computer + " · Blip"
+        target.label.stringValue = route.peer.map { "Send to " + receiver.recipientLabel($0) } ?? "Send with Blip"
+        target.computer.stringValue = route.peer == nil ? "Drop to choose a recipient" : "Parsec connection · Blip"
         let area = NSScreen.screens.first { $0.frame.contains(point) }?.frame ?? bounds
         let size = panel.frame.size
         panel.setFrameOrigin(CGPoint(x: max(area.minX, min(area.maxX - size.width, point.x - size.width / 2)),
@@ -204,16 +206,28 @@ import CoreGraphics
     }
 
     private func canSend() -> Bool {
-        guard let shown, receiver.connected, !receiver.sending, shown.owner == receiver.recipientOwner,
+        guard let shown, receiver.connected, !receiver.sending, !receiver.preparingSend,
+              shown.owner == receiver.recipientOwner,
               let (actual, _) = window(at: NSEvent.mouseLocation) else { return false }
-        return shown.session == actual && route(for: actual)?.peer.peer == shown.peer.peer
+        return shown.session == actual && route(for: actual).peer?.peer == shown.peer?.peer
     }
 
     private func send(_ candidates: [URL]) -> Bool {
         guard canSend(), let route = shown, let urls = FileDropInput.localFiles(candidates) else { return false }
         hide()
-        receiver.send(.forFiles(urls), to: route.peer)
+        let owner = route.owner
+        let peer = route.peer
+        Task {
+            guard receiver.recipientOwner == owner else { return }
+            if let peer { receiver.send(.forFiles(urls), to: peer) }
+            else { receiver.sendDropped(urls) }
+        }
         return true
+    }
+
+    private static func isParsec(_ app: NSRunningApplication) -> Bool {
+        ["parsec", "parsecd"].contains(app.executableURL?.lastPathComponent.lowercased() ?? "") &&
+            app.bundleURL?.deletingPathExtension().lastPathComponent.lowercased() == "parsec"
     }
 
     private func window(at point: CGPoint) -> (Session, CGRect)? {
@@ -233,9 +247,7 @@ import CoreGraphics
             if layer > 0 {
                 guard let screen, frame.contains(screen.frame.insetBy(dx: 10, dy: 10)) else { continue }
             }
-            guard let app = NSRunningApplication(processIdentifier: pid),
-                  ["parsec", "parsecd"].contains(app.executableURL?.lastPathComponent.lowercased() ?? ""),
-                  app.bundleURL?.deletingPathExtension().lastPathComponent.lowercased() == "parsec" else { return nil }
+            guard let app = NSRunningApplication(processIdentifier: pid), Self.isParsec(app) else { return nil }
             let title = (row[kCGWindowName as String] as? String).flatMap { $0.isEmpty ? nil : $0 }
             return (Session(window: id, process: pid, launched: app.launchDate, title: title), frame)
         }
