@@ -54,6 +54,6 @@ public static class BlipReceivedFiles {
         using var reader=new StreamReader(stream,System.Text.Encoding.UTF8,true);
         var buffer=new char[4096];int count=await reader.ReadAsync(buffer);
         string text=new(buffer,0,count);if(text.Contains('\0'))return "Preview unavailable";
-        return string.Join("\n",text.Replace("\r\n","\n").Split('\n').Take(6));
+        return string.Join("\n",text.Replace("\r\n","\n").Split('\n').Take(12));
     }
 }

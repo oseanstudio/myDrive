@@ -42,7 +42,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         refreshWindowAppearance()
         appState.updateWindowIsVisible = { [weak self] in
             guard let self else { return true }
-            if self.popover.isShown { return true }
+            if self.popover.isShown || self.blipNotice.isShown { return true }
             return self.fullWindow.map { $0.isVisible && !$0.isMiniaturized } ?? false
         }
         appState.startup()
@@ -198,7 +198,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     @objc private func statusItemClicked(_ sender: Any?) {
         guard let event = NSApp.currentEvent, event.type == .rightMouseUp else {
             if blipNotice.isShown {
-                blipNotice.dismiss()
+                blipNotice.dismiss(showNext: true)
             } else if popover.isShown {
                 popover.performClose(nil)
             } else {
@@ -376,9 +376,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         NotificationCenter.default.addObserver(forName: .myDriveIncomingBlip, object: nil, queue: .main) { [weak self] notification in
             guard let id = notification.object as? String else { return }
             Task { @MainActor [weak self] in
-                guard let self, let button = self.statusItem?.button, self.blipNotice.canShow(id) else { return }
+                guard let self, self.blipNotice.canShow(id) else { return }
                 self.popover.close()
-                self.blipNotice.show(id, at: button)
+                self.blipNotice.show(id)
             }
         }
         NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification,

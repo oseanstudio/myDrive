@@ -78,19 +78,14 @@ enum Diagnostics {
                     guard notice.canShow(transfer.id), !notice.isShown else {
                         throw BlipReceiverError.message("The receive popover did not start ready and closed.")
                     }
-                    // A runner's menu bar can have no visible status-button anchor.
-                    // Use a visible fixture window to exercise AppKit's popover lifecycle.
-                    let host = NSWindow(contentRect: NSRect(x: 40, y: 40, width: 160, height: 100),
-                                        styleMask: [.titled], backing: .buffered, defer: false)
-                    host.isReleasedWhenClosed = false
-                    defer { host.close() }
-                    let anchor = NSView(frame: NSRect(x: 60, y: 55, width: 40, height: 24))
-                    host.contentView?.addSubview(anchor)
-                    host.orderFrontRegardless()
-                    host.displayIfNeeded()
-                    notice.show(transfer.id, at: anchor)
+                    let secondary = NSRect(x: -1920, y: 120, width: 1920, height: 1040)
+                    let frame = BlipReceiveNotice.noticeFrame(in: secondary, height: 260)
+                    guard secondary.contains(frame), frame.maxX == -12, frame.maxY == 1148 else {
+                        throw BlipReceiverError.message("The receive notice ignored the secondary display's visible bounds.")
+                    }
+                    notice.show(transfer.id)
                     guard notice.isShown else {
-                        throw BlipReceiverError.message("AppKit did not show the receive popover at its anchor.")
+                        throw BlipReceiverError.message("AppKit did not show the receive panel.")
                     }
                     notice.dismiss()
                     guard !notice.isShown && !notice.canShow(transfer.id) else {
@@ -314,7 +309,7 @@ enum Diagnostics {
                 let height = renderReceiveNotice(BlipReceiveNoticeView(receiver: receiver, id: transfer.id,
                     openTransfers: {}, fixturePreview: preview).environment(\.colorScheme, scheme),
                     to: directory.appendingPathComponent(name), scheme: scheme)
-                guard height < 270 else { throw BlipReceiverError.message("The preview leaves excess space in the notice.") }
+                guard (250...269).contains(height) else { throw BlipReceiverError.message("The preview did not fill the receive notice.") }
                 captures.append(name)
             }
         }

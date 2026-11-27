@@ -1204,31 +1204,64 @@ class MyDrive(Gtk.Application):
             return GLib.SOURCE_REMOVE
 
         def verify_received_copy():
+            from gi.repository import GdkPixbuf
+
             staging = TemporaryDirectory()
-            file = Path(staging.name, "received.txt")
+            file = Path(staging.name, "a long received text filename for the preview overlay.txt")
             text = "  Received café 雪\r\n\r\n2\n3\n4\n5\n6\n7\n "
             file.write_bytes(text.encode("utf-16"))
-            dialog = Gtk.Dialog(application=self)
-            error = Gtk.Label(visible=False)
-            dialog.present()
-            self.transfer_view.copy_received({"path": str(file)}, dialog, error)
+            image_file = Path(staging.name, "wide.png")
+            wide = GdkPixbuf.Pixbuf.new(GdkPixbuf.Colorspace.RGB, False, 8, 480, 160)
+            wide.fill(0x6688ccff)
+            wide.savev(str(image_file), "png", [], [])
+            transfer = {
+                "direction": "Incoming", "completed": True, "status": "Completed", "transfer_id": "preview-fixture",
+                "received_items": [{"path": str(p), "name": p.name} for p in [image_file, file]],
+            }
+            notice = self.transfer_view.show_received(transfer)
+            stage = notice.get_child()
+            picture = stage.get_child()
+            controls = stage.get_last_child()
+            picker = controls.get_first_child()
+            actions = picker.get_next_sibling()
             clipboard = self.window.get_clipboard()
 
             def read_text(clipboard, result):
                 assert clipboard.read_text_finish(result) == text
                 assert not clipboard.get_formats().contain_mime_type("text/uri-list")
                 staging.cleanup()
-                print("Linux GTK plain-text clipboard and successful copy dismissal passed", flush=True)
+                print("Linux GTK media overlays, text copy and dismissal passed", flush=True)
                 self.quit()
 
             def check_dismissal():
                 if self.pending["blip-recipients"]:
                     return GLib.SOURCE_CONTINUE
-                assert not error.get_visible() and not dialog.get_visible()
+                assert not notice.get_visible() and self.transfer_view.receive_window is None
                 clipboard.read_text_async(None, read_text)
                 return GLib.SOURCE_REMOVE
 
-            GLib.timeout_add(25, check_dismissal)
+            def copy_text():
+                if self.pending["blip-recipients"]:
+                    return GLib.SOURCE_CONTINUE
+                assert picture.get_paintable() is None and stage.get_property("height-request") == 254
+                preview = picture.get_next_sibling().get_next_sibling()
+                assert preview.get_visible() and "Received café 雪" in preview.get_text()
+                copy = actions.get_first_child().get_next_sibling()
+                assert copy.get_label() == "Copy"
+                copy.emit("clicked")
+                GLib.timeout_add(25, check_dismissal)
+                return GLib.SOURCE_REMOVE
+
+            def check_image():
+                if self.pending["blip-recipients"]:
+                    return GLib.SOURCE_CONTINUE
+                assert picture.get_paintable() is not None and stage.get_property("height-request") == 178
+                assert isinstance(stage, Gtk.Overlay) and controls.get_valign() == Gtk.Align.END
+                picker.set_selected(1)
+                GLib.timeout_add(25, copy_text)
+                return GLib.SOURCE_REMOVE
+
+            GLib.timeout_add(25, check_image)
 
         self.storage_view.tail_devices = [{"name": "Fixture device", "address": "100.64.0.1", "online": True}]
         self.storage_view.render_bookmarks()

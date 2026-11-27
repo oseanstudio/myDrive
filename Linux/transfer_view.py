@@ -10,7 +10,7 @@ from time import monotonic
 from urllib.parse import unquote, urlsplit
 from uuid import UUID
 
-from gi.repository import Gdk, Gio, GLib, Gtk
+from gi.repository import Gdk, GdkPixbuf, Gio, GLib, Gtk, Pango
 
 from services import DATA, core, exact_peer, link_url, person_destination, read_settings, save_settings
 from ui_widgets import button, clear, label, menu, row
@@ -31,13 +31,17 @@ def clipboard_text(path):
         data = stream.read(limit + 1)
     if len(data) > limit:
         return None
+    return decode_text(data)
+
+
+def decode_text(data, errors="strict"):
     encoding = "utf-8-sig"
     if data.startswith((b"\xff\xfe\x00\x00", b"\x00\x00\xfe\xff")):
         encoding = "utf-32"
     elif data.startswith((b"\xff\xfe", b"\xfe\xff")):
         encoding = "utf-16"
     try:
-        text = data.decode(encoding)
+        text = data.decode(encoding, errors=errors)
     except UnicodeDecodeError:
         return None
     return text if "\x00" not in text else None
@@ -81,6 +85,8 @@ class TransferView:
         self.next_relay_discovery = 0
         self.next_poll = 0
         self.delivery = None
+        self.receive_window = None
+        self.receive_style = None
         self.parsec_drop = None
         self.error = ""
         self.connecting_to_send = False
@@ -308,8 +314,10 @@ class TransferView:
                 if completed(transfer):
                     self.delivery = transfer
                     self.render()
+                    self.show_received(transfer)
+                    continue
                 notification = Gio.Notification.new("myDrive")
-                notification.set_body("File received" if completed(transfer) else "Incoming Blip transfer")
+                notification.set_body("Incoming Blip transfer")
                 self.app.send_notification(transfer["transfer_id"], notification)
 
         def failed(message):
@@ -783,33 +791,191 @@ class TransferView:
     def show_received(self, transfer):
         if not completed(transfer):
             return
-        items = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
-        feedback = Gtk.Label(xalign=0, wrap=True, visible=False)
-        for item in transfer.get("received_items", []):
-            path = received_path(item)
-            if path is None:
-                items.append(row(item.get("name", "File"), "Unavailable"))
-                continue
-            if path.is_file() and path.stat().st_size <= 4 * 1024 * 1024:
-                if path.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp", ".gif"}:
-                    picture = Gtk.Picture.new_for_filename(str(path))
-                    picture.set_size_request(-1, 150)
-                    picture.set_can_shrink(True)
-                    items.append(picture)
-                elif path.suffix.lower() in {".txt", ".log", ".md", ".csv"}:
-                    with path.open("rb") as file:
-                        preview = file.read(2048).decode(errors="replace")
-                    items.append(label("\n".join(preview.splitlines()[:5])))
-            options = []
-            if not item.get("is_directory") and path.suffix.lower() in TEXT_EXTENSIONS:
-                options.append(("Copy file", lambda i=item: self.copy_received(i, dialog, feedback, mode="file")))
-            options.extend([
-                ("Copy path", lambda i=item: self.copy_received(i, dialog, feedback, mode="path")),
-                ("Open folder", lambda p=path: self.app.open_path(p if p.is_dir() else p.parent)),
-            ])
-            items.append(row(item.get("name") or path.name, "", button("Open", lambda p=path: self.app.open_path(p)),
-                             button("Copy", lambda i=item: self.copy_received(i, dialog, feedback)), menu(options)))
-        dialog = self.app.dialog("Received files", "Done", [self.app.scrolled_list(items, height=270), feedback], lambda: None)
+        identifier = transfer.get("transfer_id")
+        if self.receive_window:
+            active, previous = self.receive_window
+            if active == identifier:
+                previous.present()
+                return previous
+            previous.close()
+
+        notice = Gtk.Window(application=self.app, title="myDrive · Incoming transfer", resizable=False)
+        self.receive_window = (identifier, notice)
+
+        def closed(_):
+            if self.receive_window and self.receive_window[1] == notice:
+                self.receive_window = None
+            return False
+
+        notice.connect("close-request", closed)
+        if self.receive_style is None:
+            self.receive_style = Gtk.CssProvider()
+            self.receive_style.load_from_data(b"""
+                .mydrive-receive-stage { background-color: rgba(128, 128, 128, 0.12); border-radius: 8px; }
+                .mydrive-receive-overlay { background-color: rgba(0, 0, 0, 0.67); color: white;
+                                           border-radius: 7px; padding: 4px 7px; }
+                .mydrive-receive-action { color: white; background: rgba(255,255,255,0.13); }
+                .mydrive-receive-action:hover { background: rgba(255,255,255,0.27); }
+                .mydrive-receive-text { font-family: monospace; }
+            """)
+            Gtk.StyleContext.add_provider_for_display(notice.get_display(), self.receive_style,
+                                                      Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+
+        stage = Gtk.Overlay(margin_top=6, margin_bottom=6, margin_start=6, margin_end=6)
+        stage.add_css_class("mydrive-receive-stage")
+        def size_preview(height):
+            stage.set_size_request(324, height)
+            notice.set_default_size(336, height + 12)
+
+        size_preview(254)
+        notice.set_child(stage)
+
+        picture = Gtk.Picture(can_shrink=True)
+        picture.set_content_fit(Gtk.ContentFit.CONTAIN)
+        picture.set_alternative_text("Received file preview")
+        stage.set_child(picture)
+
+        placeholder = label("Loading preview…")
+        placeholder.set_halign(Gtk.Align.CENTER)
+        placeholder.set_valign(Gtk.Align.CENTER)
+        stage.add_overlay(placeholder)
+
+        preview = Gtk.Label(xalign=0, yalign=0, wrap=True, lines=9, selectable=True,
+                            ellipsize=Pango.EllipsizeMode.END, wrap_mode=Pango.WrapMode.WORD_CHAR,
+                            margin_start=13, margin_end=13, margin_top=43, margin_bottom=77,
+                            visible=False)
+        preview.add_css_class("mydrive-receive-text")
+        stage.add_overlay(preview)
+
+        header = Gtk.Box(spacing=8, valign=Gtk.Align.START, margin_start=6, margin_end=6, margin_top=6)
+        header.add_css_class("mydrive-receive-overlay")
+        peer = transfer.get("peer", "").lower()
+        names = self.names(self.snapshot.get("devices", []), self.catalog(self.owner(self.snapshot)))
+        sender = label(names.get(peer, self.fallback_name(peer)), "heading")
+        sender.set_hexpand(True)
+        header.append(sender)
+        header.append(label("Received"))
+        stage.add_overlay(header)
+
+        controls = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3, valign=Gtk.Align.END,
+                           margin_start=6, margin_end=6, margin_bottom=6)
+        controls.add_css_class("mydrive-receive-overlay")
+        stage.add_overlay(controls)
+
+        items = transfer.get("received_items", [])[:256]
+        file_names = [item.get("name") or "File" for item in items]
+        title = label(file_names[0] if file_names else "Received file")
+        if len(items) > 1:
+            picker = Gtk.DropDown.new_from_strings(file_names)
+            factory = Gtk.SignalListItemFactory()
+            factory.connect("setup", lambda _, cell: cell.set_child(label("")))
+            factory.connect("bind", lambda _, cell: cell.get_child().set_text(cell.get_item().get_string()))
+            picker.set_factory(factory)
+            picker.set_list_factory(factory)
+            picker.update_property([Gtk.AccessibleProperty.LABEL], ["Choose received file"])
+            controls.append(picker)
+        else:
+            controls.append(title)
+
+        actions = Gtk.Box(spacing=5)
+        controls.append(actions)
+        feedback = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END, visible=False)
+        controls.append(feedback)
+        generation = 0
+
+        def update(index):
+            nonlocal generation
+            generation += 1
+            serial = generation
+            clear(actions)
+            size_preview(254)
+            preview.set_visible(False)
+            picture.set_paintable(None)
+            placeholder.set_visible(True)
+            feedback.set_visible(False)
+            if index >= len(items):
+                placeholder.set_text("File unavailable")
+                return
+            item = items[index]
+            placeholder.set_text("Loading preview…")
+
+            def preview_data():
+                path = received_path(item)
+                if path is None:
+                    return False, None, None
+                suffix = path.suffix.lower()
+                if path.is_file():
+                    if suffix in {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff", ".tif"}:
+                        if path.stat().st_size <= 32 * 1024 * 1024:
+                            _, width, height = GdkPixbuf.Pixbuf.get_file_info(str(path))
+                            if 0 < width * height <= 100_000_000:
+                                pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_scale(str(path), 720, 540, True)
+                                return True, pixbuf.apply_embedded_orientation(), None
+                    elif suffix in TEXT_EXTENSIONS:
+                        with path.open("rb") as stream:
+                            text = decode_text(stream.read(8192), errors="ignore")
+                        return True, None, "\n".join(text.splitlines()[:12]) if text else None
+                    elif suffix in {".url", ".webloc"}:
+                        return True, None, link_url(str(path))
+                return True, None, None
+
+            def failed(message):
+                if serial == generation and notice.get_visible():
+                    feedback.set_label(message)
+                    feedback.set_tooltip_text(message)
+                    feedback.set_visible(True)
+
+            def launch(parent=False):
+                path = received_path(item)
+                if path is None:
+                    failed("This received item is unavailable or has moved.")
+                    return
+                target = path.parent if parent and not path.is_dir() else path
+                uri = link_url(str(target)) if not parent and target.suffix.lower() in {".url", ".webloc"} else None
+                try:
+                    Gio.AppInfo.launch_default_for_uri(uri or Gio.File.new_for_path(str(target)).get_uri(), None)
+                    notice.close()
+                except GLib.Error as error:
+                    failed(error.message)
+
+            def ready(data):
+                if serial != generation or not notice.get_visible():
+                    return
+                available, image, text = data
+                if image is not None:
+                    picture.set_paintable(Gdk.Texture.new_for_pixbuf(image))
+                    size_preview(min(254, max(178, 324 * image.get_height() // image.get_width())))
+                    placeholder.set_visible(False)
+                elif text:
+                    preview.set_text(text)
+                    preview.set_visible(True)
+                    placeholder.set_visible(False)
+                else:
+                    placeholder.set_text(("Folder" if item.get("is_directory") else "Preview unavailable")
+                                         if available else "File unavailable")
+                if not available:
+                    return
+                copy = lambda mode="text": self.copy_received(item, notice, feedback, mode=mode)
+                for caption, command in (("Open", launch), ("Copy", copy)):
+                    control = button(caption, command)
+                    control.add_css_class("mydrive-receive-action")
+                    actions.append(control)
+                options = [("Copy path", lambda: copy("path")), ("Open folder", lambda: launch(parent=True))]
+                if Path(file_names[index]).suffix.lower() in TEXT_EXTENSIONS and not item.get("is_directory"):
+                    options.insert(0, ("Copy file", lambda: copy("file")))
+                actions.append(menu(options, "pan-down-symbolic", "Received file actions"))
+
+            def preview_failed(error):
+                ready((received_path(item) is not None, None, None))
+                failed(error)
+
+            self.app.work("blip-recipients", "", preview_data, ready, quiet=True, queue=True, on_error=preview_failed)
+
+        if len(items) > 1:
+            picker.connect("notify::selected", lambda child, _: update(child.get_selected()))
+        notice.present()
+        update(0)
+        return notice
 
     def copy_received(self, item, dialog, feedback, mode="text"):
         def prepare():

@@ -14,7 +14,7 @@ enum BlipFileKind {
         guard let file=try? FileHandle(forReadingFrom:url) else{return nil};defer{try? file.close()}
         guard let data=try? file.read(upToCount:8192) else{return nil}
         let text=(data.starts(with:[0xff,0xfe])||data.starts(with:[0xfe,0xff])) ? String(data:data,encoding:.utf16):String(data:data,encoding:.utf8)
-        guard let text,!text.contains("\0") else{return nil};return text.components(separatedBy:.newlines).prefix(6).joined(separator:"\n")
+        guard let text,!text.contains("\0") else{return nil};return text.components(separatedBy:.newlines).prefix(12).joined(separator:"\n")
     }
 
     static func receivedClipboardURL(_ transfer: BlipTransfer) -> URL? {
@@ -139,8 +139,9 @@ private final class BlipThumbnailReply:@unchecked Sendable {
     }
 }
 
-@MainActor struct BlipReceivedFileView:View {
-    let transfer:BlipTransfer
+@MainActor struct BlipReceivedFileView<Header: View>: View {
+    let transfer: BlipTransfer
+    let header: Header
     var fixturePreview:BlipFilePreview?=nil
     var onAction: () -> Void = {}
     var onActionError: (String) -> Void = { _ in }
@@ -203,34 +204,71 @@ private final class BlipThumbnailReply:@unchecked Sendable {
         .padding(.horizontal, 6).accessibilityLabel("Received file actions")
     }
     private var itemLabel:String{let names=transfer.item_names ?? [];return names.isEmpty ? "Incoming transfer":names.joined(separator:", ")}
-    var body:some View {
-        VStack(alignment:.leading,spacing:6){
-            let content = fixturePreview ?? preview
+    private var previewContent: some View {
+        let content = fixturePreview ?? preview
+        return ZStack {
+            Color.primary.opacity(0.06)
             if let image = content.image {
                 Image(nsImage: image).resizable().scaledToFit()
-                    .frame(maxWidth: .infinity, maxHeight: 142)
-                    .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 6))
                     .accessibilityLabel("Received file preview")
             } else if let text = content.text {
-                Text(text).font(.system(size: 11, design: .monospaced)).lineLimit(4).textSelection(.enabled)
-                    .padding(6).frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 6))
+                Text(text).font(.system(size: 12, design: .monospaced)).lineLimit(9).textSelection(.enabled)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .padding(.horizontal, 13).padding(.top, 42).padding(.bottom, 71)
+            } else {
+                VStack(spacing: 5) {
+                    Image(systemName: selected?.is_directory == true ? "folder" : "doc")
+                        .font(.system(size: 35)).foregroundStyle(.secondary)
+                    if selected == nil || file == nil {
+                        Text("File unavailable").font(.caption).foregroundStyle(.secondary)
+                    }
+                }
             }
-            if items.count>1{Picker("Received file",selection:Binding(get:{selected?.path ?? ""},set:{selection=$0})){ForEach(items){Text($0.displayName).tag($0.path)}}.labelsHidden().frame(maxWidth:.infinity)}
-            else {
-                Label(selected?.displayName ?? itemLabel, systemImage: transfer.link_only == true ? "link" : "doc")
-                    .font(.system(size:12)).lineLimit(1).truncationMode(.middle).help(selected?.path ?? "")
+        }
+    }
+
+    private var previewHeight: CGFloat {
+        guard let size = (fixturePreview ?? preview).image?.size, size.width > 0, size.height > 0 else { return 252 }
+        return min(252, max(178, (BlipReceiveNotice.width - 8) * size.height / size.width))
+    }
+
+    var body: some View {
+        previewContent
+            .frame(height: previewHeight)
+            .overlay(alignment: .top) {
+                header.padding(.leading, 8).padding(.trailing, 3)
+                    .padding(.vertical, 3)
+                    .background(.black.opacity(0.66), in: RoundedRectangle(cornerRadius: 8))
+                    .foregroundStyle(.white).padding(6)
             }
-            if transfer.confirmed,let selected {
-                HStack(spacing:0){
-                    Button("Open"){act{try BlipFileActions.open(selected,transfer)}}
-                    actionMenu(selected)
-                    Button("Copy") { copy(selected) }.padding(.leading, 6)
-                }.controlSize(.small).disabled(file==nil)
-                if file==nil{Text("File moved or unavailable").font(.system(size:11)).foregroundStyle(.secondary)}
+            .overlay(alignment: .bottomLeading) {
+                VStack(alignment: .leading, spacing: 3) {
+                    if items.count > 1 {
+                        Picker("Received file", selection: Binding(get: { selected?.path ?? "" }, set: { selection = $0 })) {
+                            ForEach(items) { Text($0.displayName).tag($0.path) }
+                        }.labelsHidden()
+                    } else {
+                        Text(selected?.displayName ?? itemLabel)
+                            .font(.system(size: 12, weight: .medium)).lineLimit(1).truncationMode(.middle)
+                            .help(selected?.path ?? "")
+                    }
+                    if let selected {
+                        HStack(spacing: 0) {
+                            Button("Open") { act { try BlipFileActions.open(selected, transfer) } }
+                            actionMenu(selected)
+                            Button("Copy") { copy(selected) }.padding(.leading, 6)
+                        }.disabled(file == nil)
+                    }
+                    if !message.isEmpty { Text(message).font(.system(size: 11)).lineLimit(2) }
+                }
+                .controlSize(.small).environment(\.colorScheme, .dark)
+                .foregroundStyle(.white)
+                .padding(.horizontal, 7).padding(.vertical, 5)
+                .background(.black.opacity(0.66), in: RoundedRectangle(cornerRadius: 8))
+                .padding(6)
             }
-            if !message.isEmpty{Text(message).font(.system(size:11)).lineLimit(2)}
-        }.task(id:transfer.id+":"+String(transfer.confirmed)+":"+(selected?.path ?? "")){
+            .clipShape(RoundedRectangle(cornerRadius: 9))
+            .task(id:transfer.id+":"+String(transfer.confirmed)+":"+(selected?.path ?? "")){
             preview=BlipFilePreview();message="";guard let selected,let file else{return};let result=await BlipFilePreview.load(file,item:selected);guard !Task.isCancelled else{return};preview=result
         }
     }

@@ -130,7 +130,7 @@ public sealed partial class MainWindow
             throw new IOException("The tray menu placement ignored the secondary monitor's origin or taskbar edge.");
     }
 
-    private static async Task CheckReceivedTextCopy(string directory)
+    private async Task CheckReceivedTextCopy(string directory)
     {
         string path = Path.Combine(directory, $"received-{Guid.NewGuid():N}.txt");
         try
@@ -160,6 +160,21 @@ public sealed partial class MainWindow
             fail = false;
             await card.Perform(BlipFileAction.Copy);
             if (copied != value.Id) throw new IOException("A successful copy did not request popup dismissal.");
+
+            var anchor = tray?.Anchor() ?? new Windows.Graphics.RectInt32(AppWindow.Position.X, AppWindow.Position.Y, 24, 24);
+            var notice = new BlipIncomingWindow(_ => { }, () => { }, () => anchor);
+            try
+            {
+                notice.Update(value, "A long sender name for checking the media overlay", false, true);
+                await notice.FileCard.LoadedPreview;
+                await Task.Delay(150);
+                notice.Surface.UpdateLayout();
+                if (notice.FileCard.PreviewKind != "text" ||
+                    notice.FileCard.ActualHeight < BlipReceivedCard.MediaHeight ||
+                    notice.Surface is not Border { Child: ScrollViewer { ScrollableHeight: <= 1 } })
+                    throw new IOException("The receive preview and its overlay controls do not fit the native window.");
+            }
+            finally { notice.Stop(); }
         }
         finally { File.Delete(path); }
     }

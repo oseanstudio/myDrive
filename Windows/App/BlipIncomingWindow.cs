@@ -40,13 +40,14 @@ internal sealed class BlipIncomingWindow : Window
         ToolTipService.SetToolTip(preferences,"Sender settings");
         preferences.Click+=(_,_)=>settings();
         Grid.SetColumn(preferences,2);identity.Children.Add(preferences);
-        content.Children.Add(identity);
         fileCard=new BlipReceivedCard(()=>WindowNative.GetWindowHandle(this));
+        fileCard.SetHeader(identity);
+        fileCard.PreviewHeightChanged += () => { if (AppWindow.IsVisible) SizeNearTray(); };
         fileCard.MenuActive+=active=>{menuOpen=active;UpdateExpiry();};
         fileCard.Copied += id => { if (TransferId == id) Dismiss(); };
         content.Children.Add(fileCard);content.Children.Add(details);content.Children.Add(progress);
         receive.Click+=(_,_)=>{if(transfer!=null)accept(transfer);};content.Children.Add(receive);
-        var border=new Border{Padding=new Thickness(14),Child=new ScrollViewer{Content=content,VerticalScrollBarVisibility=ScrollBarVisibility.Auto},RequestedTheme=MainWindow.RequestedAppearance};
+        var border=new Border{Padding=new Thickness(6),Child=new ScrollViewer{Content=content,VerticalScrollBarVisibility=ScrollBarVisibility.Auto},RequestedTheme=MainWindow.RequestedAppearance};
         border.PointerEntered+=(_,_)=>{hovered=true;UpdateExpiry();};border.PointerExited+=(_,_)=>{hovered=false;UpdateExpiry();};
         void ApplyBackground()=>border.Background=new SolidColorBrush(border.ActualTheme==ElementTheme.Dark?Microsoft.UI.ColorHelper.FromArgb(255,32,32,32):Microsoft.UI.Colors.White);
         border.ActualThemeChanged+=(_,_)=>ApplyBackground();
@@ -69,20 +70,27 @@ internal sealed class BlipIncomingWindow : Window
         receive.Visibility=pending&&!automatic?Visibility.Visible:Visibility.Collapsed;
         progress.Visibility=value.Status is "Pending" or "Active" or "ResumeRequested"||automatic&&pending?Visibility.Visible:Visibility.Collapsed;
         progress.IsIndeterminate=!(value.TotalBytes>0&&value.Progress>=0&&value.Progress<=value.TotalBytes);progress.Maximum=Math.Max(1,value.TotalBytes);progress.Value=Math.Max(0,value.Progress);
-        if(signature!=next){signature=next;UpdateExpiry();}
-        if (announce && !AppWindow.IsVisible)
-        {
-            var icon = anchor();
-            var (area, scale) = TrayPopupPlacement.MonitorAt(TrayPopupPlacement.Center(icon), WindowNative.GetWindowHandle(this));
-            int gap = (int)Math.Ceiling(4 * scale);
-            var size = new SizeInt32(Math.Min((int)(352 * scale), area.Width - 2 * gap),
-                Math.Min((int)(360 * scale), area.Height - 2 * gap));
-            AppWindow.Move(TrayPopupPlacement.Beside(icon, area, size, gap));
-            AppWindow.Resize(size);
-            AppWindow.Show(false);
-        }
+        bool changed = signature != next;
+        if (changed) { signature = next; UpdateExpiry(); }
+        if (changed && AppWindow.IsVisible || (announce && !AppWindow.IsVisible))
+            SizeNearTray();
+        if (announce && !AppWindow.IsVisible) AppWindow.Show(false);
+    }
+
+    private void SizeNearTray()
+    {
+        var icon = anchor();
+        var (area, scale) = TrayPopupPlacement.MonitorAt(TrayPopupPlacement.Center(icon), WindowNative.GetWindowHandle(this));
+        int gap = (int)Math.Ceiling(4 * scale);
+        int width = Math.Max(1, Math.Min((int)(332 * scale), area.Width - 2 * gap - (int)(16 * scale)));
+        Surface.Measure(new Windows.Foundation.Size(width / scale, double.PositiveInfinity));
+        int height = Math.Max(1, Math.Min((int)Math.Ceiling(Surface.DesiredSize.Height * scale),
+            area.Height - 2 * gap - (int)(45 * scale)));
+        var size = new SizeInt32(width, height);
+        if (AppWindow.ClientSize.Width != width || AppWindow.ClientSize.Height != height) AppWindow.ResizeClient(size);
+        AppWindow.Move(TrayPopupPlacement.Beside(icon, area, AppWindow.Size, gap));
     }
     public void Stop(){expiry.Stop();AppWindow.Hide();}
-    public void ClearFailure(){failure=null;details.Text="";details.Visibility=Visibility.Collapsed;}
-    public void ShowFailure(string message){failure=message;state.Text="Needs attention";details.Text=message;details.Visibility=Visibility.Visible;receive.Visibility=Visibility.Visible;progress.Visibility=Visibility.Collapsed;}
+    public void ClearFailure(){failure=null;details.Text="";details.Visibility=Visibility.Collapsed;if(AppWindow.IsVisible)SizeNearTray();}
+    public void ShowFailure(string message){failure=message;state.Text="Needs attention";details.Text=message;details.Visibility=Visibility.Visible;receive.Visibility=Visibility.Visible;progress.Visibility=Visibility.Collapsed;if(AppWindow.IsVisible)SizeNearTray();}
 }
