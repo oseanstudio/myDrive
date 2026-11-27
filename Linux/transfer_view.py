@@ -831,7 +831,6 @@ class TransferView:
         notice.set_child(stage)
 
         picture = Gtk.Picture(can_shrink=True)
-        picture.set_content_fit(Gtk.ContentFit.CONTAIN)
         picture.set_alternative_text("Received file preview")
         stage.set_child(picture)
 
