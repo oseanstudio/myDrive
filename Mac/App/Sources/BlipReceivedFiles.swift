@@ -14,7 +14,7 @@ enum BlipFileKind {
         guard let file=try? FileHandle(forReadingFrom:url) else{return nil};defer{try? file.close()}
         guard let data=try? file.read(upToCount:8192) else{return nil}
         let text=(data.starts(with:[0xff,0xfe])||data.starts(with:[0xfe,0xff])) ? String(data:data,encoding:.utf16):String(data:data,encoding:.utf8)
-        guard let text,!text.contains("\0") else{return nil};return text.components(separatedBy:.newlines).prefix(12).joined(separator:"\n")
+        guard let text,!text.contains("\0") else{return nil};return text.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline).prefix(12).joined(separator: "\n")
     }
 
     static func receivedClipboardURL(_ transfer: BlipTransfer) -> URL? {
@@ -228,8 +228,16 @@ private final class BlipThumbnailReply:@unchecked Sendable {
     }
 
     private var previewHeight: CGFloat {
-        guard let size = (fixturePreview ?? preview).image?.size, size.width > 0, size.height > 0 else { return 252 }
-        return min(252, max(178, (BlipReceiveNotice.width - 8) * size.height / size.width))
+        let content = fixturePreview ?? preview
+        if let size = content.image?.size, size.width > 0, size.height > 0 {
+            return min(252, max(178, (BlipReceiveNotice.width - 8) * size.height / size.width))
+        }
+        if let text = content.text {
+            let lines = text.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline)
+                .reduce(0) { $0 + max(1, ($1.count + 37) / 38) }
+            return min(252, max(150, 114 + CGFloat(lines) * 16))
+        }
+        return 252
     }
 
     var body: some View {
@@ -244,9 +252,16 @@ private final class BlipThumbnailReply:@unchecked Sendable {
             .overlay(alignment: .bottomLeading) {
                 VStack(alignment: .leading, spacing: 3) {
                     if items.count > 1 {
-                        Picker("Received file", selection: Binding(get: { selected?.path ?? "" }, set: { selection = $0 })) {
-                            ForEach(items) { Text($0.displayName).tag($0.path) }
-                        }.labelsHidden()
+                        Menu {
+                            ForEach(items) { item in Button(item.displayName) { selection = item.path } }
+                        } label: {
+                            HStack(spacing: 5) {
+                                Text(selected?.displayName ?? itemLabel).lineLimit(1).truncationMode(.middle)
+                                Image(systemName: "chevron.up.chevron.down").font(.system(size: 9))
+                            }
+                        }
+                        .menuStyle(.borderlessButton).menuIndicator(.hidden)
+                        .accessibilityLabel("Choose received file").accessibilityValue(selected?.displayName ?? "")
                     } else {
                         Text(selected?.displayName ?? itemLabel)
                             .font(.system(size: 12, weight: .medium)).lineLimit(1).truncationMode(.middle)

@@ -309,7 +309,8 @@ enum Diagnostics {
                 let height = renderReceiveNotice(BlipReceiveNoticeView(receiver: receiver, id: transfer.id,
                     openTransfers: {}, fixturePreview: preview).environment(\.colorScheme, scheme),
                     to: directory.appendingPathComponent(name), scheme: scheme)
-                guard (250...269).contains(height) else { throw BlipReceiverError.message("The preview did not fill the receive notice.") }
+                let limits: ClosedRange<CGFloat> = label == "image" ? 250...269 : 150...269
+                guard limits.contains(height) else { throw BlipReceiverError.message("The preview did not fill the receive notice.") }
                 captures.append(name)
             }
         }
@@ -327,8 +328,11 @@ enum Diagnostics {
             throw BlipReceiverError.message("A group of files was treated as a single pasted text.")
         }
         let receiver=BlipReceiver(root:root.appendingPathComponent("unused-profile"));receiver.peers=[BlipPeer(peer:peer,name:"Studio laptop",name_known:true)];receiver.transfers=[transfer]
-        renderReceiveNotice(BlipReceiveNoticeView(receiver: receiver, id: transfer.id, openTransfers: {},
+        let shortHeight = renderReceiveNotice(BlipReceiveNoticeView(receiver: receiver, id: transfer.id, openTransfers: {},
             fixturePreview: BlipFilePreview(text: "Received document preview")), to: directory.appendingPathComponent("blip-received-multiple.png"))
+        guard (150...180).contains(shortHeight) else {
+            throw BlipReceiverError.message("The single-line text preview leaves unused space.")
+        }
         captures.append("blip-received-multiple.png")
         return ["result":"pass","image_and_text_preview":true,"fixtures_only":true,"private_pasteboard_copy":true]
     }

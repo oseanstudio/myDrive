@@ -112,6 +112,14 @@ internal sealed class BlipReceivedCard:UserControl {
         PreviewHeightChanged?.Invoke();
     }
 
+    private void ShowText(string content)
+    {
+        previewText.Text = content;
+        int lines = content.Split('\n').Sum(line => Math.Max(1, (line.Length + 37) / 38));
+        SetPreviewHeight(Math.Clamp(114 + lines * 16, 150, MediaHeight));
+        icon.Visibility = Visibility.Collapsed;
+    }
+
     private async Task LoadPreview() {
         int current=++generation;lastAttempt=DateTime.UtcNow;feedback.Text="";feedback.Visibility=Visibility.Collapsed;image.Source=null;previewText.Text="";icon.Visibility=Visibility.Visible;
         open.IsEnabled=copy.IsEnabled=false;actions.Visibility=transfer?.ConfirmedComplete==true?Visibility.Visible:Visibility.Collapsed;
@@ -120,13 +128,27 @@ internal sealed class BlipReceivedCard:UserControl {
         var value=transfer;var entry=selected;if(value==null||entry==null){previewText.Text=value?.ConfirmedComplete==true?"File location is not available yet":"Preview appears after receiving";icon.Visibility=Visibility.Collapsed;BuildMenu();return;}
         name.Text=entry.Name;ToolTipService.SetToolTip(name,entry.Path);
         var path=await Task.Run(()=>BlipReceivedFiles.LocalPath(value,entry));if(current!=generation)return;
-        if(path==null){PreviewKind="missing";previewText.Text="File moved or unavailable";icon.Visibility=Visibility.Collapsed;BuildMenu();return;}
+        if(path==null){PreviewKind="missing";ShowText("File moved or unavailable");BuildMenu();return;}
         open.IsEnabled=copy.IsEnabled=true;BuildMenu();
         try {
             if(entry.IsDirectory){icon.Glyph="\uE8B7";PreviewKind="folder";return;}
             icon.Glyph="\uE8A5";
-            if(BlipReceivedFiles.IsShortcut(path)){var url=await BlipLinkOpener.ReadShortcutAsync(path);if(current!=generation)return;previewText.Text=url?.AbsoluteUri??"Web link preview unavailable";PreviewKind="link";icon.Visibility=Visibility.Collapsed;return;}
-            if(BlipReceivedFiles.IsText(path)){var text=await BlipReceivedFiles.TextPreviewAsync(path);if(current!=generation)return;previewText.Text=text;PreviewKind="text";icon.Visibility=Visibility.Collapsed;return;}
+            if (BlipReceivedFiles.IsShortcut(path))
+            {
+                var url = await BlipLinkOpener.ReadShortcutAsync(path);
+                if (current != generation) return;
+                ShowText(url?.AbsoluteUri ?? "Web link preview unavailable");
+                PreviewKind = "link";
+                return;
+            }
+            if (BlipReceivedFiles.IsText(path))
+            {
+                var text = await BlipReceivedFiles.TextPreviewAsync(path);
+                if (current != generation) return;
+                ShowText(text);
+                PreviewKind = "text";
+                return;
+            }
             string extension=Path.GetExtension(path).ToLowerInvariant();
             if(BlipReceivedFiles.IsImage(path)||new[]{".pdf",".mp4",".mov",".mkv",".docx",".pptx",".xlsx"}.Contains(extension)) {
                 var file=await StorageFile.GetFileFromPathAsync(path);

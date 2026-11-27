@@ -947,6 +947,8 @@ class TransferView:
                     placeholder.set_visible(False)
                 elif text:
                     preview.set_text(text)
+                    lines = sum(max(1, (len(line) + 37) // 38) for line in text.splitlines())
+                    size_preview(min(254, max(150, 114 + 16 * lines)))
                     preview.set_visible(True)
                     placeholder.set_visible(False)
                 else:
