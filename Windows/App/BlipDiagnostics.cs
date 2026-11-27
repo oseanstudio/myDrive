@@ -161,8 +161,7 @@ public sealed partial class MainWindow
             await card.Perform(BlipFileAction.Copy);
             if (copied != value.Id) throw new IOException("A successful copy did not request popup dismissal.");
 
-            var anchor = tray?.Anchor() ?? new Windows.Graphics.RectInt32(AppWindow.Position.X, AppWindow.Position.Y, 24, 24);
-            var notice = new BlipIncomingWindow(_ => { }, () => { }, () => anchor);
+            var notice = new BlipIncomingWindow(_ => { }, () => { }, TrayPopupAnchor);
             try
             {
                 notice.Update(value, "A long sender name for checking the media overlay", false, true);
