@@ -6,8 +6,26 @@ struct BlipView: View {
     @ObservedObject var receiver: BlipReceiver
     @State private var query = ""
     @State private var dropPeer: String?
+    @State private var permissionSender: (peer: String, name: String)?
 
     var body: some View {
+        Group {
+            if let permissionSender {
+                VStack(alignment: .leading, spacing: 5) {
+                    Button { self.permissionSender = nil } label: {
+                        Label("Blip", systemImage: "chevron.left")
+                    }.controlSize(.small)
+                    Text(permissionSender.name).font(.system(size: 13, weight: .semibold)).lineLimit(1)
+                    BlipSenderPermissionsView(receiver: receiver, sender: permissionSender.peer)
+                }.frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                recipientsView
+            }
+        }
+        .onChange(of: receiver.recipientOwner) { permissionSender = nil }
+    }
+
+    private var recipientsView: some View {
         LazyVStack(alignment: .leading, spacing: 8) {
             if !receiver.connected {
                 Text(receiver.state).font(.system(size: 12)).foregroundStyle(.secondary)
@@ -303,11 +321,14 @@ struct BlipView: View {
                     .help("Paste and send")
                     .disabled(receiver.sending || receiver.preparingSend)
             }
-            if deviceShortcut || removing != nil {
+            if let target = peer?.peer ?? removing {
                 Menu {
-                    Button("Edit Name…") {
-                        if let peer, !peer.isPerson { receiver.rename(peer) }
-                        else if let removing { receiver.renameRecent(removing, displayed: name, nickname: nickname, person: person) }
+                    Button("Sender Permissions…") { permissionSender = (target, name) }
+                    if deviceShortcut || removing != nil {
+                        Button("Edit Name…") {
+                            if let peer, !peer.isPerson { receiver.rename(peer) }
+                            else if let removing { receiver.renameRecent(removing, displayed: name, nickname: nickname, person: person) }
+                        }
                     }
                     if let removing {
                         Button("Remove") { receiver.archiveRecipient(removing, peer: peer) }
@@ -419,10 +440,24 @@ private struct BlipSearchField: NSViewRepresentable {
 
 struct BlipSenderPermissionsView: View {
     @ObservedObject var receiver: BlipReceiver
+    var sender: String? = nil
+
+    private var knownDevices: [BlipPeer] {
+        var seen = Set<String>()
+        let roster = sender == nil ? receiver.peers : receiver.peers + receiver.directoryRecipients
+        return roster.filter { device in
+            let peer = device.peer.lowercased()
+            guard BlipPolicy.exactPeer(peer), peer != receiver.recipientOwner.lowercased(), seen.insert(peer).inserted else { return false }
+            guard let sender = sender?.lowercased() else { return true }
+            return BlipPolicy.exactPeer(sender) ? peer == sender :
+                peer.split(separator: ":").first.map(String.init) == sender.trimmingCharacters(in: CharacterSet(charactersIn: ":"))
+        }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            let groups = Dictionary(grouping: receiver.peers) { $0.peer.split(separator: ":").first?.lowercased() ?? "" }
+            Text("Automatic actions").font(.system(size: 12, weight: .semibold))
+            let groups = Dictionary(grouping: knownDevices) { $0.peer.split(separator: ":").first?.lowercased() ?? "" }
             ForEach(groups.keys.sorted(), id: \.self) { user in
                 let devices = (groups[user] ?? []).sorted {
                     let order = $0.displayName.localizedCaseInsensitiveCompare($1.displayName)
@@ -430,11 +465,12 @@ struct BlipSenderPermissionsView: View {
                 }
                 let person = user == receiver.account.lowercased() ? "Your devices"
                     : devices.compactMap(\.contactName).first { !$0.isEmpty } ?? "Previous sender"
-                Text(person).font(.system(size: 12, weight: .semibold)).lineLimit(1).help(person)
+                if sender == nil { Text(person).font(.system(size: 12, weight: .semibold)).lineLimit(1).help(person) }
                 ForEach(devices) { peer in devicePermissions(peer) }
             }
-            if receiver.peers.isEmpty {
-                Text("Devices appear after Blip connects.").foregroundStyle(.secondary)
+            if groups.isEmpty {
+                Text(sender == nil ? "Devices appear after Blip connects." : "No known devices for this sender yet.")
+                    .foregroundStyle(.secondary)
             }
         }.font(.system(size: 11)).padding(.vertical, 6)
     }
@@ -450,16 +486,20 @@ struct BlipSenderPermissionsView: View {
                     .buttonStyle(.borderless).help("Rename device")
                     .accessibilityLabel("Rename " + name)
             }
-            HStack(spacing: 14) {
-                Toggle("Auto-receive files",
-                       isOn: Binding(get: { receiver.isFileTrusted(peer) }, set: { receiver.setTrusted(peer, $0, files: true) }))
-                    .accessibilityLabel("Auto-receive files from " + name)
-                Toggle("Auto-open links",
-                       isOn: Binding(get: { receiver.isTrusted(peer) }, set: { receiver.setTrusted(peer, $0) }))
-                    .accessibilityLabel("Auto-open links from " + name)
+            VStack(alignment: .leading, spacing: 3) {
+                permission("Receive files", for: peer, rule: \.files)
+                permission("Open links", for: peer, rule: \.peers)
+                permission("Copy to clipboard", for: peer, rule: \.clipboard)
+                    .help("Copy transfers myDrive accepts automatically from this device")
             }.toggleStyle(.checkbox)
         }
         .padding(8)
         .background(.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
+    }
+
+    private func permission(_ label: String, for peer: BlipPeer, rule: WritableKeyPath<BlipPolicy, Set<String>>) -> some View {
+        Toggle(label, isOn: Binding(get: { receiver.isTrusted(peer, for: rule) },
+                                   set: { receiver.setTrusted(peer, $0, for: rule) }))
+            .accessibilityLabel(label + " from " + receiver.deviceName(peer))
     }
 }

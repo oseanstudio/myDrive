@@ -82,9 +82,26 @@ struct BlipPolicy: Codable {
     var account = ""
     var peers: Set<String> = []
     var files: Set<String> = []
-    init(account: String="",peers: Set<String>=[],files: Set<String>=[]) {self.account=account;self.peers=peers;self.files=files}
-    enum CodingKeys:String,CodingKey {case account,peers,files}
-    init(from decoder:Decoder)throws {let values=try decoder.container(keyedBy:CodingKeys.self);account=try values.decodeIfPresent(String.self,forKey:.account) ?? "";peers=try values.decodeIfPresent(Set<String>.self,forKey:.peers) ?? [];files=try values.decodeIfPresent(Set<String>.self,forKey:.files) ?? []}
+    var clipboard: Set<String> = []
+    init(account: String = "", peers: Set<String> = [], files: Set<String> = [], clipboard: Set<String> = []) {
+        self.account = account
+        self.peers = peers
+        self.files = files
+        self.clipboard = clipboard
+    }
+    enum CodingKeys: String, CodingKey { case account, peers, files, clipboard }
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        account = try values.decodeIfPresent(String.self, forKey: .account) ?? ""
+        peers = try values.decodeIfPresent(Set<String>.self, forKey: .peers) ?? []
+        files = try values.decodeIfPresent(Set<String>.self, forKey: .files) ?? []
+        clipboard = try values.decodeIfPresent(Set<String>.self, forKey: .clipboard) ?? []
+    }
+
+    func allowsClipboard(_ transfer: BlipTransfer, account: String) -> Bool {
+        UUID(uuidString: account) != nil && self.account.caseInsensitiveCompare(account) == .orderedSame &&
+            Self.exactPeer(transfer.peer) && clipboard.contains(transfer.peer.lowercased())
+    }
     static func exactPeer(_ value: String) -> Bool {
         let parts = value.split(separator: ":", omittingEmptySubsequences: false)
         return parts.count == 2 && parts.allSatisfy { UUID(uuidString: String($0)) != nil }

@@ -79,6 +79,7 @@ class TransferView:
         self.identity = ""
         self.history = set()
         self.notice_states = {}
+        self.clipboard_pending = set()
         self.relay_states = ()
         self.relay_waiting = 0
         self.relay_queued = []
@@ -210,7 +211,7 @@ class TransferView:
             identity = self.owner(snapshot)
             if not identity:
                 self.identity = ""
-                return snapshot, [], []
+                return snapshot, [], [], []
             incoming = [t for t in snapshot.get("transfers", []) if t.get("direction") == "Incoming"]
             baseline = self.identity != identity
             if baseline:
@@ -218,6 +219,7 @@ class TransferView:
                 self.next_name_publish = 0
                 self.history = {str(UUID(t["transfer_id"])) for t in incoming if completed(t)}
                 self.notice_states = {}
+                self.clipboard_pending.clear()
                 self.relay_states = ()
                 self.relay_waiting = 0
                 self.relay_queued = []
@@ -235,7 +237,7 @@ class TransferView:
             status = snapshot["status"]
             auto_receive_ready = status.get("desktop_session") or status.get("native_auto_accept_disabled")
             receipts = set(read_settings("blip-receipts.json", []))
-            urls, notices = [], []
+            urls, notices, copies = [], [], []
             account = identity.partition(":")[0]
             transfers = snapshot.get("transfers", [])
             transports = [t for t in transfers if packet(t) and (t.get("peer") or "").lower().startswith(account + ":")]
@@ -294,15 +296,24 @@ class TransferView:
                 if auto_receive_ready and state == "Invited" and not transfer.get("has_error") and (
                     permission.get("files") or links and transfer.get("link_only")
                 ) and claim("accept", transfer_id):
-                    self.blip.request("accept", transfer["transfer_id"])
+                    result = self.blip.request("accept", transfer["transfer_id"])
+                    if result.get("phase") == "receiving_confirmed" and permission.get("clipboard"):
+                        self.clipboard_pending.add((transfer_id, peer))
+                key = (transfer_id, peer)
+                if key in self.clipboard_pending:
+                    if transfer.get("has_error") or state == "Cancelled" or not permission.get("clipboard"):
+                        self.clipboard_pending.discard(key)
+                    elif state == "Completed" and completed(transfer) and transfer.get("received_items"):
+                        self.clipboard_pending.discard(key)
+                        copies.append(transfer)
                 if completed(transfer) and transfer_id not in self.history and links:
                     for path in locations[:256]:
                         if (url := link_url(path)) and claim("open", transfer_id, url):
                             urls.append(url)
-            return snapshot, urls, notices
+            return snapshot, urls, notices, copies
 
         def arrived(result):
-            snapshot, urls, notices = result
+            snapshot, urls, notices, copies = result
             self.next_poll = 0 if self.owner(snapshot) else monotonic() + 10
             if snapshot != self.snapshot or self.error:
                 self.snapshot, self.error = snapshot, ""
@@ -319,6 +330,8 @@ class TransferView:
                 notification = Gio.Notification.new("myDrive")
                 notification.set_body("Incoming Blip transfer")
                 self.app.send_notification(transfer["transfer_id"], notification)
+            for transfer in copies:
+                self.copy_automatically(transfer, self.owner(snapshot))
 
         def failed(message):
             self.next_poll = monotonic() + 10
@@ -662,9 +675,10 @@ class TransferView:
         if remove:
             actions.append(("Edit name…", lambda: self.rename_recent(owner, remove, name, nickname, person)))
             actions.append(("Remove", lambda: self.update_recents("archive", owner, peer=peer, title=name, target=remove)))
+        if peer_key:
+            actions.insert(0, ("Sender permissions…", lambda: self.permissions(peer_key, name, owner)))
         if actions:
-            controls.append(menu(actions, "emblem-system-symbolic" if remove or device_shortcut
-                                 else "view-more-symbolic", "Options for " + name))
+            controls.append(menu(actions, "emblem-system-symbolic", "Options for " + name))
         self.recipient_rows.append(controls)
 
     def drop_on_recipient(self, owner, peer, value):
@@ -978,33 +992,64 @@ class TransferView:
         update(0)
         return notice
 
-    def copy_received(self, item, dialog, feedback, mode="text"):
-        def prepare():
-            path = received_path(item)
-            if path is None:
-                raise OSError("This received item is unavailable or has moved.")
-            if mode == "path":
-                return str(path), None
-            text = clipboard_text(path) if mode == "text" and not item.get("is_directory") else None
-            return text, path
+    @staticmethod
+    def prepare_copy(items, mode="text"):
+        selected = items[:256]
+        paths = [received_path(item) for item in selected]
+        if not paths or any(path is None for path in paths):
+            raise OSError("This received item is unavailable or has moved.")
+        if mode == "path":
+            return str(paths[0]), []
+        text = None
+        if mode == "text" and len(paths) == 1 and not selected[0].get("is_directory"):
+            path = paths[0]
+            text = link_url(str(path)) if path.suffix.lower() in {".url", ".webloc"} else clipboard_text(path)
+        return text, paths
 
+    @staticmethod
+    def write_copy(clipboard, data):
+        text, paths = data
+        if text is not None:
+            provider = Gdk.ContentProvider.new_for_value(text)
+        else:
+            uris = "".join(Gio.File.new_for_path(str(path)).get_uri() + "\r\n" for path in paths)
+            provider = Gdk.ContentProvider.new_for_bytes("text/uri-list", GLib.Bytes.new(uris.encode()))
+        if not clipboard.set_content(provider):
+            raise RuntimeError("The received item could not be copied.")
+
+    def copy_automatically(self, transfer, owner):
+        peer = transfer["peer"].lower()
+        clipboard = self.app.window.get_clipboard()
+        changed = False
+
+        def mark_changed(_):
+            nonlocal changed
+            changed = True
+
+        watch = clipboard.connect("changed", mark_changed)
+
+        def finish(data=None):
+            clipboard.disconnect(watch)
+            if data and not changed and self.owner(self.snapshot) == owner and self.catalog(owner).get(peer, {}).get("clipboard"):
+                try:
+                    self.write_copy(clipboard, data)
+                except (RuntimeError, GLib.Error) as error:
+                    self.app.announce(str(error))
+
+        self.app.work("blip-recipients", "", lambda: self.prepare_copy(transfer["received_items"]),
+                      finish, quiet=True, queue=True, on_error=lambda _: finish())
+
+    def copy_received(self, item, dialog, feedback, mode="text"):
         def copy(data):
-            text, path = data
-            clipboard = self.app.window.get_clipboard()
-            if text is not None:
-                provider = Gdk.ContentProvider.new_for_value(text)
-            else:
-                uri = Gio.File.new_for_path(str(path)).get_uri()
-                provider = Gdk.ContentProvider.new_for_bytes("text/uri-list", GLib.Bytes.new((uri + "\r\n").encode()))
-            if not clipboard.set_content(provider):
-                raise RuntimeError("The received item could not be copied.")
+            self.write_copy(self.app.window.get_clipboard(), data)
             dialog.close()
 
         def failed(message):
             feedback.set_label(message)
             feedback.set_visible(True)
 
-        self.app.work("blip-recipients", "", prepare, copy, quiet=True, queue=True, on_error=failed)
+        self.app.work("blip-recipients", "", lambda: self.prepare_copy([item], mode), copy,
+                      quiet=True, queue=True, on_error=failed)
 
     def choose_recipient(self, devices, selected, cancelled=lambda: None):
         box = Gtk.ListBox()
@@ -1275,38 +1320,53 @@ class TransferView:
                 self.send_dropped(paths, cleanup)
         self.app.window.get_clipboard().read_text_async(None, got_text)
 
-    def permissions(self):
+    def permissions(self, sender=None, title=None, owner=None):
         identity = self.owner(self.snapshot)
+        if owner and identity != owner:
+            return
         if not identity:
             self.app.announce("Connect Blip before choosing sender permissions.")
             return
-        names = self.names(self.snapshot.get("devices", []), self.catalog(identity), show_device=True)
         saved = self.catalog(identity)
+        devices = self.snapshot.get("devices", [])
+        if sender:
+            devices = devices + self.directory_recipients
+        names = self.names(devices, saved, show_device=True)
+        if exact_peer(sender) and sender not in names:
+            names[sender] = title or self.fallback_name(sender)
         group = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        group.append(label("Automatic actions", "heading"))
         fields = {}
-        for peer, title in names.items():
-            if peer == identity:
+        for peer, device_title in names.items():
+            if peer == identity or not exact_peer(peer):
+                continue
+            if sender and (peer != sender if exact_peer(sender) else peer.partition(":")[0] != sender.rstrip(":")):
                 continue
             previous = saved.get(peer, {})
             recent = next((r for r in self.recent_recipients if r["peer"] == peer), None)
             existing = (recent or {}).get("nickname") or previous.get("name", "")
-            name = Gtk.Entry(text=existing, placeholder_text=title, visible=False, max_length=80)
-            name.set_tooltip_text("Local label for " + title)
-            files = Gtk.CheckButton(label="Auto-receive files", active=bool(previous.get("files")))
-            links = Gtk.CheckButton(label="Auto-open links", active=bool(previous.get("links")))
-            checks = Gtk.Box(spacing=8)
+            name = Gtk.Entry(text=existing, placeholder_text=device_title, visible=False, max_length=80)
+            name.set_tooltip_text("Local label for " + device_title)
+            files = Gtk.CheckButton(label="Receive files", active=bool(previous.get("files")))
+            links = Gtk.CheckButton(label="Open links", active=bool(previous.get("links")))
+            clipboard = Gtk.CheckButton(label="Copy to clipboard", active=bool(previous.get("clipboard")))
+            clipboard.set_tooltip_text("Copy transfers myDrive accepts automatically from this device")
+            checks = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
             checks.append(files)
             checks.append(links)
+            checks.append(clipboard)
             heading = Gtk.Box(spacing=4)
-            heading.append(label(title, "heading"))
+            heading.append(label(device_title, "heading"))
             def edit_name(field=name):
                 field.set_visible(True)
                 field.grab_focus()
-            heading.append(self.rename_button(title, edit_name))
+            heading.append(self.rename_button(device_title, edit_name))
             group.append(heading)
             group.append(name)
             group.append(checks)
-            fields[peer] = (name, files, links, existing)
+            fields[peer] = (name, files, links, clipboard, existing)
+        if not fields:
+            group.append(label("No known devices for this sender yet." if sender else "No senders available yet."))
         def save():
             if self.owner(self.snapshot) != identity:
                 return
@@ -1314,13 +1374,14 @@ class TransferView:
             account = identity.partition(":")[0]
             rules = all_rules.setdefault(account, {})
             changed = []
-            for peer, (name, files, links, existing) in fields.items():
+            for peer, (name, files, links, clipboard, existing) in fields.items():
                 text = "".join(c for c in name.get_text().strip() if c.isprintable())[:80]
-                rules[peer] = {"name": text, "files": files.get_active(), "links": links.get_active()}
+                rules[peer] = {"name": text, "files": files.get_active(), "links": links.get_active(),
+                               "clipboard": clipboard.get_active()}
                 if text != existing:
                     changed.append((peer, text))
             save_settings("blip-permissions.json", all_rules)
             for peer, name in changed:
                 self.update_recent_nickname(identity, peer, name)
             self.render()
-        self.app.dialog("Sender permissions", "Save", [self.app.scrolled_list(group, height=260)], save)
+        self.app.dialog(title or "Sender permissions", "Save", [self.app.scrolled_list(group, height=260)], save)

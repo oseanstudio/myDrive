@@ -15,6 +15,13 @@ import Foundation
         precondition(!policy.autoReceive(normal,account:account))
         let filePolicy=BlipPolicy(account:account,files:[peer]);precondition(filePolicy.autoReceive(normal,account:account,openLinks:false));precondition(!filePolicy.allows(normal,account:account))
         let legacy=try JSONDecoder().decode(BlipPolicy.self,from:Data("{\"account\":\"\(account)\",\"peers\":[\"\(peer)\"]}".utf8));precondition(legacy.files.isEmpty&&legacy.peers.contains(peer))
+        precondition(legacy.clipboard.isEmpty && !legacy.allowsClipboard(incoming, account: account))
+        let clipboard = BlipPolicy(account: account, clipboard: [peer])
+        let restoredClipboard = try JSONDecoder().decode(BlipPolicy.self, from: JSONEncoder().encode(clipboard))
+        precondition(restoredClipboard.allowsClipboard(incoming, account: account))
+        precondition(!restoredClipboard.allowsClipboard(incoming, account: device))
+        precondition(!restoredClipboard.autoReceive(incoming, account: account))
+        precondition(!restoredClipboard.allows(incoming, account: account))
         // /var is a system symlink on macOS; use an isolated cache fixture with no symlink ancestors.
         let root=FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Caches/myDrive-test-"+UUID().uuidString)
         try FileManager.default.createDirectory(at:root,withIntermediateDirectories:true)

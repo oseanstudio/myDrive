@@ -112,13 +112,26 @@ private final class BlipThumbnailReply:@unchecked Sendable {
         }
         clipboard.clearContents();guard clipboard.writeObjects(entries) else{throw BlipReceiverError.message("The received item could not be copied.")}
     }
-    static func copyItem(_ item: BlipReceivedItem, _ transfer: BlipTransfer) async throws {
+    @discardableResult static func copyItem(_ item: BlipReceivedItem, _ transfer: BlipTransfer,
+                                            stillAllowed: () -> Bool = { true }) async throws -> Bool {
         let file = try url(item, transfer)
-        if !item.is_directory, let text = try await Task.detached(operation: { try BlipFileKind.clipboardText(file) }).value {
-            try writeText(text, clipboard: .general)
-        } else {
-            try copy([item], transfer)
+        let text = item.is_directory ? nil : try await Task.detached { try BlipFileKind.clipboardText(file) }.value
+        guard stillAllowed() else { return false }
+        if let text { try writeText(text, clipboard: .general) }
+        else { try copy([item], transfer) }
+        return true
+    }
+
+    static func copyAutomatically(_ transfer: BlipTransfer, stillAllowed: () -> Bool) async throws -> Bool {
+        guard let items = transfer.received_items, let first = items.first else { return false }
+        let clipboard = NSPasteboard.general
+        let changeCount = clipboard.changeCount
+        if items.count == 1 {
+            return try await copyItem(first, transfer) { stillAllowed() && clipboard.changeCount == changeCount }
         }
+        guard stillAllowed(), clipboard.changeCount == changeCount else { return false }
+        try copy(items, transfer)
+        return true
     }
     static func writeText(_ text: String, clipboard: NSPasteboard) throws {
         let entry = NSPasteboardItem()

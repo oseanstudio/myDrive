@@ -376,10 +376,11 @@ public sealed class BlipService : IAsyncDisposable
     public Task<JsonElement> PublishNameAsync(string owner, CancellationToken token = default) =>
         CommandAsync("publish-name", new[] { "--name", Environment.MachineName }, owner, token);
 
-    public async Task AcceptAsync(string id, CancellationToken token = default, bool manual = false)
+    public async Task<bool> AcceptAsync(string id, CancellationToken token = default, bool manual = false)
     {
         RequireRunning(); if (!Guid.TryParseExact(id, "D", out _)) throw new IOException("Select a pending incoming transfer.");
-        await CommandAsync(manual ? "accept-manual" : "accept", new[] { "--id", id, "--execute" }, token: token);
+        var result = await CommandAsync(manual ? "accept-manual" : "accept", new[] { "--id", id, "--execute" }, token: token);
+        return result.TryGetProperty("phase", out var phase) && phase.GetString() == "receiving_confirmed";
     }
     public async Task TrustAsync(string peer, CancellationToken token = default)
     {

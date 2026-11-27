@@ -424,11 +424,13 @@ public sealed partial class MainWindow
         AddUnlistedSends();
     }
 
-    private static Button BlipRecipientOptions(string name, Action edit, Action? remove = null, Action? connectParsec = null, Action? editParsec = null)
+    private static Button BlipRecipientOptions(string name, Action permissions, Action? edit = null, Action? remove = null,
+                                              Action? connectParsec = null, Action? editParsec = null)
     {
         var options = FlatBlipButton(QuickIcon("\uE713", "Options for " + name, () => { }));
         var menu = new MenuFlyout();
-        MenuAction(menu, "Edit name…", edit);
+        MenuAction(menu, "Sender permissions…", permissions);
+        if (edit != null) MenuAction(menu, "Edit name…", edit);
         if (connectParsec != null) MenuAction(menu, "Connect with Parsec", connectParsec);
         if (editParsec != null) MenuAction(menu, "Edit Parsec computer…", editParsec);
         if (remove != null) MenuAction(menu, "Remove", remove);
@@ -527,19 +529,13 @@ public sealed partial class MainWindow
                 paste.IsEnabled = BlipRunning && !busy;
                 actions.Children.Add(paste);
             }
-            if (deviceShortcut && !device.History)
-                actions.Children.Add(BlipRecipientOptions(name,
-                    () => _ = RenameBlipDevice(owner, name, device, nickname),
-                    connectParsec: () => _ = ConnectParsec(owner, device),
-                    editParsec: () => _ = ConnectParsec(owner, device, edit: true)));
-            if (remove != null)
-            {
-                actions.Children.Add(BlipRecipientOptions(name,
-                    () => _ = RenameRecentRecipient(owner, remove, name, nickname, device.IsPerson, device),
-                    () => _ = UpdateRecentRecipients("archive", owner, device.History ? null : device, target: remove),
-                    device.History ? null : () => _ = ConnectParsec(owner, device),
-                    device.History ? null : () => _ = ConnectParsec(owner, device, edit: true)));
-            }
+            actions.Children.Add(BlipRecipientOptions(name,
+                permissions: () => { if (owner == BlipOwner) _ = ChooseLinkSenders(device); },
+                edit: remove != null ? () => _ = RenameRecentRecipient(owner, remove, name, nickname, device.IsPerson, device)
+                    : deviceShortcut ? () => _ = RenameBlipDevice(owner, name, device, nickname) : null,
+                remove: remove == null ? null : () => _ = UpdateRecentRecipients("archive", owner, device.History ? null : device, target: remove),
+                connectParsec: device.History ? null : () => _ = ConnectParsec(owner, device),
+                editParsec: device.History ? null : () => _ = ConnectParsec(owner, device, edit: true)));
             if (sends.Count > 0) actions.Children.Add(CancelBlipSendingItems(name, sends));
             foreach (var action in actions.Children.OfType<Button>()) FlatBlipButton(action);
             Grid.SetColumn(actions, 1);

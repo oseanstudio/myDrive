@@ -90,6 +90,13 @@ internal sealed class BlipIncomingWindow : Window
         if (AppWindow.ClientSize.Width != width || AppWindow.ClientSize.Height != height) AppWindow.ResizeClient(size);
         AppWindow.Move(TrayPopupPlacement.Beside(icon, area, AppWindow.Size, gap));
     }
+    public void ShowClipboardFailure(string id, string message)
+    {
+        if (TransferId != id || !AppWindow.IsVisible) return;
+        details.Text = "Could not copy to clipboard. " + message;
+        details.Visibility = Visibility.Visible;
+        SizeNearTray();
+    }
     public void Stop(){expiry.Stop();AppWindow.Hide();}
     public void ClearFailure(){failure=null;details.Text="";details.Visibility=Visibility.Collapsed;if(AppWindow.IsVisible)SizeNearTray();}
     public void ShowFailure(string message){failure=message;state.Text="Needs attention";details.Text=message;details.Visibility=Visibility.Visible;receive.Visibility=Visibility.Visible;progress.Visibility=Visibility.Collapsed;if(AppWindow.IsVisible)SizeNearTray();}

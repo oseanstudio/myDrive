@@ -22,6 +22,14 @@ public sealed partial class MainWindow
     private readonly HashSet<string> cancellingBlipSends = new();
     private BlipSendingItem? preparingBlipSend;
     private readonly BlipNoticeTracker blipNotices=new();
+    private readonly Dictionary<string, string> blipClipboardPending = new(StringComparer.OrdinalIgnoreCase);
+
+    private bool CanAutoCopy(BlipStatus status, BlipTransfer transfer)
+    {
+        lock (blipPolicyGate)
+            return BlipTrustPolicy.Allowed(status, Preferences.Current.BlipAutoOpenAccount,
+                Preferences.Current.BlipAutoClipboardPeers, transfer);
+    }
     private BlipSenderCatalog? blipSenderCatalog;
     private BlipSenderCatalog SenderCatalog=>System.Threading.LazyInitializer.EnsureInitialized(ref blipSenderCatalog,()=>new(Path.Combine(CoreBridge.DataDir,"Blip","sender-catalog.json")));
     private BlipIncomingWindow? blipIncomingWindow;
@@ -72,7 +80,7 @@ public sealed partial class MainWindow
                 var freshSnapshot=await blip.PollAsync(timeout.Token).ConfigureAwait(false);
                 blipFailure="";
                 var owner = freshSnapshot.Status.UserId + ":" + freshSnapshot.Status.DeviceId;
-                if (blipNamingOwner != owner) { blipNamingOwner = owner; nextBlipNamePublish = 0; }
+                if (blipNamingOwner != owner) { blipNamingOwner = owner; nextBlipNamePublish = 0; blipClipboardPending.Clear(); }
                 if (freshSnapshot.Status.Authenticated && freshSnapshot.Status.CurrentDeviceNamed != true &&
                     Environment.TickCount64 >= nextBlipNamePublish)
                 {
@@ -90,7 +98,7 @@ public sealed partial class MainWindow
                 freshSnapshot = freshSnapshot with { Transfers = freshSnapshot.Transfers
                     .Where(t => !IsRelayPacket(t) || !SameBlipAccount(t.Peer, freshSnapshot.Status.UserId))
                     .Concat(relayReceived.Values).ToList() };
-                var approved=Preferences.Current.BlipAutoOpenAccount.Equals(freshSnapshot.Status.UserId,StringComparison.OrdinalIgnoreCase)?Preferences.Current.BlipAutoOpenPeers.Concat(Preferences.Current.BlipAutoReceivePeers):Array.Empty<string>();
+                var approved=Preferences.Current.BlipAutoOpenAccount.Equals(freshSnapshot.Status.UserId,StringComparison.OrdinalIgnoreCase)?Preferences.Current.BlipAutoOpenPeers.Concat(Preferences.Current.BlipAutoReceivePeers).Concat(Preferences.Current.BlipAutoClipboardPeers):Array.Empty<string>();
                 blipSnapshot=freshSnapshot with {Devices=SenderCatalog.Merge(freshSnapshot.Status,freshSnapshot.Devices,freshSnapshot.Transfers,approved)};
                 var snapshot=blipSnapshot;
                 var notices=blipNotices.Update(snapshot.Status,snapshot.Transfers);
@@ -98,13 +106,38 @@ public sealed partial class MainWindow
                     foreach(var transfer in notices)UpdateIncomingBlip(transfer,true);
                     if(blipIncomingWindow!=null&&snapshot.Transfers.FirstOrDefault(t=>t.Id==blipIncomingWindow.TransferId) is {} current)UpdateIncomingBlip(current,false);
                 });
+                foreach (var transfer in snapshot.Transfers)
+                {
+                    if (!blipClipboardPending.TryGetValue(transfer.Id, out var acceptedPeer) ||
+                        !acceptedPeer.Equals(transfer.Peer, StringComparison.OrdinalIgnoreCase)) continue;
+                    if (transfer.HasError || transfer.Status == "Cancelled" || !CanAutoCopy(snapshot.Status, transfer))
+                    {
+                        blipClipboardPending.Remove(transfer.Id);
+                        continue;
+                    }
+                    if (transfer.Direction != "Incoming" || !transfer.ConfirmedComplete || transfer.ReceivedItems.Count == 0) continue;
+                    blipClipboardPending.Remove(transfer.Id);
+                    DispatcherQueue.TryEnqueue(async () =>
+                    {
+                        try
+                        {
+                            await BlipReceivedActions.CopyAutomatically(transfer, () => !quitting &&
+                                owner.Equals(BlipOwner, StringComparison.OrdinalIgnoreCase) && CanAutoCopy(snapshot.Status, transfer));
+                        }
+                        catch (Exception error) { blipIncomingWindow?.ShowClipboardFailure(transfer.Id, error.Message); }
+                    });
+                }
                 var pending = snapshot.Transfers.Where(t=>t.AwaitingAcceptance).ToList();
                 foreach(var id in blipAutoAccepted.Keys.Where(id=>!pending.Any(t=>t.Id==id)))blipAutoAccepted.TryRemove(id,out _);
                 foreach(var request in pending)
                     if ((snapshot.Status.DesktopSession || snapshot.Status.NativeAutoAcceptDisabled) &&
                         ShouldAutoReceive(snapshot.Status,request) && !blipAutoAccepted.ContainsKey(request.Id) && ReceiveLedger.TryClaim(snapshot.Status.UserId,request.Id) && blipAutoAccepted.TryAdd(request.Id,0)) {
 
-                        try {await blip.AcceptAsync(request.Id,timeout.Token).ConfigureAwait(false);}
+                        try
+                        {
+                            if (await blip.AcceptAsync(request.Id,timeout.Token).ConfigureAwait(false) && CanAutoCopy(snapshot.Status, request))
+                                blipClipboardPending[request.Id] = request.Peer;
+                        }
                         catch(Exception error){
                             blipAutoAccepted.TryRemove(request.Id,out _);
                             blipFailure=error.Message;
@@ -381,22 +414,29 @@ public sealed partial class MainWindow
         });
         await RefreshBlip();
     }
-    private async Task ChooseLinkSenders()
+    private async Task ChooseLinkSenders(BlipDevice? sender = null)
     {
         if(busy||blipSnapshot?.Status.Authenticated!=true)return;
         if(!diagnosticMode)await RefreshBlip();
         var snapshot=blipSnapshot;if(snapshot?.Status.Authenticated!=true)return;
         var account=snapshot.Status.UserId;bool same=Preferences.Current.BlipAutoOpenAccount.Equals(account,StringComparison.OrdinalIgnoreCase);
         var content=new StackPanel{Spacing=7,MaxWidth=compact?274:460};
-        var choices=new List<(string Peer,CheckBox Files,CheckBox Links,TextBox Name,string Initial)>();
-        var devices=snapshot.Devices.Where(d=>BlipTrustPolicy.ExactPeer(d.Peer)&&!d.Peer.Equals(account+":"+snapshot.Status.DeviceId,StringComparison.OrdinalIgnoreCase)).ToList();
+        content.Children.Add(QuickText("Automatic actions", 12, true));
+        var choices=new List<(string Peer,CheckBox Files,CheckBox Links,CheckBox Copy,TextBox Name,string Initial)>();
+        var candidates = BlipTrustPolicy.ExactPeer(sender?.Peer) ? snapshot.Devices.Append(sender!) : snapshot.Devices;
+        var devices = candidates.Where(d => BlipTrustPolicy.ExactPeer(d.Peer) &&
+                !d.Peer.Equals(account + ":" + snapshot.Status.DeviceId, StringComparison.OrdinalIgnoreCase) &&
+                (sender == null || (sender.IsPerson
+                    ? d.Account.Equals(sender.Account, StringComparison.OrdinalIgnoreCase)
+                    : d.Peer.Equals(sender.Peer, StringComparison.OrdinalIgnoreCase))))
+            .DistinctBy(d => d.Peer, StringComparer.OrdinalIgnoreCase).ToList();
         foreach(var group in devices.GroupBy(d=>d.Peer.Split(':')[0],StringComparer.OrdinalIgnoreCase)) {
             string person = group.Key.Equals(account, StringComparison.OrdinalIgnoreCase)
                 ? "Your devices"
                 : BlipPersonName(group.First(), group.Key) ?? "Previous sender";
             var heading = QuickText(person, 13, true);
             ToolTipService.SetToolTip(heading, person);
-            content.Children.Add(heading);
+            if (sender == null) content.Children.Add(heading);
             foreach(var device in group.OrderBy(d=>d.Name).ThenBy(d=>d.Peer)) {
                 string name = BlipDeviceName(device);
                 var deviceCard = new StackPanel { Spacing = 3 };
@@ -417,29 +457,38 @@ public sealed partial class MainWindow
                 deviceCard.Children.Add(nameRow);
                 deviceCard.Children.Add(QuickText(BlipDeviceDetail(device), 11));
                 deviceCard.Children.Add(label);
-                var permissions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12 };
-                var files = new CheckBox { Content = "Auto-receive files", FontSize = 11, MinWidth = 0, MinHeight = 28,
+                var permissions = new StackPanel { Spacing = 1 };
+                var files = new CheckBox { Content = "Receive files", FontSize = 11, MinWidth = 0, MinHeight = 28,
                     IsChecked = same && Preferences.Current.BlipAutoReceivePeers.Contains(device.Peer, StringComparer.OrdinalIgnoreCase) };
-                var links = new CheckBox { Content = "Auto-open links", FontSize = 11, MinWidth = 0, MinHeight = 28,
+                var links = new CheckBox { Content = "Open links", FontSize = 11, MinWidth = 0, MinHeight = 28,
                     IsChecked = same && Preferences.Current.BlipAutoOpenPeers.Contains(device.Peer, StringComparer.OrdinalIgnoreCase) };
-                AutomationProperties.SetName(files, "Auto-receive files from " + name);
-                AutomationProperties.SetName(links, "Auto-open links from " + name);
+                var copy = new CheckBox { Content = "Copy to clipboard", FontSize = 11, MinWidth = 0, MinHeight = 28,
+                    IsChecked = same && Preferences.Current.BlipAutoClipboardPeers.Contains(device.Peer, StringComparer.OrdinalIgnoreCase) };
+                ToolTipService.SetToolTip(copy, "Copy transfers myDrive accepts automatically from this device");
+                AutomationProperties.SetName(files, "Receive files from " + name);
+                AutomationProperties.SetName(links, "Open links from " + name);
+                AutomationProperties.SetName(copy, "Copy to clipboard from " + name);
                 permissions.Children.Add(files);
                 permissions.Children.Add(links);
+                permissions.Children.Add(copy);
                 deviceCard.Children.Add(permissions);
                 content.Children.Add(new Border { Child = deviceCard, Padding = new Thickness(7), CornerRadius = new CornerRadius(6),
                     BorderThickness = new Thickness(1), BorderBrush = Brush("DividerStrokeColorDefaultBrush") });
-                choices.Add((device.Peer, files, links, label, name));
+                choices.Add((device.Peer, files, links, copy, label, name));
             }
         }
         if(choices.Count==0)content.Children.Add(Text("No senders available yet.",12));
-        var dialog=new ContentDialog{XamlRoot=root.XamlRoot,Title="Sender permissions",Content=new ScrollViewer{Content=content,MaxHeight=compact?235:440},PrimaryButtonText="Save",CloseButtonText="Cancel",DefaultButton=ContentDialogButton.Close};
+        var dialog=new ContentDialog{XamlRoot=root.XamlRoot,Title=sender == null ? "Sender permissions" : BlipDeviceCaption(sender),Content=new ScrollViewer{Content=content,MaxHeight=compact?235:440},PrimaryButtonText="Save",CloseButtonText="Cancel",DefaultButton=ContentDialogButton.Close};
         if(await ShowDialog(dialog)!=ContentDialogResult.Primary||diagnosticMode||BlipOwner !=
             (account + ":" + snapshot.Status.DeviceId).ToLowerInvariant())return;
         lock(blipPolicyGate) {
+            var reviewed = choices.Select(choice => choice.Peer).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            List<string> Merge(IEnumerable<string> previous, IEnumerable<string> selected) =>
+                (same ? previous.Where(peer => !reviewed.Contains(peer)) : Enumerable.Empty<string>()).Concat(selected).ToList();
             Preferences.Current.BlipAutoOpenAccount=account;
-            Preferences.Current.BlipAutoOpenPeers=choices.Where(c=>c.Links.IsChecked==true).Select(c=>c.Peer).ToList();
-            Preferences.Current.BlipAutoReceivePeers=choices.Where(c=>c.Files.IsChecked==true).Select(c=>c.Peer).ToList();
+            Preferences.Current.BlipAutoOpenPeers=Merge(Preferences.Current.BlipAutoOpenPeers, choices.Where(c=>c.Links.IsChecked==true).Select(c=>c.Peer));
+            Preferences.Current.BlipAutoReceivePeers=Merge(Preferences.Current.BlipAutoReceivePeers, choices.Where(c=>c.Files.IsChecked==true).Select(c=>c.Peer));
+            Preferences.Current.BlipAutoClipboardPeers=Merge(Preferences.Current.BlipAutoClipboardPeers, choices.Where(c=>c.Copy.IsChecked==true).Select(c=>c.Peer));
             Preferences.Save();
         }
         foreach (var choice in choices.Where(c => c.Name.Text != c.Initial))

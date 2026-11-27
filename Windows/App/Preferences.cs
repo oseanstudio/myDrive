@@ -10,6 +10,7 @@ public sealed class Preferences
     public string BlipAutoOpenAccount {get;set;}="";
     public List<string> BlipAutoOpenPeers {get;set;}=new();
     public List<string> BlipAutoReceivePeers {get;set;}=new();
+    public List<string> BlipAutoClipboardPeers {get;set;}=new();
     public bool ParsecShowBadge {get;set;}=true;
     public Dictionary<string, string> ParsecComputers {get;set;}=new();
     public string SyncthingConfigPath {get;set;}="";

@@ -76,8 +76,8 @@ struct BlipQueuedSend: Codable, Identifiable {
     private var task: Task<Void, Never>?
     private var session = ""
     private(set) var account = ""
-    @Published private(set) var autoCopiedTextID: String?
-    private var clipboardHandled = Set<String>()
+    @Published private(set) var autoCopiedTransferID: String?
+    private var clipboardPending: [String: String] = [:]
     private var noticeSession=""
     private var noticeStates:[String:String]=[:]
     private var contacts:BlipContactStore?
@@ -563,7 +563,7 @@ struct BlipQueuedSend: Codable, Identifiable {
             people = try JSONDecoder().decode([BlipPeer].self, from: JSONSerialization.data(withJSONObject:value.array("people")))
             selfPeer = identity
             connectedPeers = Set(incomingPeers.filter { $0.history != true }.map(\.peer))
-            peers=try contacts?.merge(account:account,selfPeer:identity,peers:incomingPeers,transfers:transfers,approved:policy.account.lowercased()==account.lowercased() ? policy.peers.union(policy.files) : []) ?? incomingPeers
+            peers=try contacts?.merge(account:account,selfPeer:identity,peers:incomingPeers,transfers:transfers,approved:policy.account.lowercased()==account.lowercased() ? policy.peers.union(policy.files).union(policy.clipboard) : []) ?? incomingPeers
             if recentOwner != identity {
                 recentOwner = identity
                 recentRecipients = []
@@ -584,11 +584,11 @@ struct BlipQueuedSend: Codable, Identifiable {
             if baseline {
                 noticeStates = [:]
                 noticeSession = identity
-                autoCopiedTextID = nil
-                clipboardHandled = Set(transfers.filter(\.confirmed).map(\.id))
+                autoCopiedTransferID = nil
+                clipboardPending.removeAll()
             }
             for transfer in transfers where transfer.direction == "Incoming" && (transfer.dismissed != true || transfer.confirmed) {
-                await copyNewClipboardText(transfer, owner: identity)
+                await copyAcceptedTransfer(transfer, owner: identity)
                 let state = "\(transfer.status):\(transfer.has_error):\(transfer.received_items?.count ?? 0)"
                 let changed = noticeStates[transfer.id] != state
                 noticeStates[transfer.id]=state
@@ -601,7 +601,10 @@ struct BlipQueuedSend: Codable, Identifiable {
                     if !claims.contains(mark), Date() >= (nextReceiveAttempt[transfer.id] ?? .distantPast) {
                         receiving.insert(transfer.id)
                         do {
-                            _ = try await BlipMacClient.request("accept", ["id": transfer.id, "owner": identity])
+                            let result = try await BlipMacClient.request("accept", ["id": transfer.id, "owner": identity])
+                            if result.str("phase") == "receiving_confirmed", policy.allowsClipboard(transfer, account: account) {
+                                clipboardPending[transfer.id] = transfer.peer
+                            }
                             try claims.claim(mark)
                         } catch {
                             receiving.remove(transfer.id)
@@ -629,18 +632,21 @@ struct BlipQueuedSend: Codable, Identifiable {
             }
         } catch { problem = error.localizedDescription; state = "Blip needs attention"; session = "";selfPeer="";setActivity(false) }
     }
-    private func copyNewClipboardText(_ transfer: BlipTransfer, owner: String) async {
-        guard !clipboardHandled.contains(transfer.id),
-              let file = BlipFileKind.receivedClipboardURL(transfer) else { return }
-        clipboardHandled.insert(transfer.id)
-        let clipboard = NSPasteboard.general
-        let changeCount = clipboard.changeCount
-        guard let text = try? await Task.detached(operation: { try BlipFileKind.clipboardText(file) }).value,
-              !text.isEmpty, selfPeer == owner, clipboard.changeCount == changeCount else { return }
+    private func copyAcceptedTransfer(_ transfer: BlipTransfer, owner: String) async {
+        guard clipboardPending[transfer.id] == transfer.peer else { return }
+        if transfer.has_error || transfer.status == "Cancelled" || !policy.allowsClipboard(transfer, account: account) {
+            clipboardPending.removeValue(forKey: transfer.id)
+            return
+        }
+        guard transfer.confirmed, transfer.received_items?.isEmpty == false else { return }
+        clipboardPending.removeValue(forKey: transfer.id)
         do {
-            try BlipFileActions.writeText(text, clipboard: clipboard)
-            autoCopiedTextID = transfer.id
-        } catch { problem = error.localizedDescription }
+            if try await BlipFileActions.copyAutomatically(transfer, stillAllowed: {
+                self.selfPeer == owner && self.policy.allowsClipboard(transfer, account: self.account)
+            }) {
+                autoCopiedTransferID = transfer.id
+            }
+        } catch { problem = "Could not copy the received transfer. " + error.localizedDescription }
     }
 
     func signIn() {
@@ -689,17 +695,18 @@ struct BlipQueuedSend: Codable, Identifiable {
         paste(editor)
         return true
     }
-    func setTrusted(_ peer: BlipPeer, _ enabled: Bool,files:Bool=false) {
+    func setTrusted(_ peer: BlipPeer, _ enabled: Bool, for rule: WritableKeyPath<BlipPolicy, Set<String>>) {
         guard canSavePolicy, UUID(uuidString:account) != nil, BlipPolicy.exactPeer(peer.peer) else { return }
         var updated = policy
         if updated.account.lowercased() != account.lowercased() { updated = BlipPolicy(account:account,peers:[]) }
-        if files {if enabled{updated.files.insert(peer.peer.lowercased())}else{updated.files.remove(peer.peer.lowercased())}}
-        else {if enabled { updated.peers.insert(peer.peer.lowercased()) } else { updated.peers.remove(peer.peer.lowercased()) }}
+        if enabled { updated[keyPath: rule].insert(peer.peer.lowercased()) }
+        else { updated[keyPath: rule].remove(peer.peer.lowercased()) }
         do { try FileManager.default.createDirectory(at:root,withIntermediateDirectories:true);try JSONEncoder().encode(updated).write(to:root.appendingPathComponent("link-policy.json"),options:.atomic);policy=updated;session="" }
         catch { problem = "Sender approval could not be saved." }
     }
-    func isTrusted(_ peer: BlipPeer) -> Bool { policy.account.lowercased()==account.lowercased() && policy.peers.contains(peer.peer.lowercased()) }
-    func isFileTrusted(_ peer:BlipPeer)->Bool {policy.account.lowercased()==account.lowercased() && policy.files.contains(peer.peer.lowercased())}
+    func isTrusted(_ peer: BlipPeer, for rule: KeyPath<BlipPolicy, Set<String>>) -> Bool {
+        policy.account.caseInsensitiveCompare(account) == .orderedSame && policy[keyPath: rule].contains(peer.peer.lowercased())
+    }
     func deviceName(_ peer: BlipPeer) -> String {
         let match = peers.first { $0.peer.caseInsensitiveCompare(peer.peer) == .orderedSame }
         let recent = recentOwner == selfPeer

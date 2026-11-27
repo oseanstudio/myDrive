@@ -155,8 +155,9 @@ final class AppState: ObservableObject {
     private var lastAppUpdateCheck = Date.distantPast
     private var autoUpdateAfter = Date.distantPast
     private var updateChecksStarted = false
-    private var checkingForAppUpdate = false
+    @Published private(set) var checkingForAppUpdate = false
     private var showAppUpdateResult = false
+    private var downloadCheckedUpdate = false
     private var manualUpdateRequested = false
     var stoppingUpdateChecks = false
     var updateWindowIsVisible = { true }
@@ -294,19 +295,30 @@ final class AppState: ObservableObject {
         Task { await refreshIfStale() }
     }
 
-    func checkForAppUpdate(showResult: Bool = false, onOpen: Bool = false) {
+    func fetchAppUpdate() {
+        if preparedUpdatePath != nil {
+            installAppUpdate()
+        } else {
+            checkForAppUpdate(showResult: true, downloadIfAvailable: true)
+        }
+    }
+
+    func checkForAppUpdate(showResult: Bool = false, onOpen: Bool = false, downloadIfAvailable: Bool = false) {
         guard updateChecksStarted, !stoppingUpdateChecks, !installingAppUpdate else { return }
         if checkingForAppUpdate {
             showAppUpdateResult = showAppUpdateResult || showResult
+            downloadCheckedUpdate = downloadCheckedUpdate || downloadIfAvailable
             return
         }
         let age = Date().timeIntervalSince(lastAppUpdateCheck)
-        guard showResult || onOpen || age < 0 || age >= 6 * 60 * 60,
+        guard showResult || downloadIfAvailable || onOpen || age < 0 || age >= 6 * 60 * 60,
               let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String else { return }
         showAppUpdateResult = showResult
+        downloadCheckedUpdate = downloadIfAvailable
         checkingForAppUpdate = true
         lastAppUpdateCheck = Date()
         Task {
+            var foundUpdate = false
             do {
                 let reply = try await CoreBridge.shared.call(action: "update.check", request: ["payload": ["version": version]], timeout: 12)
                 let target = (reply as? JSON)?["version"] as? String
@@ -315,15 +327,19 @@ final class AppState: ObservableObject {
                     await discardPreparedUpdate()
                 }
                 availableAppUpdate = target
+                foundUpdate = target != nil
                 if target == nil && showAppUpdateResult {
                     showBanner(.info, "myDrive is up to date", "You’re using version \(version).")
                 }
             } catch {
                 if showAppUpdateResult { showBanner(.info, "Could not check for updates", "Try again when GitHub is available.") }
             }
+            let download = foundUpdate && downloadCheckedUpdate
             checkingForAppUpdate = false
             showAppUpdateResult = false
-            installAppUpdate(automatic: true)
+            downloadCheckedUpdate = false
+            if download { manualUpdateRequested = true }
+            installAppUpdate(automatic: !download)
         }
     }
 

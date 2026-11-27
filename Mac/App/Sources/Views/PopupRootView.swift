@@ -115,17 +115,24 @@ struct PopupRootView: View {
                 if let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String {
                     Text(version).font(.system(size: 10)).foregroundStyle(.secondary)
                 }
-                if let update = app.availableAppUpdate {
-                    let title = app.updateOfferTitle(update)
-                    Button(app.updateOfferLabel) { app.installAppUpdate() }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                        .font(.system(size: 11))
-                        .frame(height: 24)
-                        .disabled(app.installingAppUpdate || app.busy != nil)
-                        .help(title)
-                        .accessibilityLabel(title)
+                let updateTitle = app.checkingForAppUpdate ? "Checking for updates" :
+                    app.availableAppUpdate.map(app.updateOfferTitle) ?? "Check for updates"
+                Button(action: app.fetchAppUpdate) {
+                    if app.checkingForAppUpdate {
+                        ProgressView().controlSize(.small).frame(width: 16)
+                    } else if app.availableAppUpdate != nil {
+                        Text(app.updateOfferLabel)
+                    } else {
+                        Image(systemName: "arrow.clockwise").frame(width: 16)
+                    }
                 }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .font(.system(size: 11))
+                .frame(height: 24)
+                .disabled(app.checkingForAppUpdate || app.installingAppUpdate)
+                .help(updateTitle)
+                .accessibilityLabel(updateTitle)
             }
             .fixedSize()
             Spacer(minLength: 4)

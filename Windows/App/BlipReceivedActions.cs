@@ -36,6 +36,21 @@ internal static class BlipReceivedActions {
         return data;
     }
 
+    internal static async Task CopyAutomatically(BlipTransfer transfer, Func<bool> stillAllowed)
+    {
+        var first = transfer.ReceivedItems.FirstOrDefault();
+        if (first == null || !stillAllowed()) return;
+        uint clipboardVersion = GetClipboardSequenceNumber();
+        var action = transfer.ReceivedItems.Count > 1 ? BlipFileAction.CopyListedFiles : BlipFileAction.Copy;
+        var data = await CopyData(action, transfer, first, Require(transfer, first));
+        if (!stillAllowed() || clipboardVersion != GetClipboardSequenceNumber()) return;
+        Clipboard.SetContent(data);
+        Clipboard.Flush();
+    }
+
+    [DllImport("user32.dll")]
+    private static extern uint GetClipboardSequenceNumber();
+
     public static async Task Execute(BlipFileAction action,BlipTransfer transfer,BlipReceivedItem item,nint owner) {
         string path=Require(transfer,item);
         if(action==BlipFileAction.CopyPath||action==BlipFileAction.CopyListedPaths) {

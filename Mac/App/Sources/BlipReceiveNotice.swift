@@ -191,7 +191,7 @@ struct BlipReceiveNoticeView: View {
         HStack(spacing: 7) {
             Text(receiver.senderLabel(transfer.peer))
                 .font(.system(size: 13, weight: .semibold)).lineLimit(1)
-            Text(receiver.autoCopiedTextID == id ? "Copied" : statusText(transfer))
+            Text(receiver.autoCopiedTransferID == id ? "Copied" : statusText(transfer))
                 .font(.system(size: 11, weight: .medium))
                 .opacity(0.84).lineLimit(1).fixedSize(horizontal: true, vertical: false)
             Spacer(minLength: 0)
