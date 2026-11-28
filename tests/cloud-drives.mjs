@@ -48,7 +48,20 @@ async function backup(id, schedule = false) {
 
 try {
     assert.deepEqual(call('status'), { accounts: [], jobs: [] });
-    assert.match(call('setup').version, /^v\d+\.\d+\.\d+$/);
+    const { version } = call('setup');
+    assert.match(version, /^v\d+\.\d+\.\d+$/);
+    const helper = join(data, 'cloud', version, process.platform === 'win32' ? 'rclone.exe' : 'rclone');
+    const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith('RCLONE_')));
+    for (const provider of ['dropbox', 'onedrive', 'drive']) {
+        const profile = join(fixture, provider + '.conf');
+        const options = provider === 'drive' ? 'client_id = fixture.apps.googleusercontent.com\n' : '';
+        await writeFile(profile, '[mydrive]\ntype = ' + provider + '\n' + options);
+        const setup = spawnSync(helper, ['--config', profile, 'config', 'update', 'mydrive', '--non-interactive'],
+            { encoding: 'utf8', env, timeout: 10_000, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+        assert.equal(setup.status, 0, provider);
+        const prompt = JSON.parse(setup.stdout);
+        assert.equal(prompt.Option.Name, 'config_is_local', provider);
+    }
     const config = join(data, 'cloud', 'accounts', account);
     await Promise.all([config, source, remote].map(path => mkdir(path, { recursive: true })));
     await writeFile(join(config, 'rclone.conf'), '[mydrive]\ntype = alias\nremote = ' + remote.replaceAll('\\', '/') + '\n');

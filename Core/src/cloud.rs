@@ -6,7 +6,7 @@ use std::{
     io::{BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 type Result<T> = std::result::Result<T, String>;
@@ -349,6 +349,7 @@ fn short_run(mut child: Command, error: &str) -> Result<()> {
 
 fn browser_sign_in(root: &Path, path: &Path) -> Result<()> {
     let error = "Cloud sign-in could not finish. Complete sign-in in the browser and try again.";
+    let deadline = Instant::now() + Duration::from_secs(300);
     let mut next: Option<(String, String)> = None;
     for _ in 0..12 {
         let mut auth = rclone(root, path)?;
@@ -356,11 +357,30 @@ fn browser_sign_in(root: &Path, path: &Path) -> Result<()> {
         if let Some((state, answer)) = &next {
             auth.args(["--continue", "--state", state, "--result", answer]);
         }
-        let reply = auth.output().map_err(|_| error)?;
-        if !reply.status.success() {
+        let reply =
+            tempfile::NamedTempFile::new_in(path.parent().unwrap()).map_err(storage_error)?;
+        let result = reply.reopen().map_err(storage_error)?;
+        let mut child = auth
+            .stdout(result)
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|_| error)?;
+        let outcome = loop {
+            if let Some(status) = child.try_wait().map_err(storage_error)? {
+                break status;
+            }
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("Cloud sign-in timed out. Connect again to reopen the browser.".into());
+            }
+            std::thread::sleep(Duration::from_millis(150));
+        };
+        if !outcome.success() {
             return Err(error.into());
         }
-        let response: Value = serde_json::from_slice(&reply.stdout).map_err(|_| error)?;
+        let response: Value =
+            serde_json::from_reader(reply.as_file().take(512 * 1024)).map_err(|_| error)?;
         if response["Error"]
             .as_str()
             .is_some_and(|value| !value.is_empty())
