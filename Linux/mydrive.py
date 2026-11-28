@@ -215,7 +215,7 @@ class MyDrive(Gtk.Application):
             card = self.incoming_slot.get_child()
             children = [card.observe_children().get_item(i) for i in range(card.observe_children().get_n_items())]
             assert self.incoming_slot.get_visible() and self.transfer_view.receive_window is None
-            assert any(isinstance(child, Gtk.ProgressBar) and child.get_fraction() == 3609442 / 5000000000
+            assert any(isinstance(child, Gtk.ProgressBar) and abs(child.get_fraction() - 3609442 / 5000000000) < 1e-7
                        for child in children)
             details = next(child for child in children if isinstance(child, Gtk.Button) and child.get_label() == "Show in Blip")
             assert any(isinstance(child, Gtk.Label) and "4,996,390,558 remaining" in child.get_label()
