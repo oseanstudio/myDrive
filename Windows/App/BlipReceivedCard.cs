@@ -137,6 +137,7 @@ internal sealed class BlipReceivedCard:UserControl {
         SetPreviewHeight(FilePreviewHeight);
         var value = transfer;
         var entry = selected;
+        copy.Content = entry != null && BlipReceivedFiles.IsText(entry) ? "Copy text" : "Copy";
         if (value == null || entry == null)
         {
             if (value?.ConfirmedComplete == true) ShowText("File location is not available yet");
@@ -158,7 +159,7 @@ internal sealed class BlipReceivedCard:UserControl {
                 PreviewKind = "link";
                 return;
             }
-            if (BlipReceivedFiles.IsText(path))
+            if (BlipReceivedFiles.IsText(entry, path))
             {
                 var text = await BlipReceivedFiles.TextPreviewAsync(path);
                 if (current != generation) return;
@@ -192,7 +193,7 @@ internal sealed class BlipReceivedCard:UserControl {
         void Add(string title,BlipFileAction action,bool enabled=true){var item=new MenuFlyoutItem{Text=title,IsEnabled=open.IsEnabled&&enabled};item.Click+=async(_,_)=>await Perform(action);menu.Items.Add(item);labels.Add(title);}
         Add("Open",BlipFileAction.Open);Add("Open with…",BlipFileAction.OpenWith,selected is {IsDirectory:false}&&!BlipReceivedFiles.IsShortcut(selected.Path));
         Add("Copy",BlipFileAction.Copy);
-        if (selected is { IsDirectory: false } && BlipReceivedFiles.IsText(selected.Path)) Add("Copy file", BlipFileAction.CopyFile);
+        if (selected != null && BlipReceivedFiles.IsText(selected)) Add("Copy file", BlipFileAction.CopyFile);
         Add("Copy path",BlipFileAction.CopyPath);menu.Items.Add(new MenuFlyoutSeparator());
         Add("Open folder",BlipFileAction.OpenFolder);Add("Show in folder",BlipFileAction.ShowInFolder);
         if(transfer?.ReceivedItems.Count>1){menu.Items.Add(new MenuFlyoutSeparator());Add("Copy listed files",BlipFileAction.CopyListedFiles);Add("Copy listed paths",BlipFileAction.CopyListedPaths);}
@@ -209,7 +210,8 @@ internal sealed class BlipReceivedCard:UserControl {
                 Copied?.Invoke(value.Id);
             feedback.Text = "";
         }
-        catch{feedback.Text="This file action is unavailable. The item may have moved.";}
+        catch (IOException error) { feedback.Text = error.Message; }
+        catch { feedback.Text = "This file action is unavailable. The item may have moved."; }
         feedback.Visibility=feedback.Text.Length>0?Visibility.Visible:Visibility.Collapsed;
     }
 }

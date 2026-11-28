@@ -304,6 +304,16 @@ enum Diagnostics {
         try FileManager.default.copyItem(at:resource,to:picture)
         var transfer=BlipTransfer(transfer_id:UUID().uuidString,peer:peer,direction:"Incoming",status:"Completed",completed:true,has_error:false,link_files:[],link_only:false)
         let textItem=BlipReceivedItem(name:text.lastPathComponent,path:text.path),imageItem=BlipReceivedItem(name:picture.lastPathComponent,path:picture.path)
+        let savedText = root.appendingPathComponent("pasted.download")
+        try Data([0x63, 0x61, 0x66, 0xe9, 0x20, 0x96, 0x20, 0x78]).write(to: savedText)
+        let renamed = BlipReceivedItem(name: "Pasted text.txt", path: savedText.path)
+        var batch = transfer
+        batch.received_items = [textItem, renamed]
+        let completedBatch = batch
+        let copyText = try awaitSync { try await BlipFileActions.textForClipboard([textItem, renamed], transfer: completedBatch) }
+        guard copyText == content + "\n\ncafé – x" else {
+            throw BlipReceiverError.message("A text batch did not decode its renamed text attachment.")
+        }
         for (item,file,label) in [(textItem,text,"text"),(imageItem,picture,"image")] {
             transfer.received_items=[item]
             guard BlipReceivedPath.url(item,in:transfer) != nil else{throw BlipReceiverError.message("Fixture path unavailable")}

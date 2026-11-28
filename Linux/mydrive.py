@@ -1154,6 +1154,11 @@ class MyDrive(Gtk.Application):
             for encoding in ("utf-8", "utf-8-sig", "utf-16", "utf-32"):
                 text_file.write_bytes(text.encode(encoding))
                 assert clipboard_text(text_file) == text
+            saved_text = Path(directory, "pasted.download")
+            saved_text.write_bytes("café – x".encode("cp1252"))
+            items = [{"name": text_file.name, "path": str(text_file)},
+                     {"name": "Pasted text.txt", "path": str(saved_text)}]
+            assert TransferView.prepare_copy(items) == (text + "\n\ncafé – x", [])
             text_file.write_bytes(b"binary\x00data")
             assert clipboard_text(text_file) is None
         self.snapshot = {"version": "v2 fixture", "folders": [
@@ -1245,7 +1250,7 @@ class MyDrive(Gtk.Application):
                 preview = picture.get_next_sibling().get_next_sibling()
                 assert preview.get_visible() and "Received café 雪" in preview.get_text()
                 copy = actions.get_first_child().get_next_sibling()
-                assert copy.get_label() == "Copy"
+                assert copy.get_label() == "Copy text"
                 copy.emit("clicked")
                 GLib.timeout_add(25, check_dismissal)
                 return GLib.SOURCE_REMOVE

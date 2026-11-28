@@ -166,6 +166,23 @@ public sealed partial class MainWindow
             if (!file.Contains(Windows.ApplicationModel.DataTransfer.StandardDataFormats.StorageItems))
                 throw new IOException("Copy file must still copy the attachment.");
 
+            string savedText = Path.Combine(directory, $"received-{Guid.NewGuid():N}.download");
+            try
+            {
+                await File.WriteAllBytesAsync(savedText, [0x63, 0x61, 0x66, 0xe9, 0x20, 0x96, 0x20, 0x78]);
+                var savedItem = new BlipReceivedItem { Name = "Pasted text.txt", Path = savedText };
+                var batch = new BlipTransfer { Id = Guid.NewGuid().ToString(), Direction = "Incoming",
+                    Status = "Completed", Completed = true, ReceivedItems = [item, savedItem] };
+                var directCopy = (await BlipReceivedActions.CopyData(BlipFileAction.Copy, batch, savedItem, savedText)).GetView();
+                var autoCopy = (await BlipReceivedActions.AutomaticCopyData(batch)).GetView();
+                if (directCopy.Contains(Windows.ApplicationModel.DataTransfer.StandardDataFormats.StorageItems) ||
+                    autoCopy.Contains(Windows.ApplicationModel.DataTransfer.StandardDataFormats.StorageItems) ||
+                    await directCopy.GetTextAsync() != "café – x" ||
+                    await autoCopy.GetTextAsync() != text + Environment.NewLine + Environment.NewLine + "café – x")
+                    throw new IOException("Received text must copy as plain text even when saved with a different extension or received in a text batch.");
+            }
+            finally { File.Delete(savedText); }
+
             bool fail = true;
             var card = new BlipReceivedCard(() => 0, (_, _, _) => fail
                 ? Task.FromException(new IOException("Generated copy failure")) : Task.CompletedTask);

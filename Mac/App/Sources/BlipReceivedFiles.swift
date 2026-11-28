@@ -8,6 +8,9 @@ import ImageIO
 
 enum BlipFileKind {
     static func text(_ url:URL)->Bool{["txt","md","csv","json","xml","log","yaml","yml","ini","css","html","htm","svg","js","ts","cs","swift","py","rs"].contains(url.pathExtension.lowercased())}
+    static func text(_ item: BlipReceivedItem, at url: URL? = nil) -> Bool {
+        !item.is_directory && (text(URL(fileURLWithPath: item.name)) || text(url ?? URL(fileURLWithPath: item.path)))
+    }
     static func image(_ url:URL)->Bool{["png","jpg","jpeg","gif","bmp","webp","tif","tiff","heic","avif"].contains(url.pathExtension.lowercased())}
     static func shortcut(_ url:URL)->Bool{["url","webloc"].contains(url.pathExtension.lowercased())}
     static func textPrefix(_ url:URL)->String? {
@@ -25,7 +28,6 @@ enum BlipFileKind {
     }
 
     static func clipboardText(_ url: URL) throws -> String? {
-        guard text(url) else { return nil }
         let limit = 16 * 1024 * 1024
         if let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize, size > limit { return nil }
         let file = try FileHandle(forReadingFrom: url)
@@ -41,8 +43,24 @@ enum BlipFileKind {
             ([0xef, 0xbb, 0xbf], .utf8)
         ]
         let marker = markers.first { bytes.starts(with: $0.0) }
-        guard let content = String(data: bytes.dropFirst(marker?.0.count ?? 0), encoding: marker?.1 ?? .utf8),
-              !content.contains("\0") else { return nil }
+        var encoding = marker?.1 ?? .utf8
+        let hasZero = marker == nil && bytes.contains(0)
+        if hasZero, bytes.count % 2 == 0 {
+            var evenZero = false
+            var oddZero = false
+            for offset in stride(from: 0, to: bytes.count, by: 2) {
+                evenZero = evenZero || bytes[offset] == 0
+                oddZero = oddZero || bytes[offset + 1] == 0
+                if evenZero && oddZero { break }
+            }
+            if evenZero != oddZero { encoding = evenZero ? .utf16BigEndian : .utf16LittleEndian }
+        }
+        var content = String(data: bytes.dropFirst(marker?.0.count ?? 0), encoding: encoding)
+        if content == nil, marker == nil, !hasZero { content = String(data: bytes, encoding: .windowsCP1252) }
+        guard let content, content.unicodeScalars.allSatisfy({ scalar in
+            let value = scalar.value
+            return value >= 32 && !(127...159).contains(value) || [9, 10, 12, 13].contains(value)
+        }) else { return nil }
         return content
     }
 }
@@ -52,7 +70,7 @@ struct BlipFilePreview {
     static func load(_ url:URL,item:BlipReceivedItem)async->BlipFilePreview {
         if item.is_directory{return BlipFilePreview()}
         if BlipFileKind.shortcut(url){return BlipFilePreview(text:BlipWebLink.read(url.path)?.absoluteString ?? "Web link preview unavailable")}
-        if BlipFileKind.text(url){return await Task.detached{BlipFilePreview(text:BlipFileKind.textPrefix(url) ?? "Preview unavailable")}.value}
+        if BlipFileKind.text(item, at: url){return await Task.detached{BlipFilePreview(text:BlipFileKind.textPrefix(url) ?? "Preview unavailable")}.value}
         if BlipFileKind.image(url) {
             return await Task.detached{
                 guard let source=CGImageSourceCreateWithURL(url as CFURL,[kCGImageSourceShouldCache:false] as CFDictionary),let properties=CGImageSourceCopyPropertiesAtIndex(source,0,nil) as? [CFString:Any],let width=properties[kCGImagePropertyPixelWidth] as? NSNumber,let height=properties[kCGImagePropertyPixelHeight] as? NSNumber,width.doubleValue*height.doubleValue<=100_000_000,
@@ -89,7 +107,7 @@ private final class BlipThumbnailReply:@unchecked Sendable {
 }
 
 @MainActor enum BlipFileActions {
-    static func url(_ item:BlipReceivedItem,_ transfer:BlipTransfer)throws->URL{guard let url=BlipReceivedPath.url(item,in:transfer) else{throw BlipReceiverError.message("This received file is unavailable or has moved.")};return url}
+    nonisolated static func url(_ item:BlipReceivedItem,_ transfer:BlipTransfer)throws->URL{guard let url=BlipReceivedPath.url(item,in:transfer) else{throw BlipReceiverError.message("This received file is unavailable or has moved.")};return url}
     static func open(_ item:BlipReceivedItem,_ transfer:BlipTransfer)throws {
         let file=try url(item,transfer),target:URL
         if BlipFileKind.shortcut(file){guard let link=BlipWebLink.read(file.path) else{throw BlipReceiverError.message("This shortcut does not contain a supported web link.")};target=link}else{target=file}
@@ -112,26 +130,40 @@ private final class BlipThumbnailReply:@unchecked Sendable {
         }
         clipboard.clearContents();guard clipboard.writeObjects(entries) else{throw BlipReceiverError.message("The received item could not be copied.")}
     }
-    @discardableResult static func copyItem(_ item: BlipReceivedItem, _ transfer: BlipTransfer,
+    nonisolated static func textForClipboard(_ items: [BlipReceivedItem], transfer: BlipTransfer) async throws -> String? {
+        let files = try items.map { try url($0, transfer) }
+        guard zip(items, files).allSatisfy({ BlipFileKind.text($0.0, at: $0.1) }) else { return nil }
+        return try await Task.detached {
+            var parts: [String] = []
+            var count = 0
+            for file in files {
+                guard let text = try BlipFileKind.clipboardText(file), count + text.utf8.count <= 16 * 1024 * 1024 else {
+                    throw BlipReceiverError.message("This text could not be copied. Use Copy File to keep it as an attachment.")
+                }
+                count += text.utf8.count + 2
+                parts.append(text)
+            }
+            return parts.joined(separator: "\n\n")
+        }.value
+    }
+
+    @discardableResult static func copyItems(_ items: [BlipReceivedItem], transfer: BlipTransfer,
                                             stillAllowed: () -> Bool = { true }) async throws -> Bool {
-        let file = try url(item, transfer)
-        let text = item.is_directory ? nil : try await Task.detached { try BlipFileKind.clipboardText(file) }.value
+        let items = Array(items.prefix(256))
+        guard !items.isEmpty, stillAllowed() else { return false }
+        let text = try await textForClipboard(items, transfer: transfer)
         guard stillAllowed() else { return false }
         if let text { try writeText(text, clipboard: .general) }
-        else { try copy([item], transfer) }
+        else { try copy(items, transfer) }
         return true
     }
 
     static func copyAutomatically(_ transfer: BlipTransfer, stillAllowed: () -> Bool) async throws -> Bool {
-        guard let items = transfer.received_items, let first = items.first else { return false }
         let clipboard = NSPasteboard.general
         let changeCount = clipboard.changeCount
-        if items.count == 1 {
-            return try await copyItem(first, transfer) { stillAllowed() && clipboard.changeCount == changeCount }
+        return try await copyItems(transfer.received_items ?? [], transfer: transfer) {
+            stillAllowed() && clipboard.changeCount == changeCount
         }
-        guard stillAllowed(), clipboard.changeCount == changeCount else { return false }
-        try copy(items, transfer)
-        return true
     }
     static func writeText(_ text: String, clipboard: NSPasteboard) throws {
         let entry = NSPasteboardItem()
@@ -174,16 +206,16 @@ private final class BlipThumbnailReply:@unchecked Sendable {
         catch { showActionError(error) }
     }
     private func copy(_ item: BlipReceivedItem) {
-        onAction()
         Task {
-            do { try await BlipFileActions.copyItem(item, transfer) }
-            catch { showActionError(error) }
+            do {
+                if try await BlipFileActions.copyItems([item], transfer: transfer) { onAction() }
+            } catch { showActionError(error) }
         }
     }
     private func actionMenu(_ item: BlipReceivedItem) -> some View {
         let location = file
         let isShortcut = location.map(BlipFileKind.shortcut) == true
-        let isText = !item.is_directory && location.map(BlipFileKind.text) == true
+        let isText = BlipFileKind.text(item, at: location)
         return Menu {
             Button("Open") { act { try BlipFileActions.open(item, transfer) } }
             Menu("Open With") {
@@ -196,7 +228,7 @@ private final class BlipThumbnailReply:@unchecked Sendable {
                 }
                 Button("Choose Application…") { act { try BlipFileActions.openWith(nil, item: item, transfer: transfer) } }
             }.disabled(item.is_directory || isShortcut)
-            Button("Copy") { copy(item) }
+            Button(isText ? "Copy Text" : "Copy") { copy(item) }
             if isText {
                 Button("Copy File") { act { try BlipFileActions.copy([item], transfer) } }
             }
@@ -284,7 +316,8 @@ private final class BlipThumbnailReply:@unchecked Sendable {
                         HStack(spacing: 0) {
                             Button("Open") { act { try BlipFileActions.open(selected, transfer) } }
                             actionMenu(selected)
-                            Button("Copy") { copy(selected) }.padding(.leading, 6)
+                            Button(BlipFileKind.text(selected, at: file) ? "Copy Text" : "Copy") { copy(selected) }
+                                .padding(.leading, 6)
                         }.disabled(file == nil)
                     }
                     if !message.isEmpty { Text(message).font(.system(size: 11)).lineLimit(2) }

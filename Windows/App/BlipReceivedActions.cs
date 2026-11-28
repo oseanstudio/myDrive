@@ -12,12 +12,8 @@ internal static class BlipReceivedActions {
     internal static async Task<DataPackage> CopyData(BlipFileAction action, BlipTransfer transfer, BlipReceivedItem item, string path)
     {
         var data = new DataPackage { RequestedOperation = DataPackageOperation.Copy };
-        if (action == BlipFileAction.Copy && !item.IsDirectory &&
-            await BlipReceivedFiles.ClipboardTextAsync(path) is { } text)
-        {
-            data.SetText(text);
-            return data;
-        }
+        if (action == BlipFileAction.Copy && BlipReceivedFiles.IsText(item, path))
+            return await CopyText([item], transfer);
 
         BlipReceivedItem[] chosen = action == BlipFileAction.CopyListedFiles ? transfer.ReceivedItems.Take(256).ToArray() : [item];
         var items = new List<IStorageItem>();
@@ -36,13 +32,39 @@ internal static class BlipReceivedActions {
         return data;
     }
 
+    private static async Task<DataPackage> CopyText(IEnumerable<BlipReceivedItem> items, BlipTransfer transfer)
+    {
+        var text = new System.Text.StringBuilder();
+        foreach (var item in items)
+        {
+            var part = await BlipReceivedFiles.ClipboardTextAsync(Require(transfer, item));
+            if (part == null || text.Length + part.Length > 16 * 1024 * 1024)
+                throw new IOException("This text could not be copied. Use Copy file to keep it as an attachment.");
+            if (text.Length > 0) text.AppendLine().AppendLine();
+            text.Append(part);
+        }
+        var data = new DataPackage { RequestedOperation = DataPackageOperation.Copy };
+        data.SetText(text.ToString());
+        return data;
+    }
+
+    internal static Task<DataPackage> AutomaticCopyData(BlipTransfer transfer)
+    {
+        var items = transfer.ReceivedItems.Take(256).ToArray();
+        if (items.Length == 0) throw new IOException("There are no received items to copy.");
+        if (items.All(item => BlipReceivedFiles.IsText(item)))
+            return CopyText(items, transfer);
+        var first = items[0];
+        var action = items.Length > 1 ? BlipFileAction.CopyListedFiles : BlipFileAction.Copy;
+        return CopyData(action, transfer, first, Require(transfer, first));
+    }
+
     internal static async Task CopyAutomatically(BlipTransfer transfer, Func<bool> stillAllowed)
     {
         var first = transfer.ReceivedItems.FirstOrDefault();
         if (first == null || !stillAllowed()) return;
         uint clipboardVersion = GetClipboardSequenceNumber();
-        var action = transfer.ReceivedItems.Count > 1 ? BlipFileAction.CopyListedFiles : BlipFileAction.Copy;
-        var data = await CopyData(action, transfer, first, Require(transfer, first));
+        var data = await AutomaticCopyData(transfer);
         if (!stillAllowed() || clipboardVersion != GetClipboardSequenceNumber()) return;
         Clipboard.SetContent(data);
         Clipboard.Flush();

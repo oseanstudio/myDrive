@@ -21,9 +21,12 @@ TEXT_EXTENSIONS = frozenset((
 ))
 
 
+def is_received_text(item, path):
+    return not item.get("is_directory") and (path.suffix.lower() in TEXT_EXTENSIONS
+            or Path(item.get("name") or "").suffix.lower() in TEXT_EXTENSIONS)
+
+
 def clipboard_text(path):
-    if path.suffix.lower() not in TEXT_EXTENSIONS:
-        return None
     limit = 16 * 1024 * 1024
     if path.stat().st_size > limit:
         return None
@@ -40,11 +43,22 @@ def decode_text(data, errors="strict"):
         encoding = "utf-32"
     elif data.startswith((b"\xff\xfe", b"\xfe\xff")):
         encoding = "utf-16"
+    has_zero = encoding == "utf-8-sig" and b"\0" in data
+    if has_zero and len(data) % 2 == 0:
+        even_zero = b"\0" in data[::2]
+        odd_zero = b"\0" in data[1::2]
+        if even_zero != odd_zero:
+            encoding = "utf-16-be" if even_zero else "utf-16-le"
     try:
         text = data.decode(encoding, errors=errors)
     except UnicodeDecodeError:
-        return None
-    return text if "\x00" not in text else None
+        if encoding != "utf-8-sig" or has_zero or data.startswith(b"\xef\xbb\xbf"):
+            return None
+        try:
+            text = data.decode("cp1252", errors=errors)
+        except UnicodeDecodeError:
+            return None
+    return text if all(c in "\r\n\t\f" or ord(c) >= 32 and not 127 <= ord(c) <= 159 for c in text) else None
 
 
 def completed(transfer):
@@ -935,7 +949,7 @@ class TransferView:
                             if 0 < width * height <= 100_000_000:
                                 pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_scale(str(path), 720, 540, True)
                                 return True, pixbuf.apply_embedded_orientation(), None
-                    elif suffix in TEXT_EXTENSIONS:
+                    elif is_received_text(item, path):
                         with path.open("rb") as stream:
                             text = decode_text(stream.read(8192), errors="ignore")
                         return True, None, "\n".join(text.splitlines()[:12]) if text else None
@@ -982,12 +996,13 @@ class TransferView:
                 if not available:
                     return
                 copy = lambda mode="text": self.copy_received(item, notice, feedback, mode=mode)
-                for caption, command in (("Open", launch), ("Copy", copy)):
+                text_item = is_received_text(item, Path(item.get("path") or ""))
+                for caption, command in (("Open", launch), ("Copy text" if text_item else "Copy", copy)):
                     control = button(caption, command)
                     control.add_css_class("mydrive-receive-action")
                     actions.append(control)
                 options = [("Copy path", lambda: copy("path")), ("Open folder", lambda: launch(parent=True))]
-                if Path(file_names[index]).suffix.lower() in TEXT_EXTENSIONS and not item.get("is_directory"):
+                if text_item and not item.get("is_directory"):
                     options.insert(0, ("Copy file", lambda: copy("file")))
                 actions.append(menu(options, "pan-down-symbolic", "Received file actions"))
 
@@ -1012,9 +1027,17 @@ class TransferView:
         if mode == "path":
             return str(paths[0]), []
         text = None
-        if mode == "text" and len(paths) == 1 and not selected[0].get("is_directory"):
-            path = paths[0]
-            text = link_url(str(path)) if path.suffix.lower() in {".url", ".webloc"} else clipboard_text(path)
+        if mode == "text" and all(is_received_text(item, path) for item, path in zip(selected, paths)):
+            parts, count = [], 0
+            for path in paths:
+                part = clipboard_text(path)
+                if part is None or count + len(part) > 16 * 1024 * 1024:
+                    raise ValueError("This text could not be copied. Use Copy file to keep it as an attachment.")
+                parts.append(part)
+                count += len(part) + 2
+            return "\n\n".join(parts), []
+        if mode == "text" and len(paths) == 1 and paths[0].suffix.lower() in {".url", ".webloc"}:
+            text = link_url(str(paths[0]))
         return text, paths
 
     @staticmethod
@@ -1047,8 +1070,13 @@ class TransferView:
                 except (RuntimeError, GLib.Error) as error:
                     self.app.announce(str(error))
 
+        def failed(message):
+            finish()
+            if self.owner(self.snapshot) == owner:
+                self.app.announce(message)
+
         self.app.work("blip-recipients", "", lambda: self.prepare_copy(transfer["received_items"]),
-                      finish, quiet=True, queue=True, on_error=lambda _: finish())
+                      finish, quiet=True, queue=True, on_error=failed)
 
     def copy_received(self, item, dialog, feedback, mode="text"):
         def copy(data):
