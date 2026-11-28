@@ -113,16 +113,19 @@ private struct BlipSettingsView: View {
                 if receiver.customDownloadDirectory != nil {
                     Button("Use Default") { saveDownloadFolder(nil) }
                 }
-                Button("Choose…", action: chooseDownloadFolder)
-                    .accessibilityLabel("Choose Blip download folder")
             }
             .help("Choose where myDrive saves newly received Blip files.")
-            Text((receiver.downloadDirectory.path as NSString).abbreviatingWithTildeInPath)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .help(receiver.downloadDirectory.path)
+            Button(action: chooseDownloadFolder) {
+                HStack {
+                    Text((receiver.downloadDirectory.path as NSString).abbreviatingWithTildeInPath)
+                        .font(.caption).lineLimit(1).truncationMode(.middle)
+                    Spacer(minLength: 4)
+                    Image(systemName: "folder").font(.caption)
+                }
+            }
+            .accessibilityLabel("Change Blip download folder")
+            .accessibilityValue(receiver.downloadDirectory.path)
+            .help(receiver.downloadDirectory.path)
             Toggle("Open approved senders’ links automatically",
                    isOn: Binding(get: { receiver.autoOpen }, set: receiver.setAutoOpen))
             Toggle("Keep Blip available in the background",

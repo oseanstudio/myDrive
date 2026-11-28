@@ -46,6 +46,8 @@ public sealed partial class MainWindow
     private void UpdateBlipView() => blipViewVisible = currentView == "transfers" && AppWindow.IsVisible;
     private void StartBlipRefresh()
     {
+        if (File.Exists(Path.Combine(CoreBridge.DataDir, "blip-download-settings.json")))
+            _ = LoadBlipDownloadSettings();
         // Network polling and browser dispatch must not depend on a visible XAML window.
         blipTimer = new System.Threading.Timer(async _ =>
         {
@@ -98,13 +100,24 @@ public sealed partial class MainWindow
                 freshSnapshot = freshSnapshot with { Transfers = freshSnapshot.Transfers
                     .Where(t => !IsRelayPacket(t) || !SameBlipAccount(t.Peer, freshSnapshot.Status.UserId))
                     .Concat(relayReceived.Values).ToList() };
+                if (blipSnapshot is { } prior && prior.Status.UserId == freshSnapshot.Status.UserId &&
+                    prior.Status.DeviceId == freshSnapshot.Status.DeviceId)
+                {
+                    var known = prior.Transfers.Where(t => t.Direction == "Incoming").ToLookup(t => t.Id);
+                    foreach (var transfer in freshSnapshot.Transfers.Where(t => t.Direction == "Incoming" && t.HasError))
+                    {
+                        if (known[transfer.Id].FirstOrDefault(t => t.Peer == transfer.Peer) is not { } before) continue;
+                        if (!transfer.HasByteTotal) transfer.TotalBytes = before.TotalBytes;
+                        if (transfer.ItemNames.Count == 0) transfer.ItemNames = before.ItemNames;
+                    }
+                }
                 var approved=Preferences.Current.BlipAutoOpenAccount.Equals(freshSnapshot.Status.UserId,StringComparison.OrdinalIgnoreCase)?Preferences.Current.BlipAutoOpenPeers.Concat(Preferences.Current.BlipAutoReceivePeers).Concat(Preferences.Current.BlipAutoClipboardPeers):Array.Empty<string>();
                 blipSnapshot=freshSnapshot with {Devices=SenderCatalog.Merge(freshSnapshot.Status,freshSnapshot.Devices,freshSnapshot.Transfers,approved)};
                 var snapshot=blipSnapshot;
                 var notices=blipNotices.Update(snapshot.Status,snapshot.Transfers);
-                if (notices.Count > 0 || blipIncomingWindow != null) DispatcherQueue.TryEnqueue(()=>{
+                if (notices.Count > 0 || blipIncomingWindow != null || inlineBlipCard != null) DispatcherQueue.TryEnqueue(()=>{
                     foreach(var transfer in notices)UpdateIncomingBlip(transfer,true);
-                    if(blipIncomingWindow!=null&&snapshot.Transfers.FirstOrDefault(t=>t.Id==blipIncomingWindow.TransferId) is {} current)UpdateIncomingBlip(current,false);
+                    if(snapshot.Transfers.FirstOrDefault(t=>t.Id==incomingBlipTransfer?.Id) is {} current)UpdateIncomingBlip(current,false);
                 });
                 foreach (var transfer in snapshot.Transfers)
                 {
@@ -124,7 +137,7 @@ public sealed partial class MainWindow
                             await BlipReceivedActions.CopyAutomatically(transfer, () => !quitting &&
                                 owner.Equals(BlipOwner, StringComparison.OrdinalIgnoreCase) && CanAutoCopy(snapshot.Status, transfer));
                         }
-                        catch (Exception error) { blipIncomingWindow?.ShowClipboardFailure(transfer.Id, error.Message); }
+                        catch (Exception error) { ShowIncomingFailure(transfer.Id, "Could not copy to clipboard. " + error.Message); }
                     });
                 }
                 var pending = snapshot.Transfers.Where(t=>t.AwaitingAcceptance).ToList();
@@ -141,7 +154,7 @@ public sealed partial class MainWindow
                         catch(Exception error){
                             blipAutoAccepted.TryRemove(request.Id,out _);
                             blipFailure=error.Message;
-                            DispatcherQueue.TryEnqueue(()=>{UpdateIncomingBlip(request,true);blipIncomingWindow?.ShowFailure(error.Message);});
+                            DispatcherQueue.TryEnqueue(()=>{UpdateIncomingBlip(request,true);ShowIncomingFailure(request.Id,error.Message);});
                         }
                     }
                 await LinkOpener.ProcessAsync(snapshot.Status, snapshot.Transfers, Preferences.Current.BlipAutoOpenLinks, AllowedLinkSender).ConfigureAwait(false);
@@ -167,7 +180,7 @@ public sealed partial class MainWindow
                 var snapshot = blipSnapshot;
                 string signature = System.Text.Json.JsonSerializer.Serialize(new {
                     running = BlipRunning, blipFailure, status = snapshot?.Status, devices = snapshot?.Devices, people = snapshot?.People,
-                    transfers = snapshot?.Transfers.Where(t => t.IsLive), blipRelayWaiting, blipRelayQueued,
+                    transfers = snapshot?.Transfers.Where(t => t.IsLive || t.Direction == "Incoming" && t.HasError), blipRelayWaiting, blipRelayQueued,
                 });
                 DispatcherQueue.TryEnqueue(() =>
                 {
@@ -182,21 +195,13 @@ public sealed partial class MainWindow
             }
         }
     }
-    private void UpdateIncomingBlip(BlipTransfer transfer,bool announce) {
-        if(quitting)return;
-        blipIncomingWindow ??= new BlipIncomingWindow(t => _ = ReceiveFromBlipNotice(t),
-            () => { currentView = "settings"; SetMode(true); _ = ChooseLinkSenders(); },
-            TrayPopupAnchor);
-        string name=BlipPeerCaption(transfer.Peer);
-        blipIncomingWindow.Update(transfer,name,blipAutoAccepted.ContainsKey(transfer.Id),announce);
-    }
     private async Task ReceiveFromBlipNotice(BlipTransfer transfer) {
         if(diagnosticMode||!transfer.AwaitingAcceptance||!blipAutoAccepted.TryAdd(transfer.Id,0))return;
         var account = blipSnapshot?.Status.UserId ?? "";
-        blipIncomingWindow?.ClearFailure();
+        ShowIncomingFailure(transfer.Id, null);
         UpdateIncomingBlip(transfer,false);
         try{using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(15));await blip.AcceptAsync(transfer.Id,timeout.Token,manual:true);ReceiveLedger.TryClaim(account,transfer.Id);}
-        catch(Exception error){blipAutoAccepted.TryRemove(transfer.Id,out _);blipIncomingWindow?.ShowFailure(error.Message);}
+        catch(Exception error){blipAutoAccepted.TryRemove(transfer.Id,out _);ShowIncomingFailure(transfer.Id, error.Message);}
         await RefreshBlip();
     }
     private void RenderBlip()
@@ -267,7 +272,10 @@ public sealed partial class MainWindow
 
     private void AddLiveBlipTransfers(string direction)
     {
-        var transfers = blipSnapshot?.Transfers.Where(t => t.IsLive && t.Direction == direction).ToList();
+        var incoming = blipSnapshot?.Transfers.Where(t => t.Direction == direction && t.Id != incomingBlipTransfer?.Id &&
+            (t.IsLive || !t.Dismissed && t.HasError)).ToList() ?? [];
+        var transfers = incoming.Where(t => t.IsLive).Concat(incoming.Where(t => !t.IsLive)
+            .OrderByDescending(t => t.UpdatedAt).Take(3)).ToList();
         if (transfers is { Count: > 0 })
         {
             // ListView virtualizes rows and keeps the compact window at the existing fixed size.
@@ -280,6 +288,7 @@ public sealed partial class MainWindow
     {
         var settings = new StackPanel { Spacing = 4 };
         settings.Children.Add(QuickText("Blip", 13, true));
+        AddBlipDownloadSetting(settings);
         var autoOpen = new CheckBox { Content = "Open approved senders’ links automatically",
             IsChecked = Preferences.Current.BlipAutoOpenLinks };
         autoOpen.Click += (_, _) =>
@@ -334,6 +343,17 @@ public sealed partial class MainWindow
         detail.Children.Add(QuickText(title, 13, true));
         detail.Children.Add(QuickText((outgoing ? peer + " · " : "") + (queuedRelay ? "Queued for relay" : transfer.ProgressLabel) +
             (BlipRunning ? "" : " · last known"), 12));
+        if (!outgoing)
+        {
+            var progress = new ProgressBar { Height = 5 };
+            AutomationProperties.SetName(progress, "Incoming transfer progress");
+            var bytes = new TextBlock { FontSize = 11, TextWrapping = TextWrapping.Wrap };
+            BlipIncomingCard.ConfigureProgress(transfer, progress, bytes, blipAutoAccepted.ContainsKey(transfer.Id) && transfer.AwaitingAcceptance);
+            detail.Children.Add(progress);
+            detail.Children.Add(bytes);
+            if (transfer.HasError)
+                detail.Children.Add(new TextBlock { Text = transfer.FailureLabel, FontSize = 11, TextWrapping = TextWrapping.Wrap });
+        }
         row.Children.Add(detail);
         ToolTipService.SetToolTip(row, title + "\n" + transfer.Id + "\n" + transfer.Peer); AutomationProperties.SetName(row, title + ", " + transfer.StateLabel);
         if (transfer.AwaitingAcceptance && blipAutoAccepted.ContainsKey(transfer.Id))

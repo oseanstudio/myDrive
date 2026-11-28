@@ -58,7 +58,7 @@ public sealed partial class MainWindow
         if (blipRelayWaiting == 0 && states == relayTransportState && !transports.Any(t => t.IsLive) &&
             now < Interlocked.Read(ref nextRelayDiscovery)) return;
         var data = await CoreBridge.Call(new { action = "relay.tick", data_dir = CoreBridge.DataDir,
-            payload = new { @self = own, inbox = blip.DownloadsDirectory, downloads = status.DownloadsDirectory,
+            payload = new { @self = own, inbox = blip.DownloadsDirectory, previous_inboxes = previousBlipDownloadFolders, downloads = status.DownloadsDirectory,
                 devices = snapshot.Devices, transfers = snapshot.Transfers } }, token);
         relayTransportState = states;
         Interlocked.Exchange(ref nextRelayDiscovery, now + 30_000);

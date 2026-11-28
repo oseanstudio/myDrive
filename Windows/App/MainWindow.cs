@@ -95,12 +95,13 @@ public sealed partial class MainWindow : Window
         navigation.MenuItems.Add(new NavigationViewItem{Content=StorageViewName,Icon=new SymbolIcon(Symbol.World),Tag="connections"});
         navigation.MenuItems.Add(new NavigationViewItem{Content="Cloud Drives",Icon=new FontIcon{Glyph="\uE753"},Tag="cloud"});
         navigation.MenuItems.Add(new NavigationViewItem{Content="Activity",Icon=new SymbolIcon(Symbol.Sync),Tag="activity"});
-        var content=new Grid();content.RowDefinitions.Add(new(){Height=GridLength.Auto});content.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});
+        var content=new Grid();content.RowDefinitions.Add(new(){Height=GridLength.Auto});content.RowDefinitions.Add(new(){Height=GridLength.Auto});content.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});
         content.Children.Add(notice);
-        pageScroll.Content=page;Grid.SetRow(pageScroll,1);content.Children.Add(pageScroll);
+        Grid.SetRow(inlineBlipSlot,1);content.Children.Add(inlineBlipSlot);
+        pageScroll.Content=page;Grid.SetRow(pageScroll,2);content.Children.Add(pageScroll);
         quickSyncPane.RowDefinitions.Add(new(){Height=GridLength.Auto});
         quickSyncPane.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});
-        Grid.SetRow(quickSyncPane,1);content.Children.Add(quickSyncPane);navigation.Content=content;
+        Grid.SetRow(quickSyncPane,2);content.Children.Add(quickSyncPane);navigation.Content=content;
         navigation.SelectionChanged+=(sender,e)=>{if(busy)return;currentView=e.IsSettingsSelected?"settings":(e.SelectedItem as NavigationViewItem)?.Tag?.ToString()??"transfers";Render();if(!diagnosticMode&&currentView=="sync"&&Environment.TickCount64-lastSyncRefresh>=10_000)_=RefreshSyncthing();if(currentView=="transfers")_=RefreshBlip();if(currentView=="cloud")_=RefreshCloud();};
         Grid.SetRow(navigation,1);root.Children.Add(navigation);
         BuildQuickHeader();root.Children.Add(quickHeader);
@@ -112,7 +113,7 @@ public sealed partial class MainWindow : Window
         EnableFileDrop();
         AppWindow.Closing+=(_,e)=>{if(!quitting&&tray!=null){e.Cancel=true;AppWindow.Hide();}};
         Closed+=(_,_)=>{popupInput.Dispose();StopSmbMonitoring();updateTimer.Stop();autoUpdateTimer.Stop();cloudTimer.Stop();tray?.Dispose();operation?.Cancel();smbHosting.Dispose();};
-        AppWindow.Changed+=(_,e)=>{if(compact&&AppWindow.IsVisible)popupInput.Start();else popupInput.Stop();UpdateSmbView();UpdateBlipView();UpdateCloudTimer();};
+        AppWindow.Changed+=(_,e)=>{if(compact&&AppWindow.IsVisible)popupInput.Start();else popupInput.Stop();UpdateSmbView();UpdateBlipView();UpdateCloudTimer();UpdateInlineBlipVisibility();};
         Activated+=(_,e)=>{if(e.WindowActivationState==WindowActivationState.Deactivated)DispatcherQueue.TryEnqueue(()=>{if(!diagnosticMode&&!PopupInput.OurForeground()&&tray?.PointerInside()!=true&&!popupInput.TrackingPress&&!LeftMousePressed())DismissQuickPopup();});};
         healthTimer.Tick+=async(_,_)=>await MonitorSmb();
         if(!diagnosticMode)NetworkChange.NetworkAddressChanged+=OnSmbNetworkChanged;

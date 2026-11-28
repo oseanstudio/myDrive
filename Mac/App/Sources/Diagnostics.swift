@@ -32,6 +32,14 @@ enum Diagnostics {
                     throw BlipReceiverError.message("The app must open to Send by default.")
                 }
                 let peer="11111111-1111-4111-8111-111111111111:22222222-2222-4222-8222-222222222222"
+                let failedReceive = BlipTransfer(transfer_id: UUID().uuidString, peer: peer, direction: "Incoming",
+                    status: "Cancelled", completed: false, has_error: true, link_files: [], link_only: false,
+                    progress: 3_609_442, total_bytes: 5_000_000_000,
+                    error_message: "Could not recreate a fixture symbolic link.", error_code: 300)
+                guard failedReceive.byteLabel.contains(Int64(4_996_390_558).formatted()),
+                      failedReceive.failureLabel.contains("Blip code 300") else {
+                    throw BlipReceiverError.message("The receive notice lost the exact bytes or Blip failure.")
+                }
                 receiver.state="Ready in the background"
                 receiver.peers=[BlipPeer(peer:peer,name:"A long studio laptop name for overflow checking",name_known:true)]
                 receiver.transfers=(0..<12).map {index in BlipTransfer(transfer_id:UUID().uuidString,peer:peer,direction:"Incoming",status:index==0 ? "Invited" : index==1 ? "Paused" : "Completed",completed:index>1,has_error:index==2,link_files:[],link_only:true)}
@@ -39,6 +47,13 @@ enum Diagnostics {
                     throw BlipReceiverError.message("The Send view shows completed transfer history")
                 }
                 state.blip=receiver;state.view = .transfers
+                receiver.transfers.insert(failedReceive, at: 0)
+                state.incomingBlipID = failedReceive.id
+                render(PopupRootView().environmentObject(state), height: PopupMetrics.maxHeight,
+                       to: directory.appendingPathComponent("blip-inline-failure.png"))
+                captures.append("blip-inline-failure.png")
+                state.incomingBlipID = nil
+                receiver.transfers.removeFirst()
                 for scheme in [ColorScheme.light,.dark] {
                     let file="blip-\(scheme == .light ? "light":"dark").png"
                     render(PopupRootView().environmentObject(state).environment(\.colorScheme,scheme),height:PopupMetrics.maxHeight,to:directory.appendingPathComponent(file),scheme:scheme);captures.append(file)
@@ -80,7 +95,7 @@ enum Diagnostics {
                     throw BlipReceiverError.message("The menu bar item lost its attention count")
                 }
                 if let transfer = receiver.transfers.first {
-                    let notice = BlipReceiveNotice(receiver: receiver, openTransfers: {})
+                    let notice = BlipReceiveNotice(receiver: receiver, openTransfers: { _ in })
                     guard notice.canShow(transfer.id), !notice.isShown else {
                         throw BlipReceiverError.message("The receive popover did not start ready and closed.")
                     }

@@ -144,6 +144,9 @@ class MyDrive(Gtk.Application):
         self.status.set_margin_end(8)
         self.status.set_visible(False)
         content.append(self.status)
+        self.incoming_slot = Gtk.ScrolledWindow(visible=False, hscrollbar_policy=Gtk.PolicyType.NEVER,
+            max_content_height=265, propagate_natural_height=True, margin_start=8, margin_end=8)
+        content.append(self.incoming_slot)
         self.stack = Gtk.Stack(vhomogeneous=False, vexpand=True)
         content.append(self.stack)
         self.pages = {}
@@ -200,10 +203,26 @@ class MyDrive(Gtk.Application):
                     self.storage_view.check_now("view")
             self.window.connect("notify::visible", check_visible_storage)
         self.transfer_view = TransferView(self, self.pages["Send"], self.blip)
+        self.window.connect("notify::visible", lambda *_: self.transfer_view.move_incoming_inline())
         self.render_activity()
         self.render_settings()
         self.window.present()
         if self.fixture:
+            incoming = {"transfer_id": "fixture-receive", "peer": "", "status": "Cancelled",
+                        "direction": "Incoming", "has_error": True, "progress": 3609442, "total_bytes": 5000000000,
+                        "error_message": "Could not recreate a fixture symbolic link.", "error_code": 300}
+            self.transfer_view.present_incoming(incoming, announce=True)
+            card = self.incoming_slot.get_child()
+            children = [card.observe_children().get_item(i) for i in range(card.observe_children().get_n_items())]
+            assert self.incoming_slot.get_visible() and self.transfer_view.receive_window is None
+            assert any(isinstance(child, Gtk.ProgressBar) and child.get_fraction() == 3609442 / 5000000000
+                       for child in children)
+            details = next(child for child in children if isinstance(child, Gtk.Button) and child.get_label() == "Show in Blip")
+            assert any(isinstance(child, Gtk.Label) and "4,996,390,558 remaining" in child.get_label()
+                       for child in children)
+            details.emit("clicked")
+            assert self.transfer_view.incoming_details and self.stack.get_visible_child_name() == "Send"
+            self.transfer_view.dismiss_incoming(incoming["transfer_id"])
             assert header.get_decoration_layout() == ":close" and controls.get_last_child() == expand
             assert expand.get_icon_name() == "view-fullscreen-symbolic" and content.get_last_child() == self.stack
             assert header_content.get_last_child() == self.update_offer
@@ -1218,6 +1237,14 @@ class MyDrive(Gtk.Application):
             switch.connect("notify::active", lambda s, _, key=key: self.change_preference(key, s.get_active()))
             page.append(row(title, "", switch))
         page.append(button("Sender permissions…", self.transfer_view.permissions))
+        page.append(label("Download folder", "heading"))
+        current = button(str(self.blip.inbox), self.choose_blip_download_folder)
+        current.set_child(label(str(self.blip.inbox)))
+        current.set_tooltip_text("Change Blip download folder · " + str(self.blip.inbox))
+        current.update_property([Gtk.AccessibleProperty.LABEL], ["Change Blip download folder"])
+        page.append(current)
+        if self.blip.custom_inbox:
+            page.append(button("Use default", lambda: self.set_blip_download_folder(None)))
         automatic = Gtk.Switch(active=self.preferences.get("auto_install_updates", False), valign=Gtk.Align.CENTER)
         automatic.set_tooltip_text("Updates install when myDrive is in the background and idle.")
         def toggle_automatic(switch, _property):
@@ -1243,6 +1270,17 @@ class MyDrive(Gtk.Application):
             self.announce("Send with myDrive is available in Files → Scripts and in Dolphin’s context menu.")
         except (OSError, ValueError) as error:
             self.announce(str(error))
+
+    def choose_blip_download_folder(self):
+        self.files("Choose Blip download folder", Gtk.FileChooserAction.SELECT_FOLDER,
+                   lambda paths: self.set_blip_download_folder(paths[0]))
+
+    def set_blip_download_folder(self, path):
+        def saved(result):
+            self.blip.apply_download_settings(result)
+            self.render_settings()
+        self.work("settings", "", lambda: core("blip.downloads.set", payload={"path": path}),
+                  saved, quiet=True, on_error=self.announce)
 
     def change_startup(self, action):
         def loaded(state):

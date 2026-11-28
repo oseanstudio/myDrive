@@ -554,8 +554,16 @@ struct BlipQueuedSend: Codable, Identifiable {
                 do { try await updateRelay(value, owner: identity, rawTransfers: rawTransfers) }
                 catch { receiveProblem = "A relay action needs attention. Stored files are kept." }
             }
+            let previous = noticeSession == identity ? Dictionary(grouping: transfers, by: \.id) : [:]
             transfers = rawTransfers.filter {
                 !sameAccount($0.peer, account) || ($0.item_names?.count != 1 || $0.item_names?.first?.hasPrefix("mydrive-relay-v1.") != true)
+            }.map { transfer in
+                guard transfer.direction == "Incoming", transfer.has_error,
+                      let before = previous[transfer.id]?.first(where: { $0.peer == transfer.peer }) else { return transfer }
+                var value = transfer
+                if (value.total_bytes ?? 0) <= 0 { value.total_bytes = before.total_bytes }
+                if value.item_names?.isEmpty != false { value.item_names = before.item_names }
+                return value
             } + relayReceived.values.sorted { $0.id < $1.id }
             receiving.formIntersection(Set(transfers.filter(\.pending).map(\.id)))
             nextReceiveAttempt = nextReceiveAttempt.filter { key, _ in transfers.contains { $0.id == key && $0.pending } }

@@ -28,7 +28,7 @@ private final class BlipNoticePanel: NSPanel {
         backing: .buffered,
         defer: true
     )
-    private let openTransfers: () -> Void
+    private let openTransfers: (String) -> Void
     private var id = ""
     private var dismissed = Set<String>()
     private var waiting: [String] = []
@@ -37,7 +37,7 @@ private final class BlipNoticePanel: NSPanel {
     var appearance: NSAppearance? { didSet { panel.appearance = appearance } }
     var isShown: Bool { panel.isVisible }
 
-    init(receiver: BlipReceiver, openTransfers: @escaping () -> Void) {
+    init(receiver: BlipReceiver, openTransfers: @escaping (String) -> Void) {
         self.receiver = receiver
         self.openTransfers = openTransfers
         panel.title = "Incoming Blip transfer"
@@ -66,7 +66,7 @@ private final class BlipNoticePanel: NSPanel {
         self.id = id
         let view = BlipReceiveNoticeView(
             receiver: receiver, id: id,
-            openTransfers: { [weak self] in self?.dismiss(); self?.openTransfers() },
+            openTransfers: { [weak self] in self?.hideForInline(); self?.openTransfers(id) },
             onDismiss: { [weak self] in
                 if self?.id == id { self?.dismiss(showNext: true) }
             },
@@ -129,6 +129,17 @@ private final class BlipNoticePanel: NSPanel {
         pointerTimer = nil
     }
 
+    @discardableResult
+    func hideForInline() -> String? {
+        guard isShown, !id.isEmpty else { return nil }
+        let visible = id
+        id = ""
+        stopFollowingPointer()
+        panel.orderOut(nil)
+        panel.contentViewController = nil
+        return visible
+    }
+
     func dismiss(showNext: Bool = false) {
         if !id.isEmpty { dismissed.insert(id) }
         id = ""
@@ -151,6 +162,7 @@ struct BlipReceiveNoticeView: View {
     var fixturePreview:BlipFilePreview?=nil
     var onDismiss: () -> Void = {}
     var onActionError: (String) -> Void = { _ in }
+    var showingDetails = false
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
             if let transfer = receiver.transfers.first(where: { $0.id == id }) {
@@ -162,21 +174,18 @@ struct BlipReceiveNoticeView: View {
                     identity(transfer)
                     Text((transfer.item_names ?? []).joined(separator: ", "))
                         .font(.system(size: 12)).lineLimit(1).truncationMode(.middle)
-                    if let problem = receiver.problem, transfer.pending || transfer.has_error {
+                    if transfer.has_error {
+                        Text(transfer.failureLabel).font(.system(size: 11)).foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    } else if let problem = receiver.problem, transfer.pending {
                         Text(problem).font(.system(size: 11)).foregroundStyle(.red).lineLimit(3)
                     }
-                    if transfer.status == "Active" {
-                        if let total = transfer.total_bytes, total > 0, let progress = transfer.progress {
-                            ProgressView(value: Double(max(0, min(progress, total))), total: Double(total))
-                        } else {
-                            ProgressView().controlSize(.small)
-                        }
-                    }
+                    BlipReceiveProgress(transfer: transfer, starting: receiver.receiving.contains(transfer.id) && transfer.pending)
                     HStack {
                         if transfer.pending && !receiver.receiving.contains(transfer.id) {
                             Button("Receive") { receiver.receive(transfer) }
                         }
-                        Button("Show in Blip", action: openTransfers)
+                        if !showingDetails { Button("Show in Blip", action: openTransfers) }
                     }.controlSize(.small)
                 }
             } else {
@@ -208,5 +217,28 @@ struct BlipReceiveNoticeView: View {
         if transfer.confirmed { return "Received" }
         if receiver.receiving.contains(transfer.id) { return "Requesting…" }
         return transfer.status == "Pending" ? "Connecting" : transfer.status
+    }
+}
+
+struct BlipReceiveProgress: View {
+    let transfer: BlipTransfer
+    var starting = false
+
+    var body: some View {
+        let moving = transfer.receivingBytes || starting
+        let stopped = transfer.has_error || transfer.status == "Cancelled"
+        let total = transfer.total_bytes ?? 0
+        let bytes = max(0, transfer.progress ?? 0)
+        if moving || transfer.has_error || stopped && (total > 0 || bytes > 0) {
+            VStack(alignment: .leading, spacing: 3) {
+                if total > 0 {
+                    ProgressView(value: Double(min(bytes, total)), total: Double(total))
+                        .accessibilityLabel("Incoming Blip transfer progress")
+                } else if moving && transfer.status != "Paused" {
+                    ProgressView().progressViewStyle(.linear).accessibilityLabel("Receiving Blip data")
+                }
+                Text(transfer.byteLabel).font(.system(size: 11)).foregroundStyle(.secondary)
+            }
+        }
     }
 }

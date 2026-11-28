@@ -1,4 +1,6 @@
 pub(crate) mod activity;
+#[cfg(not(target_os = "macos"))]
+pub(crate) mod downloads;
 #[cfg(windows)]
 #[path = "blip/host_windows.rs"]
 mod host;
@@ -120,6 +122,8 @@ struct Session {
     lock: PathBuf,
     socket: PathBuf,
     inbox: PathBuf,
+    #[cfg(not(target_os = "macos"))]
+    download_settings_root: Option<PathBuf>,
     #[cfg(target_os = "macos")]
     custom_inbox: bool,
     desktop: bool,
@@ -156,8 +160,15 @@ impl Session {
         let inbox = profile.join("downloads");
         #[cfg(target_os = "linux")]
         let inbox = local.join("myDrive/Blip/downloads");
+        let root = local.join("myDrive");
+        #[cfg(windows)]
+        let download_settings_root = profile.to_string_lossy()
+            .eq_ignore_ascii_case(&root.join("Blip").to_string_lossy()).then_some(root);
+        #[cfg(target_os = "linux")]
+        let download_settings_root = Some(root);
         Self {
             inbox,
+            download_settings_root,
             socket: cache.join("sock"),
             lock: profile.join(lock),
             profile,
@@ -168,7 +179,15 @@ impl Session {
     }
 
     fn snapshot(&self) -> Result<Snapshot> {
-        Snapshot::read(&self.socket, self.desktop, &self.inbox)
+        Snapshot::read(&self.socket, self.desktop, &self.receive_inbox()?)
+    }
+
+    fn receive_inbox(&self) -> Result<PathBuf> {
+        #[cfg(not(target_os = "macos"))]
+        if let Some(root) = &self.download_settings_root {
+            return downloads::inbox(root);
+        }
+        Ok(self.inbox.clone())
     }
 
     fn dispatch(&self, event: &str, payload: Vec<u8>) -> Result<()> {
@@ -199,7 +218,7 @@ impl Session {
                 // Empty/offline results are valid. Retain the native selection so
                 // an exact result is still available when the file picker closes.
                 if status == 3 {
-                    let snapshot = Snapshot::decode(&payload, self.desktop, &self.inbox)?;
+                    let snapshot = Snapshot::decode(&payload, self.desktop, &self.receive_inbox()?)?;
                     if snapshot.status["user_id"] != owner["user_id"]
                         || snapshot.status["device_id"] != owner["device_id"]
                     {
@@ -235,14 +254,14 @@ impl Session {
         let mut host = self.start(library)?;
         let mut policy = SeparatePolicy::default();
         if !self.desktop && host.is_some() {
-            #[cfg(target_os = "linux")]
-            fs::create_dir_all(self.inbox.parent().ok_or("profile_unavailable")?)
+            let inbox = self.receive_inbox()?;
+            fs::create_dir_all(inbox.parent().ok_or("profile_unavailable")?)
                 .map_err(|_| "profile_unavailable")?;
-            create_plain_directory(&self.inbox)?;
+            create_plain_directory(&inbox)?;
             self.dispatch("TransferSetAutoAccept", number(1, 0))?;
             self.dispatch(
                 "TransferSetCustomDefaultSavePath",
-                string(1, path_text(&self.inbox)?),
+                string(1, path_text(&inbox)?),
             )?;
         }
         self.configure(host.is_some(), &mut policy)?;
@@ -355,7 +374,7 @@ impl Session {
             self.dispatch("TransferSetAutoAccept", number(1, 0))?;
             self.dispatch(
                 "TransferSetCustomDefaultSavePath",
-                string(1, path_text(&self.inbox)?),
+                string(1, path_text(&self.receive_inbox()?)?),
             )?;
             policy.verification_deadline = Some(Instant::now() + Duration::from_secs(5));
         }
@@ -383,12 +402,20 @@ impl Session {
         #[cfg(target_os = "macos")]
         mac::prepare_receive_root(self)?;
         #[cfg(not(target_os = "macos"))]
-        create_plain_directory(&self.inbox)?;
-        let destination = self.inbox.join(id);
+        let inbox = self.receive_inbox()?;
+        #[cfg(not(target_os = "macos"))]
+        {
+            if inbox == self.inbox {
+                fs::create_dir_all(inbox.parent().ok_or("receive_downloads_unavailable")?)
+                    .map_err(|_| "receive_downloads_unavailable")?;
+            }
+            create_plain_directory(&inbox).map_err(|_| "receive_downloads_unavailable")?;
+        }
+        let destination = inbox.join(id);
         #[cfg(target_os = "macos")]
         mac::prepare_inbox(&destination)?;
         #[cfg(not(target_os = "macos"))]
-        create_plain_directory(&destination)?;
+        create_plain_directory(&destination).map_err(|_| "receive_downloads_unavailable")?;
         self.dispatch(
             "TransferAcceptanceRequested",
             [string(1, id), string(2, path_text(&destination)?)].concat(),

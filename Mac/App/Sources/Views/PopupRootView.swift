@@ -31,9 +31,21 @@ struct PopupRootView: View {
                 }
             } else {
                 ScrollView {
-                    content
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
+                    VStack(alignment: .leading, spacing: 8) {
+                        if let id = app.incomingBlipID {
+                            BlipReceiveNoticeView(receiver: app.blip, id: id, openTransfers: {
+                                app.view = .transfers
+                                app.incomingBlipDetails = true
+                            }, onDismiss: {
+                                app.incomingBlipID = nil
+                                app.incomingBlipDetails = false
+                            }, onActionError: { app.blip.problem = $0 },
+                            showingDetails: app.incomingBlipDetails && app.view == .transfers)
+                        }
+                        content
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
                 }
                 .frame(maxHeight: .infinity)
             }
@@ -109,7 +121,7 @@ struct PopupRootView: View {
         case .connections: ConnectionsView()
         case .cloud: CloudDrivesView(model: app.cloud)
         case .activity: ActivityView()
-        case .transfers: BlipView(receiver: app.blip)
+        case .transfers: BlipView(receiver: app.blip, incomingNoticeID: app.incomingBlipID)
         case .settings: SettingsView(fullWindow: fullWindow)
         }
     }

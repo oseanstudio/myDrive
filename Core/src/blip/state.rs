@@ -363,12 +363,13 @@ impl Snapshot {
             let dismissed = transfer.number(1000) != 0;
             let has_error = transfer.has(600) || transfer.has(601);
             let mut contents = Contents::default();
-            if !has_error {
-                if let Some(metadata) = transfer.bytes(400) {
-                    contents =
-                        paths.contents(metadata, direction == "Incoming", completed, dismissed)?;
-                }
+            if let Some(metadata) = transfer.bytes(400) {
+                let parsed = paths.contents(metadata, direction == "Incoming", completed && !has_error, dismissed);
+                contents = if has_error { parsed.unwrap_or_default() } else { parsed? };
             }
+            let (error_message, error_code) = if has_error {
+                transfer_failure(&transfer)
+            } else { (None, None) };
             if direction == "Incoming" {
                 if let Some((sender, _)) = peer_id(&peer) {
                     let (contact, name) = names.get(sender).copied().unwrap_or_default();
@@ -384,6 +385,7 @@ impl Snapshot {
                 "transfer_id": id, "peer": peer, "direction": direction, "status": status,
                 "updated_at": transfer.message(1300)?.number(1),
                 "completed": completed, "has_error": has_error, "dismissed": dismissed,
+                "error_message": error_message, "error_code": error_code,
                 "progress": i64::try_from(transfer.number(1100)).unwrap_or_default(),
                 "total_bytes": contents.total, "item_names": contents.names,
                 "received_items": contents.files, "link_files": contents.links, "link_only": contents.link_only,
@@ -457,6 +459,47 @@ impl Snapshot {
     pub(super) fn poll(self) -> Value {
         json!({"ok": true, "status": self.status, "devices": self.devices, "people": self.people, "transfers": self.transfers})
     }
+}
+
+fn transfer_failure(transfer: &Proto<'_>) -> (Option<String>, Option<u64>) {
+    let readable = |message: &str| {
+        let bounded: String = message.chars().take(1800).collect();
+        bounded.split_whitespace().collect::<Vec<_>>().join(" ")
+            .chars().filter(|c| !c.is_control() && !matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'))
+            .take(600).collect::<String>()
+    };
+    let local = transfer.message(600).ok();
+    let remote = transfer.message(601).ok();
+    let text = [local.as_ref(), remote.as_ref()].into_iter().flatten()
+        .map(|error| readable(error.text(2)))
+        .find(|text| !text.is_empty() && text != "<redacted>");
+    let code = [local.as_ref(), remote.as_ref()].into_iter().flatten()
+        .map(|error| error.number(1)).find(|code| *code > 0);
+    if let Some(message) = text.as_deref() {
+        if let Some((item, _)) = message.strip_prefix("unpack-links ").and_then(|text| text.split_once(" -> ")) {
+            let item: String = item.chars().take(200).collect();
+            let raw = local.as_ref().map(|error| error.text(2)).unwrap_or(message);
+            if raw.contains("A required privilege is not held by the client") || raw.contains("os error 1314") {
+                return (Some(format!("Windows could not recreate the symbolic link {item}. The receiver lacks permission to create symbolic links.")), code);
+            }
+        }
+    }
+    (text, code)
+}
+
+#[cfg(test)]
+#[test]
+fn receiver_reports_the_failed_link_and_native_error_code() {
+    use super::rpc::{field, number, string};
+    let error = [field(600, &string(2, "unpack-links example/.build/debug -> /fixture: symlink: A required privilege is not held by the client.")),
+        field(601, &number(1, 300))].concat();
+    let parsed = Proto::parse(&error).unwrap();
+    let (message, code) = transfer_failure(&parsed);
+    let message = message.unwrap();
+    assert!(message.contains("example/.build/debug"));
+    assert!(message.contains("lacks permission"));
+    assert!(!message.contains("/fixture"));
+    assert_eq!(code, Some(300));
 }
 
 #[cfg(test)]

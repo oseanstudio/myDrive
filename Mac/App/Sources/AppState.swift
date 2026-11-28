@@ -143,6 +143,8 @@ final class AppState: ObservableObject {
     @Published var folderErrors: [String: [IssueItem]] = [:]
     @Published var incomingFixRequests: [IncomingFixRequest] = []
     @Published var popoverVisible = false
+    @Published var incomingBlipID: String?
+    @Published var incomingBlipDetails = false
     @Published var settingsPref = PrefStore.shared.preferences
     private var announcedResponses = Set<String>()
 

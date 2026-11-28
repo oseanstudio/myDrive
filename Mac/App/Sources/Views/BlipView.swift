@@ -4,6 +4,7 @@ import UniformTypeIdentifiers
 
 struct BlipView: View {
     @ObservedObject var receiver: BlipReceiver
+    var incomingNoticeID: String? = nil
     @State private var query = ""
     @State private var dropPeer: String?
     @State private var permissionSender: String?
@@ -32,7 +33,11 @@ struct BlipView: View {
             if let problem = receiver.problem {
                 Text(problem).font(.system(size: 11)).foregroundStyle(.red)
             }
-            ForEach(receiver.transfers.filter { $0.direction != "Outgoing" && $0.isLive }) { transfer in
+            let live = receiver.transfers.filter { $0.direction == "Incoming" && $0.isLive && $0.id != incomingNoticeID }
+            let recentFailures = receiver.transfers.filter { $0.direction == "Incoming" && !$0.isLive &&
+                $0.has_error && $0.dismissed != true && $0.id != incomingNoticeID }
+                .sorted { ($0.updated_at ?? 0) > ($1.updated_at ?? 0) }
+            ForEach(live + Array(recentFailures.prefix(3))) { transfer in
                 liveTransfer(transfer)
             }
         }.onChange(of: receiver.recipientOwner) {
@@ -440,6 +445,11 @@ struct BlipView: View {
                     transfer.pending ? "Waiting for you" : transfer.status
                 Text(progress)
                     .font(.system(size: 11)).foregroundStyle(.secondary)
+                if transfer.has_error {
+                    Text(transfer.failureLabel).font(.system(size: 11)).foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+                BlipReceiveProgress(transfer: transfer, starting: transfer.pending && receiver.receiving.contains(transfer.id))
             }
             Spacer(minLength: 6)
             if transfer.pending && !receiver.receiving.contains(transfer.id) {

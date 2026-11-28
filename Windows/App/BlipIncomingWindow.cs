@@ -4,56 +4,39 @@ using Microsoft.UI.Xaml.Markup;
 using Microsoft.UI.Windowing;
 using Windows.Graphics;
 using WinRT.Interop;
+
 namespace MyDrive;
 
-// A separate native window: tray outside-click dismissal never closes this notice.
 internal sealed class BlipIncomingWindow : Window
 {
-    private readonly TextBlock sender=new(){FontSize=14,FontWeight=Microsoft.UI.Text.FontWeights.SemiBold,TextTrimming=TextTrimming.CharacterEllipsis};
-    private readonly TextBlock state=new(){FontSize=11,Opacity=.75,TextTrimming=TextTrimming.CharacterEllipsis,MaxWidth=125,VerticalAlignment=VerticalAlignment.Center};
-    private readonly TextBlock details=new(){FontSize=11,TextWrapping=TextWrapping.Wrap,Visibility=Visibility.Collapsed};
-    private readonly BlipReceivedCard fileCard;
-    private readonly ProgressBar progress=new(){IsIndeterminate=true,Height=4};
-    private readonly Button receive=new(){Content="Receive",MinHeight=28};
-    private readonly DispatcherTimer expiry=new(){Interval=TimeSpan.FromSeconds(30)};
-    private bool hovered,menuOpen;
-    private readonly HashSet<string> dismissed=new();
-    private BlipTransfer? transfer;
-    private string signature="";
-    private string? failure;
+    private readonly DispatcherTimer expiry = new() { Interval = TimeSpan.FromSeconds(30) };
+    private readonly BlipIncomingCard card;
     private readonly Func<RectInt32> anchor;
-    public FrameworkElement Surface {get;}
-    public string TransferId=>transfer?.Id??"";
-    internal BlipReceivedCard FileCard=>fileCard;
-    public BlipIncomingWindow(Action<BlipTransfer> accept,Action settings,Func<RectInt32> anchor) {
-        this.anchor=anchor;
-        Title="myDrive · Incoming transfer";
+    private bool hovered, menuOpen;
+    private readonly HashSet<string> dismissed = new();
+    private string signature = "";
+    public FrameworkElement Surface { get; }
+    public string TransferId => card.Transfer?.Id ?? "";
+    internal BlipReceivedCard FileCard => card.FileCard;
+    public event Action<string>? NoticeDismissed;
+
+    public BlipIncomingWindow(Action<BlipTransfer> accept, Action settings, Func<RectInt32> anchor,
+                              Action<BlipTransfer>? show = null)
+    {
+        this.anchor = anchor;
+        Title = "myDrive · Incoming transfer";
         AppWindow.SetIcon(MainWindow.AppIconPath);
-        var content = new StackPanel { Spacing = 4 };
-        var identity=new Grid{ColumnSpacing=6};
-        identity.ColumnDefinitions.Add(new(){Width=new GridLength(1,GridUnitType.Star)});
-        identity.ColumnDefinitions.Add(new(){Width=GridLength.Auto});
-        identity.ColumnDefinitions.Add(new(){Width=GridLength.Auto});
-        sender.VerticalAlignment=VerticalAlignment.Center;
-        identity.Children.Add(sender);Grid.SetColumn(state,1);identity.Children.Add(state);
-        var preferences=new Button{Content=new FontIcon{Glyph="\uE713",FontSize=12},MinWidth=28,MinHeight=28,Padding=new Thickness(3)};
-        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(preferences,"Sender settings");
-        ToolTipService.SetToolTip(preferences,"Sender settings");
-        preferences.Click+=(_,_)=>settings();
-        Grid.SetColumn(preferences,2);identity.Children.Add(preferences);
-        fileCard=new BlipReceivedCard(()=>WindowNative.GetWindowHandle(this));
-        fileCard.SetHeader(identity);
-        fileCard.PreviewHeightChanged += () => { if (AppWindow.IsVisible) SizeNearTray(); };
-        fileCard.MenuActive+=active=>{menuOpen=active;UpdateExpiry();};
-        fileCard.Copied += id => { if (TransferId == id) Dismiss(); };
-        content.Children.Add(fileCard);content.Children.Add(details);content.Children.Add(progress);
-        receive.Click+=(_,_)=>{if(transfer!=null)accept(transfer);};content.Children.Add(receive);
+        card = new BlipIncomingCard(() => WindowNative.GetWindowHandle(this), accept, show ?? (_ => { }), settings, inline: false);
+        card.LayoutChanged += () => { if (AppWindow.IsVisible) SizeNearTray(); };
+        card.MenuActive += active => { menuOpen = active; UpdateExpiry(); };
+        card.DismissRequested += Dismiss;
+
         var border = (Border)XamlReader.Load("""
             <Border xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
                     Background="{ThemeResource ApplicationPageBackgroundThemeBrush}" />
             """);
-        border.Padding = new Thickness(4);
-        border.Child = new ScrollViewer { Content = content, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+        border.Padding = new Thickness(5);
+        border.Child = new ScrollViewer { Content = card, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
         border.RequestedTheme = MainWindow.RequestedAppearance;
         border.PointerEntered += (_, _) => { hovered = true; UpdateExpiry(); };
         border.PointerExited += (_, _) => { hovered = false; UpdateExpiry(); };
@@ -73,25 +56,35 @@ internal sealed class BlipIncomingWindow : Window
             border.ActualThemeChanged += (_, _) => ApplyCaptionTheme();
             ApplyCaptionTheme();
         }
-        AppWindow.Closing+=(_,e)=>{e.Cancel=true;Dismiss();};expiry.Tick+=(_,_)=>{expiry.Stop();AppWindow.Hide();};
+        AppWindow.Closing += (_, args) => { args.Cancel = true; Dismiss(); };
+        expiry.Tick += (_, _) => Dismiss();
     }
-    private void Dismiss(){if(transfer!=null)dismissed.Add(transfer.Id);expiry.Stop();AppWindow.Hide();}
-    private void UpdateExpiry(){expiry.Stop();if(!hovered&&!menuOpen&&transfer!=null&&(transfer.ConfirmedComplete||transfer.HasError||transfer.Status=="Cancelled"))expiry.Start();}
-    public void Update(BlipTransfer value,string name,bool automatic,bool announce) {
-        if(dismissed.Contains(value.Id)||!announce&&TransferId!=value.Id)return;
-        transfer=value;sender.Text=name;ToolTipService.SetToolTip(sender,value.Peer);fileCard.SetTransfer(value);
-        string next=value.Id+":"+value.Status+":"+value.HasError;
-        if(signature!=next)failure=null;
-        state.Text=failure!=null||value.HasError?"Needs attention":value.ConfirmedComplete?"Received":automatic&&value.AwaitingAcceptance?"Requesting…":value.ProgressLabel;
-        ToolTipService.SetToolTip(state,state.Text);details.Text=failure??(value.HasError?"Transfer needs attention. Open the Blip tab for details.":"");details.Visibility=details.Text.Length>0?Visibility.Visible:Visibility.Collapsed;
-        bool pending=value.AwaitingAcceptance&&!value.HasError;
-        receive.Visibility=pending&&!automatic?Visibility.Visible:Visibility.Collapsed;
-        progress.Visibility=value.Status is "Pending" or "Active" or "ResumeRequested"||automatic&&pending?Visibility.Visible:Visibility.Collapsed;
-        progress.IsIndeterminate=!(value.TotalBytes>0&&value.Progress>=0&&value.Progress<=value.TotalBytes);progress.Maximum=Math.Max(1,value.TotalBytes);progress.Value=Math.Max(0,value.Progress);
+
+    private void Dismiss()
+    {
+        if (card.Transfer != null)
+        {
+            dismissed.Add(TransferId);
+            NoticeDismissed?.Invoke(TransferId);
+        }
+        Stop();
+    }
+
+    private void UpdateExpiry()
+    {
+        expiry.Stop();
+        if (!hovered && !menuOpen && card.Transfer is { } transfer &&
+            (transfer.ConfirmedComplete || transfer.HasError || transfer.Status == "Cancelled")) expiry.Start();
+    }
+
+    public void Update(BlipTransfer transfer, string name, bool automatic, bool announce)
+    {
+        if (dismissed.Contains(transfer.Id) || !announce && TransferId != transfer.Id) return;
+        card.Update(transfer, name, automatic);
+        string next = transfer.Id + ":" + transfer.Status + ":" + transfer.HasError;
         bool changed = signature != next;
         if (changed) { signature = next; UpdateExpiry(); }
-        if (changed && AppWindow.IsVisible || (announce && !AppWindow.IsVisible))
-            SizeNearTray();
+        if (changed && AppWindow.IsVisible || announce && !AppWindow.IsVisible) SizeNearTray();
         if (announce && !AppWindow.IsVisible) AppWindow.Show(false);
     }
 
@@ -102,20 +95,17 @@ internal sealed class BlipIncomingWindow : Window
         int gap = (int)Math.Ceiling(4 * scale);
         int width = Math.Max(1, Math.Min((int)(332 * scale), area.Width - 2 * gap - (int)(16 * scale)));
         Surface.Measure(new Windows.Foundation.Size(width / scale, double.PositiveInfinity));
-        int height = Math.Max(1, Math.Min((int)Math.Ceiling(Surface.DesiredSize.Height * scale),
-            area.Height - 2 * gap - (int)(45 * scale)));
-        var size = new SizeInt32(width, height);
-        if (AppWindow.ClientSize.Width != width || AppWindow.ClientSize.Height != height) AppWindow.ResizeClient(size);
+        int height = Math.Max(1, Math.Min((int)Math.Ceiling(Surface.DesiredSize.Height * scale), area.Height - 2 * gap - (int)(45 * scale)));
+        if (AppWindow.ClientSize.Width != width || AppWindow.ClientSize.Height != height) AppWindow.ResizeClient(new SizeInt32(width, height));
         AppWindow.Move(TrayPopupPlacement.Beside(icon, area, AppWindow.Size, gap));
     }
+
     public void ShowClipboardFailure(string id, string message)
     {
-        if (TransferId != id || !AppWindow.IsVisible) return;
-        details.Text = "Could not copy to clipboard. " + message;
-        details.Visibility = Visibility.Visible;
-        SizeNearTray();
+        if (TransferId == id && AppWindow.IsVisible) card.ShowFailure("Could not copy to clipboard. " + message);
     }
-    public void Stop(){expiry.Stop();AppWindow.Hide();}
-    public void ClearFailure(){failure=null;details.Text="";details.Visibility=Visibility.Collapsed;if(AppWindow.IsVisible)SizeNearTray();}
-    public void ShowFailure(string message){failure=message;state.Text="Needs attention";details.Text=message;details.Visibility=Visibility.Visible;receive.Visibility=Visibility.Visible;progress.Visibility=Visibility.Collapsed;if(AppWindow.IsVisible)SizeNearTray();}
+
+    public void Stop() { expiry.Stop(); AppWindow.Hide(); }
+    public void ClearFailure() => card.ShowFailure(null);
+    public void ShowFailure(string message) => card.ShowFailure(message);
 }

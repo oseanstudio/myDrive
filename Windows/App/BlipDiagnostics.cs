@@ -191,6 +191,19 @@ public sealed partial class MainWindow
             await card.Perform(BlipFileAction.Copy);
             if (copied != value.Id) throw new IOException("A successful copy did not request popup dismissal.");
 
+            var failed = new BlipTransfer { Id = Guid.NewGuid().ToString(), Peer = value.Peer,
+                Direction = "Incoming", Status = "Cancelled", HasError = true, Progress = 3_609_442,
+                TotalBytes = 5_000_000_000, ErrorMessage = "Could not recreate the symbolic link example/.build/debug.", ErrorCode = 300 };
+            var inline = new BlipIncomingCard(() => 0, _ => { }, _ => { }, () => { }, inline: true);
+            inline.Update(failed, "Fixture sender", false);
+            if (inline.Content is not StackPanel failedLayout ||
+                !failedLayout.Children.OfType<ProgressBar>().Any(bar => bar.Value == failed.Progress &&
+                    bar.Maximum == failed.TotalBytes && bar.Visibility == Visibility.Visible && !bar.IsIndeterminate) ||
+                !failedLayout.Children.OfType<TextBlock>().Any(text => text.Text.Contains(4_996_390_558L.ToString("N0"))) ||
+                !failedLayout.Children.OfType<StackPanel>().SelectMany(actions => actions.Children.OfType<Button>())
+                    .Any(button => button.Content is "Show in Blip" && button.Visibility == Visibility.Visible))
+                throw new IOException("The incoming card must report an exact byte count and offer a details button.");
+
             var notice = new BlipIncomingWindow(_ => { }, () => { }, TrayPopupAnchor);
             try
             {

@@ -208,6 +208,7 @@ class Blip:
         "search_unavailable": "Blip search is unavailable. Try again in a moment.",
         "invalid_search": "Enter a name or email address.",
         "accept_not_waiting": "This transfer is no longer waiting. Refresh to check its status.",
+        "receive_downloads_unavailable": "The Blip download folder is unavailable or unwritable. Choose another folder in Settings.",
         "registration_failed": "Blip could not confirm sign-in. Check the email or code and try again.",
         "invalid_sign_in_input": "Check the Blip email address or sign-in code.",
     }
@@ -220,6 +221,14 @@ class Blip:
         self.desktop = self.desktop_state.is_file() and not (self.standalone / "state/state.dat").is_file()
         self.profile = self.run_dir if self.desktop else self.standalone
         self.inbox = DATA / "Blip" / "downloads"
+        self.custom_inbox = False
+        self.previous_inboxes = []
+        try:
+            folders = read_settings("blip-download-settings.json", {})
+            self.apply_download_settings({"path": folders.get("path") or str(self.inbox),
+                                          "custom": bool(folders.get("path")), "previous_inboxes": folders.get("previous", [])})
+        except RuntimeError:
+            pass
         self.host = None
         self.host_buffer = b""
         self.host_can_poll = None
@@ -229,8 +238,9 @@ class Blip:
         self.executable = os.environ.get("MYDRIVE_CORE", str(ROOT / "mydrive-core"))
 
     def install_engine(self):
-        self.inbox.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(prefix=".blip-", dir=self.inbox.parent) as work:
+        engine_dir = DATA / "Blip"
+        engine_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix=".blip-", dir=engine_dir) as work:
             package = Path(work) / "blip.tar.gz"
             digest = hashlib.sha256()
             length = 0
@@ -255,6 +265,11 @@ class Blip:
                 with archive.extractfile(member) as source, engine.open("wb") as output:
                     shutil.copyfileobj(source, output)
             self.invoke("import-engine", "--", str(engine))
+
+    def apply_download_settings(self, result):
+        self.inbox = Path(result["path"])
+        self.custom_inbox = result["custom"]
+        self.previous_inboxes = result["previous_inboxes"]
 
     def prepare(self, download=False):
         if self.arguments is not None:
@@ -283,7 +298,7 @@ class Blip:
 
     def command(self, action, *options):
         mode = ["--desktop"] if self.desktop and action in {
-            "poll", "send", "accept", "search", "activity", "retry", "cancel", "publish-name"
+            "poll", "send", "accept", "accept-manual", "search", "activity", "retry", "cancel", "publish-name"
         } else []
         return [self.executable, "--blip-engine", action, "--profile", str(self.profile), *mode, *options]
 

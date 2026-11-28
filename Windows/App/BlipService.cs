@@ -23,7 +23,8 @@ public sealed class BlipService : IAsyncDisposable
     private readonly string desktopSocket;
     public string LastError { get; private set; } = "";
     public string ProfileDirectory => profile;
-    public string DownloadsDirectory => Path.Combine(profile, "downloads");
+    public string? CustomDownloadsDirectory { get; set; }
+    public string DownloadsDirectory => CustomDownloadsDirectory ?? Path.Combine(profile, "downloads");
     public bool RuntimeAvailable => File.Exists(executable) && (!fixture || File.Exists(Path.Combine(bundle, "cli.mjs")));
     public bool UsesDesktopSession => attachedSocket != null;
     public bool DesktopAvailable => RuntimeAvailable;
@@ -142,6 +143,7 @@ public sealed class BlipService : IAsyncDisposable
         "native_connection_unavailable" => "myDrive could not connect to the local Blip engine.",
         "host_already_running" => "This Blip profile is already running.",
         "receive_policy_unconfirmed" => "Blip could not verify the receiving settings for this profile.",
+        "receive_downloads_unavailable" => "The Blip download folder is unavailable or unwritable. Choose another folder in Settings.",
         "sign_in_required" => "Sign in to Blip first.",
         "activity_unavailable" => "myDrive could not read saved Send activity.",
         "activity_retry_unavailable" => "This transfer can no longer be retried safely. Select the files again to send them.",

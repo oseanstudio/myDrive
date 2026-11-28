@@ -17,8 +17,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private lazy var parsecDrop = ParsecDrop(receiver: appState.blip)
     private let popover = NSPopover()
     private var fullWindow: NSWindow?
-    private lazy var blipNotice = BlipReceiveNotice(receiver: appState.blip) { [weak self] in
-        self?.showPopover(view: .transfers)
+    private lazy var blipNotice = BlipReceiveNotice(receiver: appState.blip) { [weak self] id in
+        guard let self else { return }
+        self.appState.incomingBlipID = id
+        self.appState.incomingBlipDetails = true
+        self.showPopover(view: .transfers)
     }
     private var timer: Timer?
     private let networkMonitor = NWPathMonitor()
@@ -197,9 +200,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     @objc private func statusItemClicked(_ sender: Any?) {
         guard let event = NSApp.currentEvent, event.type == .rightMouseUp else {
-            if blipNotice.isShown {
-                blipNotice.dismiss(showNext: true)
-            } else if popover.isShown {
+            if popover.isShown {
                 popover.performClose(nil)
             } else {
                 showPopover()
@@ -260,7 +261,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     func showPopover(view target: PopupViewKind? = nil, activate: Bool = true) {
         if let target { appState.view = target }
         guard let button = statusItem?.button else { return }
-        blipNotice.dismiss()
+        adoptBlipNotice()
         if popover.isShown { return }
         if target == nil, appState.busy == nil, appState.dialog == nil, fullWindow?.isVisible != true {
             appState.view = .transfers
@@ -275,6 +276,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         appState.checkForAppUpdate(onOpen: true)
         if appState.view == .connections { SmbMonitor.shared.checkNow("view") }
         Task { await appState.refreshIfStale() }
+    }
+
+    private func adoptBlipNotice() {
+        if let id = blipNotice.hideForInline() {
+            appState.incomingBlipID = id
+            appState.incomingBlipDetails = false
+        }
     }
 
     func popoverDidClose(_ notification: Notification) {
@@ -353,6 +361,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     // MARK: - Full window
 
     private func openFullWindow() {
+        adoptBlipNotice()
         if fullWindow == nil {
             let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 640),
                                   styleMask: [.titled, .closable, .miniaturizable, .resizable],
@@ -378,8 +387,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             guard let id = notification.object as? String else { return }
             Task { @MainActor [weak self] in
                 guard let self, self.blipNotice.canShow(id) else { return }
-                self.popover.close()
-                self.blipNotice.show(id)
+                let mainVisible = self.popover.isShown ||
+                    self.fullWindow.map { $0.isVisible && !$0.isMiniaturized } == true
+                if mainVisible {
+                    _ = self.blipNotice.hideForInline()
+                    if self.appState.incomingBlipID != id { self.appState.incomingBlipDetails = false }
+                    self.appState.incomingBlipID = id
+                } else {
+                    self.blipNotice.show(id)
+                }
             }
         }
         NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification,

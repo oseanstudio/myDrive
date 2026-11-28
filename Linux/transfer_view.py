@@ -102,6 +102,11 @@ class TransferView:
         self.next_poll = 0
         self.delivery = None
         self.receive_window = None
+        self.current_incoming = None
+        self.inline_preview_id = None
+        self.incoming_details = False
+        self.dismissed_incoming = set()
+        self.receive_errors = {}
         self.receive_style = None
         self.parsec_drop = None
         self.error = ""
@@ -265,6 +270,7 @@ class TransferView:
                            for t in transports)):
                 command = core("relay.tick", payload={
                     "self": identity, "inbox": str(self.blip.inbox), "downloads": self.downloads,
+                    "previous_inboxes": getattr(self.blip, "previous_inboxes", []),
                     "devices": snapshot.get("devices", []), "transfers": transfers,
                 })
                 self.relay_states = states
@@ -303,11 +309,13 @@ class TransferView:
                     transfer = {**transfer, "received_items": [
                         {"path": filename, "name": Path(filename).name, "is_directory": Path(filename).is_dir()}
                         for filename in locations]}
-                if self.notice_states.get(transfer_id) != state and (
-                    state == "Invited" or completed(transfer) and transfer_id not in self.history
+                stamp = (state, bool(transfer.get("has_error")))
+                if self.notice_states.get(transfer_id) != stamp and (
+                    state in self.LIVE or not baseline and (stamp[1] or state == "Cancelled")
+                    or completed(transfer) and transfer_id not in self.history
                 ):
                     notices.append(transfer)
-                self.notice_states[transfer_id] = state
+                self.notice_states[transfer_id] = stamp
                 if auto_receive_ready and state == "Invited" and not transfer.get("has_error") and (
                     permission.get("files") or links and transfer.get("link_only")
                 ) and claim("accept", transfer_id):
@@ -330,6 +338,18 @@ class TransferView:
         def arrived(result):
             snapshot, urls, notices, copies = result
             self.next_poll = 0 if self.owner(snapshot) else monotonic() + 10
+            if self.owner(snapshot) == self.owner(self.snapshot):
+                known = {(item.get("transfer_id"), item.get("peer")): item
+                         for item in self.snapshot.get("transfers", []) if item.get("direction") == "Incoming"}
+                for transfer in snapshot.get("transfers", []):
+                    if transfer.get("direction") == "Incoming" and transfer.get("has_error"):
+                        previous = known.get((transfer.get("transfer_id"), transfer.get("peer")), {})
+                        if not transfer.get("total_bytes"):
+                            transfer["total_bytes"] = previous.get("total_bytes", 0)
+                        if not transfer.get("item_names"):
+                            transfer["item_names"] = previous.get("item_names", [])
+            elif self.current_incoming:
+                self.dismiss_incoming(self.current_incoming["transfer_id"])
             if snapshot != self.snapshot or self.error:
                 self.snapshot, self.error = snapshot, ""
                 self.render()
@@ -340,11 +360,12 @@ class TransferView:
                 if completed(transfer):
                     self.delivery = transfer
                     self.render()
-                    self.show_received(transfer)
-                    continue
-                notification = Gio.Notification.new("myDrive")
-                notification.set_body("Incoming Blip transfer")
-                self.app.send_notification(transfer["transfer_id"], notification)
+                self.present_incoming(transfer, announce=True)
+            if self.current_incoming:
+                current_id = self.current_incoming["transfer_id"]
+                current = next((item for item in snapshot.get("transfers", []) if item.get("transfer_id") == current_id), None)
+                if current and not completed(self.current_incoming):
+                    self.present_incoming(current)
             for transfer in copies:
                 self.copy_automatically(transfer, self.owner(snapshot))
 
@@ -403,16 +424,14 @@ class TransferView:
         self.render_recipient_rows()
         if focused and identity:
             self.recipient_entry.grab_focus()
-        for transfer in self.snapshot.get("transfers", []):
-            if (transfer.get("direction") != "Incoming" or transfer.get("dismissed") or packet(transfer)
-                    or transfer.get("status") not in self.LIVE):
-                continue
-            state = transfer.get("status", "")
-            title = names.get(transfer.get("peer", "").lower(), "Previous device")
-            if state == "Invited" and transfer.get("direction") == "Incoming" and not transfer.get("has_error"):
-                self.page.append(row(title, "Waiting for you", button("Receive", lambda t=transfer: self.accept(t))))
-            else:
-                self.page.append(row(title, state))
+        incoming = [transfer for transfer in self.snapshot.get("transfers", [])
+                    if transfer.get("direction") == "Incoming" and not transfer.get("dismissed") and not packet(transfer)]
+        live = [transfer for transfer in incoming if transfer.get("status") in self.LIVE]
+        failed = sorted((transfer for transfer in incoming if transfer.get("has_error") and transfer not in live),
+                        key=lambda transfer: transfer.get("updated_at", 0), reverse=True)
+        for transfer in live + failed[:3]:
+            if (self.current_incoming or {}).get("transfer_id") != transfer.get("transfer_id"):
+                self.page.append(self.receive_status_card(transfer, details=True))
         if self.delivery:
             name = names.get(self.delivery.get("peer", "").lower(), "Previous device")
             self.page.append(row(name, "Received", button("View files", lambda: self.show_received(self.delivery))))
@@ -862,8 +881,13 @@ class TransferView:
         self.app.dismiss_compact()
 
     def accept(self, transfer):
-        self.app.work("blip", "Receive transfer", lambda: self.blip.request("accept-manual", transfer["transfer_id"]),
-                      lambda _: self.refresh())
+        identifier = transfer["transfer_id"]
+        self.receive_errors.pop(identifier, None)
+        def failed(message):
+            self.receive_errors[identifier] = message
+            self.present_incoming(transfer, announce=True)
+        self.app.work("blip", "Receive transfer", lambda: self.blip.request("accept-manual", identifier),
+                      lambda _: self.refresh(), on_error=failed)
 
     def cancel_send(self, transfer, relay=False):
         owner = self.owner(self.snapshot)
@@ -885,26 +909,150 @@ class TransferView:
         self.app.work("blip", "Cancel send", cancel,
                       lambda _: refresh(), on_error=lambda _: refresh())
 
-    def show_received(self, transfer):
+    def receive_status_card(self, transfer, details=False, dismiss=False):
+        panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4, margin_top=4, margin_bottom=4)
+        identifier = transfer["transfer_id"]
+        peer = str(transfer.get("peer", "")).lower()
+        names = self.peer_captions()
+        status = transfer.get("status", "")
+        problem = self.receive_errors.get(identifier)
+        has_error = bool(transfer.get("has_error"))
+        active = status in ("Pending", "Active", "Paused", "ResumeRequested") and not has_error
+        caption = "Needs attention" if has_error or problem else {
+            "Invited": "Waiting for you", "Pending": "Connecting", "Active": "Receiving",
+            "ResumeRequested": "Resuming", "Cancelled": "Cancelled", "Paused": "Paused",
+        }.get(status, status)
+        controls = []
+        if dismiss:
+            close = Gtk.Button(icon_name="window-close-symbolic", tooltip_text="Dismiss incoming transfer")
+            close.connect("clicked", lambda *_: self.dismiss_incoming(identifier))
+            controls.append(close)
+        panel.append(row(names.get(peer) or self.fallback_name(peer), caption, *controls))
+        if item_names := transfer.get("item_names"):
+            panel.append(label(", ".join(item_names)))
+        if has_error:
+            code = transfer.get("error_code")
+            native = transfer.get("error_message")
+            problem = (native + (f" (Blip code {code})" if code else "") if native
+                       else f"Blip reported error code {code} without a description." if code
+                       else "Blip stopped the transfer without reporting a reason.")
+        if problem:
+            panel.append(Gtk.Label(label=problem, wrap=True, xalign=0, max_width_chars=40, selectable=True))
+        done = max(0, transfer.get("progress") or 0)
+        total = max(0, transfer.get("total_bytes") or 0)
+        if active or has_error or status == "Cancelled" and (done or total):
+            if total or active and status != "Paused":
+                progress = Gtk.ProgressBar()
+                progress.update_property([Gtk.AccessibleProperty.LABEL], ["Incoming Blip transfer progress"])
+                if total:
+                    progress.set_fraction(min(1, done / total))
+                else:
+                    progress.pulse()
+                panel.append(progress)
+            caption = (f"{done:,} / {total:,} bytes received · {max(0, total - done):,} remaining"
+                       if total else f"{done:,} bytes received · total unavailable")
+            panel.append(Gtk.Label(label=caption, wrap=True, xalign=0, max_width_chars=38))
+        if status == "Invited" and not has_error:
+            panel.append(button("Receive", lambda: self.accept(transfer)))
+        if not details and (has_error or problem):
+            panel.append(button("Show in Blip", lambda: self.open_incoming_details(transfer)))
+        return panel
+
+    def open_incoming_details(self, transfer):
+        self.current_incoming = transfer
+        self.incoming_details = True
+        self.app.activate()
+        self.app.stack.set_visible_child_name("Send")
+        self.present_incoming(transfer)
+
+    def dismiss_incoming(self, identifier):
+        self.dismissed_incoming.add(identifier)
+        if (self.current_incoming or {}).get("transfer_id") == identifier:
+            self.current_incoming = None
+            self.incoming_details = False
+            self.inline_preview_id = None
+            self.app.incoming_slot.set_visible(False)
+            self.app.incoming_slot.set_child(None)
+        if self.receive_window and self.receive_window[0] == identifier:
+            self.receive_window[1].close()
+
+    def move_incoming_inline(self):
+        if self.app.main_window_visible() and self.current_incoming:
+            self.present_incoming(self.current_incoming)
+
+    def present_incoming(self, transfer, announce=False):
+        identifier = transfer["transfer_id"]
+        if identifier in self.dismissed_incoming:
+            return
+        if (self.current_incoming or {}).get("transfer_id") != identifier:
+            self.incoming_details = False
+        self.current_incoming = transfer
+        if self.app.main_window_visible():
+            if self.receive_window:
+                self.receive_window[1].close()
+            if completed(transfer):
+                if self.inline_preview_id != identifier:
+                    self.inline_preview_id = identifier
+                    self.show_received(transfer, inline=True)
+            else:
+                self.inline_preview_id = None
+                self.app.incoming_slot.set_child(self.receive_status_card(transfer,
+                    details=self.incoming_details, dismiss=True))
+                self.app.incoming_slot.set_visible(True)
+            return
+        if not announce and not self.receive_window:
+            return
+        if completed(transfer):
+            if self.receive_window and not isinstance(self.receive_window[1].get_child(), Gtk.Overlay):
+                self.receive_window[1].close()
+            self.show_received(transfer, inline=False)
+            return
+        if self.receive_window and self.receive_window[0] != identifier:
+            self.receive_window[1].close()
+        if self.receive_window:
+            notice = self.receive_window[1]
+        else:
+            notice = Gtk.Window(application=self.app, title="myDrive · Incoming transfer", resizable=False)
+            notice.set_default_size(332, -1)
+            self.receive_window = (identifier, notice)
+            def closed(window):
+                if self.receive_window and self.receive_window[1] is window:
+                    self.receive_window = None
+                return False
+            notice.connect("close-request", closed)
+        container = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER, max_content_height=265,
+                                      propagate_natural_height=True, margin_start=8, margin_end=8)
+        container.set_child(self.receive_status_card(transfer, dismiss=True))
+        notice.set_child(container)
+        if not notice.get_visible():
+            notice.present()
+
+    def show_received(self, transfer, *, inline=None):
         if not completed(transfer):
             return
         identifier = transfer.get("transfer_id")
-        if self.receive_window:
+        if inline is None and not self.app.fixture and self.app.main_window_visible():
+            self.dismissed_incoming.discard(identifier)
+            self.present_incoming(transfer, announce=True)
+            return
+        if not inline and self.receive_window:
             active, previous = self.receive_window
             if active == identifier:
                 previous.present()
                 return previous
             previous.close()
 
-        notice = Gtk.Window(application=self.app, title="myDrive · Incoming transfer", resizable=False)
-        self.receive_window = (identifier, notice)
+        notice = None if inline else Gtk.Window(application=self.app, title="myDrive · Incoming transfer", resizable=False)
+        if notice:
+            self.receive_window = (identifier, notice)
 
         def closed(_):
             if self.receive_window and self.receive_window[1] == notice:
                 self.receive_window = None
             return False
 
-        notice.connect("close-request", closed)
+        if notice:
+            notice.connect("close-request", closed)
         if self.receive_style is None:
             self.receive_style = Gtk.CssProvider()
             self.receive_style.load_from_data(b"""
@@ -915,17 +1063,31 @@ class TransferView:
                 .mydrive-receive-action:hover { background: rgba(255,255,255,0.27); }
                 .mydrive-receive-text { font-family: monospace; }
             """)
-            Gtk.StyleContext.add_provider_for_display(notice.get_display(), self.receive_style,
+            Gtk.StyleContext.add_provider_for_display(self.app.window.get_display(), self.receive_style,
                                                       Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
 
         stage = Gtk.Overlay(margin_top=6, margin_bottom=6, margin_start=6, margin_end=6)
         stage.add_css_class("mydrive-receive-stage")
         def size_preview(height):
-            stage.set_size_request(324, height)
-            notice.set_default_size(336, height + 12)
+            stage.set_size_request(-1 if inline else 324, height)
+            if notice:
+                notice.set_default_size(336, height + 12)
 
         size_preview(254)
-        notice.set_child(stage)
+        if notice:
+            notice.set_child(stage)
+        else:
+            self.app.incoming_slot.set_child(stage)
+            self.app.incoming_slot.set_visible(True)
+
+        def visible():
+            return notice.get_visible() if notice else self.app.incoming_slot.get_child() is stage
+
+        def dismiss():
+            if notice:
+                notice.close()
+            else:
+                self.dismiss_incoming(identifier)
 
         picture = Gtk.Picture(can_shrink=True)
         picture.set_alternative_text("Received file preview")
@@ -951,6 +1113,11 @@ class TransferView:
         sender.set_hexpand(True)
         header.append(sender)
         header.append(label("Received"))
+        if inline:
+            close = Gtk.Button(icon_name="window-close-symbolic", tooltip_text="Dismiss incoming transfer")
+            close.add_css_class("mydrive-receive-action")
+            close.connect("clicked", lambda *_: dismiss())
+            header.append(close)
         stage.add_overlay(header)
 
         controls = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3, valign=Gtk.Align.END,
@@ -1016,7 +1183,7 @@ class TransferView:
                 return True, None, None
 
             def failed(message):
-                if serial == generation and notice.get_visible():
+                if serial == generation and visible():
                     feedback.set_label(message)
                     feedback.set_tooltip_text(message)
                     feedback.set_visible(True)
@@ -1030,12 +1197,12 @@ class TransferView:
                 uri = link_url(str(target)) if not parent and target.suffix.lower() in {".url", ".webloc"} else None
                 try:
                     Gio.AppInfo.launch_default_for_uri(uri or Gio.File.new_for_path(str(target)).get_uri(), None)
-                    notice.close()
+                    dismiss()
                 except GLib.Error as error:
                     failed(error.message)
 
             def ready(data):
-                if serial != generation or not notice.get_visible():
+                if serial != generation or not visible():
                     return
                 available, image, text = data
                 if image is not None:
@@ -1053,7 +1220,7 @@ class TransferView:
                                          if available else "File unavailable")
                 if not available:
                     return
-                copy = lambda mode="text": self.copy_received(item, notice, feedback, mode=mode)
+                copy = lambda mode="text": self.copy_received(item, dismiss, feedback, mode=mode)
                 text_item = is_received_text(item, Path(item.get("path") or ""))
                 for caption, command in (("Open", launch), ("Copy text" if text_item else "Copy", copy)):
                     control = button(caption, command)
@@ -1072,7 +1239,8 @@ class TransferView:
 
         if len(items) > 1:
             picker.connect("notify::selected", lambda child, _: update(child.get_selected()))
-        notice.present()
+        if notice:
+            notice.present()
         update(0)
         return notice
 
@@ -1136,10 +1304,10 @@ class TransferView:
         self.app.work("blip-recipients", "", lambda: self.prepare_copy(transfer["received_items"]),
                       finish, quiet=True, queue=True, on_error=failed)
 
-    def copy_received(self, item, dialog, feedback, mode="text"):
+    def copy_received(self, item, dismiss, feedback, mode="text"):
         def copy(data):
             self.write_copy(self.app.window.get_clipboard(), data)
-            dialog.close()
+            dismiss()
 
         def failed(message):
             feedback.set_label(message)

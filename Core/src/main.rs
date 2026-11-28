@@ -63,6 +63,10 @@ fn execute(r: Request) -> Result<Value, String> {
     if let Some(action) = r.action.strip_prefix("blip.recents.") {
         return blip_recents::run(action, Path::new(&r.data_dir), &r.payload);
     }
+    #[cfg(any(windows, target_os = "linux"))]
+    if let Some(action) = r.action.strip_prefix("blip.downloads.") {
+        return blip::downloads::run(action, Path::new(&r.data_dir), &r.payload);
+    }
     if let Some(action) = r.action.strip_prefix("relay.") {
         return relay::run(action, &r.payload, Path::new(&r.data_dir));
     }

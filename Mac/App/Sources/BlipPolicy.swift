@@ -58,6 +58,8 @@ struct BlipTransfer: Identifiable, Codable {
     var total_bytes: Int64? = nil
     var item_names: [String]? = nil
     var received_items:[BlipReceivedItem]?=nil
+    var error_message: String? = nil
+    var error_code: Int64? = nil
     var id: String { transfer_id }
     var confirmed: Bool { status == "Completed" && completed && !has_error }
     var isLive: Bool {
@@ -65,6 +67,23 @@ struct BlipTransfer: Identifiable, Codable {
             ["Created", "InviteRequested", "Invited", "Pending", "Active", "Paused", "ResumeRequested"].contains(status)
     }
     var pending: Bool { direction == "Incoming" && status == "Invited" && !has_error && dismissed != true }
+    var receivingBytes: Bool {
+        direction == "Incoming" && !has_error && ["Pending", "Active", "Paused", "ResumeRequested"].contains(status)
+    }
+    var byteLabel: String {
+        let bytes = max(0, progress ?? 0)
+        guard let total = total_bytes, total > 0 else {
+            return "\(bytes.formatted()) bytes received · total unavailable"
+        }
+        return "\(bytes.formatted()) / \(total.formatted()) bytes received · \(max(0, total - bytes).formatted()) remaining"
+    }
+    var failureLabel: String {
+        if let error_message, !error_message.isEmpty {
+            return error_message + (error_code.map { " (Blip code \($0))" } ?? "")
+        }
+        if let error_code { return "Blip reported error code \(error_code) without a description." }
+        return "Blip stopped the transfer without reporting a reason."
+    }
 }
 enum BlipReceivedPath {
     static func url(_ item:BlipReceivedItem,in transfer:BlipTransfer)->URL? {

@@ -67,6 +67,8 @@ public sealed class BlipTransfer
     [JsonPropertyName("status")] public string Status { get; set; } = "";
     [JsonPropertyName("completed")] public bool Completed { get; set; }
     [JsonPropertyName("has_error")] public bool HasError { get; set; }
+    [JsonPropertyName("error_message")] public string? ErrorMessage { get; set; }
+    [JsonPropertyName("error_code")] public long? ErrorCode { get; set; }
     [JsonPropertyName("link_files")] public List<string> LinkFiles { get; set; } = new();
     [JsonPropertyName("link_only")] public bool LinkOnly { get; set; }
     [JsonPropertyName("dismissed")] public bool Dismissed { get; set; }
@@ -75,6 +77,15 @@ public sealed class BlipTransfer
     [JsonPropertyName("item_names")] public List<string> ItemNames { get; set; }=new();
     [JsonPropertyName("received_items")] public List<BlipReceivedItem> ReceivedItems {get;set;}=new();
     public string ItemLabel=>ItemNames.Count==0?"Incoming transfer":string.Join(", ",ItemNames);
+    public bool ReceivingFiles => Direction == "Incoming" && Status is "Pending" or "Active" or "Paused" or "ResumeRequested" && !HasError;
+    public bool HasByteTotal => TotalBytes > 0;
+    public string ByteLabel => HasByteTotal
+        ? $"{Math.Max(0, Progress):N0} / {TotalBytes:N0} bytes received · {Math.Max(0, TotalBytes - Math.Max(0, Progress)):N0} remaining"
+        : $"{Math.Max(0, Progress):N0} bytes received · total unavailable";
+    public string FailureLabel => !string.IsNullOrWhiteSpace(ErrorMessage)
+        ? ErrorMessage + (ErrorCode is { } code ? $" (Blip code {code})" : "")
+        : ErrorCode is { } native ? $"Blip reported error code {native} without a description."
+        : "Blip stopped the transfer without reporting a reason.";
     public string ProgressLabel=>Status=="Active"&&TotalBytes>0&&Progress>=0&&Progress<=TotalBytes?$"{(Direction=="Outgoing"?"Sending":"Receiving")} · {100.0*Progress/TotalBytes:0}%":StateLabel;
     public bool ConfirmedComplete => Status == "Completed" && Completed && !HasError;
     public bool IsLive => !Dismissed && !Completed &&
