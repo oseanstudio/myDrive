@@ -22,6 +22,7 @@ from services import DATA, ROOT, Blip, Sync, core, read_settings, save_settings
 from smb_sharing import add_private_share
 from storage_view import StorageView
 from cloud_view import CloudView
+from airdrop import NearbyAirDrop, nearby_devices
 from tray import Tray
 from transfer_view import TransferView, clipboard_text
 from ui_widgets import button, clear, label, menu, row
@@ -77,6 +78,7 @@ class MyDrive(Gtk.Application):
         self.auto_update_timer = 0
         self.auto_update_after = 0
         self.file_picker_depth = 0
+        self.airdrop = NearbyAirDrop(self)
         self.popup_dismiss_timer = 0
         self.startup = {"enabled": True, "configured": False}
 
@@ -112,7 +114,8 @@ class MyDrive(Gtk.Application):
         header_content.append(self.update_offer)
         header.set_title_widget(header_content)
         controls = Gtk.Box(spacing=4)
-        controls.append(menu([("Sync a folder…", self.share_folder), ("Quit myDrive", self.quit)]))
+        controls.append(menu([("Sync a folder…", self.share_folder), ("Nearby AirDrop…", self.airdrop.show),
+                              ("Quit myDrive", self.quit)]))
         expand = Gtk.Button()
         expand.connect("clicked", lambda *_: self.resize())
 
@@ -234,6 +237,7 @@ class MyDrive(Gtk.Application):
 
     def do_shutdown(self):
         self.stopping = True
+        self.airdrop.stop()
         if not self.fixture:
             self.sync.stop()
         self.sync_auto_install_timer()
@@ -347,7 +351,7 @@ class MyDrive(Gtk.Application):
         )
 
     def update_idle(self):
-        if (self.file_picker_depth or self.cloud_view.active
+        if (self.file_picker_depth or self.cloud_view.active or self.airdrop.active
                 or any(self.pending[key] for key in ("storage", "blip", "sync", "cloud", "settings"))):
             return False
         if any(window.get_transient_for() is self.window and window.get_visible()
@@ -610,24 +614,26 @@ class MyDrive(Gtk.Application):
         return True
 
     def handle_drop(self, paths):
-        if len(paths) != 1 or not Path(paths[0]).is_dir():
+        folder_drop = len(paths) == 1 and Path(paths[0]).is_dir()
+        has_airdrop = not self.fixture and bool(self.airdrop.executable())
+        if not folder_drop and not has_airdrop:
             self.transfer_view.send_dropped(paths)
             return
-        folder = paths[0]
-        dialog = Gtk.Dialog(title=Path(folder).name, transient_for=self.window, modal=True)
-        for response, title in enumerate(("Send with Blip", "Sync folder", "Share over SMB"), 1):
-            dialog.add_button(title, response)
-        dialog.add_button("Cancel", Gtk.ResponseType.CANCEL)
-        actions = {
-            1: lambda: self.transfer_view.send_dropped(paths),
-            2: lambda: self.share_folder(folder),
-            3: lambda: self.smb_share_folder(folder),
-        }
-        def chosen(dialog, response):
+        title = Path(paths[0]).name if len(paths) == 1 else f"{len(paths)} files and folders"
+        dialog = Gtk.Dialog(title=title, transient_for=self.window, modal=True)
+        content = dialog.get_content_area()
+        content.set_spacing(6)
+        def chosen(action):
             dialog.close()
-            if response in actions:
-                actions[response]()
-        dialog.connect("response", chosen)
+            action()
+        content.append(button("Send with Blip", lambda: chosen(lambda: self.transfer_view.send_dropped(paths))))
+        if has_airdrop:
+            content.append(button("Send via AirDrop", lambda: chosen(lambda: self.airdrop.show(paths))))
+        if folder_drop:
+            content.append(button("Sync folder", lambda: chosen(lambda: self.share_folder(paths[0]))))
+            content.append(button("Share over SMB", lambda: chosen(lambda: self.smb_share_folder(paths[0]))))
+        dialog.add_button("Cancel", Gtk.ResponseType.CANCEL)
+        dialog.connect("response", lambda widget, _: widget.close())
         self.present_dialog(dialog)
 
     def smb_share_folder(self, folder):
@@ -1354,8 +1360,15 @@ class MyDrive(Gtk.Application):
             assert other_heading.get_label() == "Other devices"
             assert other_heading.get_next_sibling() == view.recipient_rows.get_last_child()
             external = view.recipient_rows.get_last_child()
-            archive = external.get_last_child()
-            assert archive.get_icon_name() == "emblem-system-symbolic"
+            gear = external.get_last_child()
+            assert gear.get_icon_name() == "emblem-system-symbolic"
+            gear.emit("clicked")
+            external = view.recipient_rows.get_last_child()
+            inline = external.get_first_child().get_last_child()
+            assert [item.get_label() for item in inline.observe_children()
+                    if isinstance(item, Gtk.ToggleButton)] == ["Receive", "Copy", "Open"]
+            assert inline.get_first_child().get_label() == "Auto:"
+            archive = external.get_last_child().get_prev_sibling()
             external_peer = view.snapshot["devices"][-1]["peer"]
             requests = []
             update_recents = view.update_recents
@@ -1363,6 +1376,7 @@ class MyDrive(Gtk.Application):
             remove_item = archive.get_popover().get_child().get_last_child()
             assert remove_item.get_label() == "Remove"
             remove_item.emit("clicked")
+            external.get_last_child().emit("clicked")
             view.recent_recipients.append({"peer": external_peer, "label": "Fixture external", "archived": "other"})
             view.render_recipient_rows()
             assert external_peer not in view.visible_recipients()
@@ -1389,12 +1403,21 @@ class MyDrive(Gtk.Application):
             paste = edit.get_prev_sibling()
             assert edit.get_icon_name() == "emblem-system-symbolic"
             paste.emit("clicked")
-            edit_item = edit.get_popover().get_child().get_last_child()
+            edit.emit("clicked")
+            recipient = view.recipient_rows.get_first_child().get_next_sibling()
+            more = recipient.get_last_child().get_prev_sibling()
+            edit_item = more.get_popover().get_child().get_last_child()
             assert edit_item.get_label() == "Edit name…"
             edit_item.emit("clicked")
             assert calls == [{"peer": peer, "owner": view.recipient_owner},
                              ("paste", peer, view.recipient_owner),
                              ("rename", view.recipient_owner, peer, "Fixture laptop", "Fixture laptop", False)]
+            recipient.get_last_child().emit("clicked")
+            assert nearby_devices('7bca2147990f "Test iPhone" ([fe80::1%awdl0]:8770)\n'
+                                  '52:33:36:00:01:fb "Test Mac" ([fe80::2%awdl0]:8770)\n'
+                                  '-o "Invalid" (example)\n') == {
+                "7bca2147990f": "Test iPhone", "52:33:36:00:01:fb": "Test Mac",
+            }
             abandoned = []
             paste_picker = view.choose_recipient({peer: "Fixture laptop"}, chosen.append,
                                                   lambda: abandoned.append(True))

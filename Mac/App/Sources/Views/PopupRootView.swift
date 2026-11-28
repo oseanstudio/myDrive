@@ -150,6 +150,9 @@ struct PopupRootView: View {
                 Button("Sync a folder…") { app.dialog = .share }
                 Button("Send with Blip…") { app.view = .transfers; app.blip.chooseFilesToSend() }
                 Button("Paste and send…") { app.view = .transfers; app.blip.pasteAndSend() }
+                Divider()
+                Button("Send via AirDrop…", action: app.chooseAirDropFiles)
+                Button("Paste via AirDrop", action: app.pasteViaAirDrop)
             } label: {
                 Image(systemName: "plus.circle")
                     .font(.system(size: 14))

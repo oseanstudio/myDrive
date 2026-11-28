@@ -91,6 +91,7 @@ class TransferView:
         self.app, self.page, self.blip = app, page, blip
         self.snapshot = {}
         self.identity = ""
+        self.permission_row = None
         self.history = set()
         self.notice_states = {}
         self.clipboard_pending = set()
@@ -658,13 +659,16 @@ class TransferView:
                           device_shortcut=False, email=""):
         controls = Gtk.Box(spacing=4, margin_start=12 if nested else 0)
         peer_key = peer or remove or ""
+        editing = self.permission_row == (owner, peer_key)
         items = self.unplaced_sends.pop(peer_key, [])
         if person_destination(peer_key):
             for target in list(self.unplaced_sends):
                 if target.startswith(peer_key):
                     items.extend(self.unplaced_sends.pop(target))
         actions = []
-        if peer:
+        if editing:
+            controls.append(self.inline_permissions(owner, peer_key, name))
+        elif peer:
             select = button(name, lambda: self.choose_files(peer=peer, owner=owner))
             select.set_child(self.destination_label(name, peer, email))
             select.set_tooltip_text("Send files to " + name + " · " + self.device_availability(peer))
@@ -674,19 +678,20 @@ class TransferView:
             drop.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
             drop.connect("drop", lambda _, value, x, y: self.drop_on_recipient(owner, peer, value))
             controls.add_controller(drop)
-            actions.append(("Send folder…", lambda: self.choose_files(folder=True, peer=peer, owner=owner)))
-            actions.append(("Connect with Parsec", lambda: self.connect_parsec(owner, peer, name)))
-            actions.append(("Edit Parsec computer…", lambda: self.connect_parsec(owner, peer, name, edit=True)))
-            actions.append(("Open drop target…", lambda: self.open_parsec_drop(owner, peer, name)))
         else:
             name_label = label(name, "heading" if person else None)
             name_label.set_hexpand(True)
             controls.append(name_label)
+        if peer:
+            actions.append(("Send folder…", lambda: self.choose_files(folder=True, peer=peer, owner=owner)))
+            actions.append(("Connect with Parsec", lambda: self.connect_parsec(owner, peer, name)))
+            actions.append(("Edit Parsec computer…", lambda: self.connect_parsec(owner, peer, name, edit=True)))
+            actions.append(("Open drop target…", lambda: self.open_parsec_drop(owner, peer, name)))
         if items:
             controls.append(label("Sending", "dim-label"))
             if cancel := self.send_cancel_control(items, name):
                 controls.append(cancel)
-        if peer:
+        if peer and not editing:
             paste = Gtk.Button(label="Paste", width_request=55, tooltip_text="Paste and send to " + name)
             paste.connect("clicked", lambda *_: self.paste(peer, owner))
             controls.append(paste)
@@ -700,11 +705,64 @@ class TransferView:
         if remove:
             actions.append(("Edit name…", lambda: self.rename_recent(owner, remove, name, nickname, person)))
             actions.append(("Remove", lambda: self.update_recents("archive", owner, peer=peer, title=name, target=remove)))
+        if actions and editing:
+            controls.append(menu(actions, title="Options for " + name))
         if peer_key:
-            actions.insert(0, ("Sender permissions…", lambda: self.permissions(peer_key, name, owner)))
-        if actions:
-            controls.append(menu(actions, "emblem-system-symbolic", "Options for " + name))
+            gear = Gtk.Button(icon_name="emblem-system-symbolic", tooltip_text="Sender permissions for " + name)
+            gear.update_property([Gtk.AccessibleProperty.LABEL], ["Sender permissions for " + name])
+
+            def toggle(*_):
+                if self.recipient_owner == owner:
+                    self.permission_row = None if editing else (owner, peer_key)
+                    self.render_recipient_rows()
+
+            gear.connect("clicked", toggle)
+            controls.append(gear)
         self.recipient_rows.append(controls)
+
+    def inline_permissions(self, owner, sender, name):
+        group = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3, hexpand=True)
+        group.append(label(name, "heading"))
+        saved = self.catalog(owner)
+        devices = self.snapshot.get("devices", []) + self.directory_recipients + [{"peer": sender}]
+        account = sender.partition(":")[0]
+        individual = exact_peer(sender)
+        names = {}
+        for device in devices:
+            peer = device.get("peer", "").lower()
+            if exact_peer(peer) and peer != owner and (peer == sender if individual else peer.partition(":")[0] == account):
+                names.setdefault(peer, self.device_name(device, saved))
+        if not names:
+            group.append(label("No known devices yet", "dim-label"))
+        for index, (peer, caption) in enumerate(names.items()):
+            if not individual:
+                group.append(label(caption))
+            line = Gtk.Box(spacing=2)
+            if index == 0:
+                line.append(label("Auto:"))
+            for title, key, detail in (("Receive", "files", "Receive files automatically"),
+                                       ("Copy", "clipboard", "Copy automatically accepted items"),
+                                       ("Open", "links", "Open web links automatically")):
+                toggle = Gtk.ToggleButton(label=title, active=bool(saved.get(peer, {}).get(key)),
+                                          tooltip_text=detail + " from " + caption)
+                toggle.update_property([Gtk.AccessibleProperty.LABEL], [title + " from " + caption])
+                toggle.connect("toggled", lambda item, target=peer, flag=key:
+                               self.set_inline_permission(owner, target, flag, item.get_active()))
+                line.append(toggle)
+            group.append(line)
+        return group
+
+    def set_inline_permission(self, owner, peer, key, enabled):
+        if self.app.fixture or self.owner(self.snapshot) != owner or not exact_peer(peer):
+            return
+        try:
+            stored = read_settings("blip-permissions.json", {})
+            permissions = stored.setdefault(owner.partition(":")[0], {}).setdefault(peer, {})
+            permissions[key] = enabled
+            save_settings("blip-permissions.json", stored)
+        except (OSError, RuntimeError) as error:
+            self.app.announce(str(error))
+            self.render_recipient_rows()
 
     def drop_on_recipient(self, owner, peer, value):
         if self.owner(self.snapshot) != owner or (peer not in self.visible_recipients()

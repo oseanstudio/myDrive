@@ -30,7 +30,7 @@ mv "$appdir/usr/bin/SMB-ThirdPartyNotices.txt" "$appdir/usr/share/doc/mydrive/"
 node Core/third-party-notices.mjs Core/Cargo.toml "$appdir/usr/share/doc/mydrive/ThirdPartyNotices.txt"
 install -m644 Linux/packaging/AppImage-Runtime.txt "$appdir/usr/share/doc/mydrive/AppImage-Runtime.txt"
 install -Dm755 Linux/packaging/AppRun.sh "$appdir/AppRun"
-install -m644 Linux/{mydrive,services,blip_cli,cloud_view,file_manager,storage_view,smb_sharing,transfer_view,tray,ui_widgets}.py "$appdir/usr/lib/mydrive/"
+install -m644 Linux/{mydrive,services,airdrop,blip_cli,cloud_view,file_manager,storage_view,smb_sharing,transfer_view,tray,ui_widgets}.py "$appdir/usr/lib/mydrive/"
 if [[ -n "${MYDRIVE_VERSION:-}" ]]; then
     printf '%s\n' "$MYDRIVE_VERSION" > "$appdir/usr/lib/mydrive/version.txt"
 fi

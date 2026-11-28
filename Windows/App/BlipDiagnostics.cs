@@ -69,20 +69,15 @@ public sealed partial class MainWindow
                 .SelectMany(actions => actions.Children.OfType<Button>())
                 .Any(button => button.Content is "Paste" && button.MinWidth >= 55)))
             throw new IOException("Each destination row needs a full drop target and a wide Paste button.");
-        var senderDialog = ChooseLinkSenders(own);
-        try
-        {
-            if (activeDialog?.Content is not ScrollViewer { Content: StackPanel permissions } ||
-                permissions.Children.OfType<Border>().SingleOrDefault()?.Child is not StackPanel selectedDevice ||
-                selectedDevice.Children.OfType<StackPanel>().SelectMany(row => row.Children.OfType<CheckBox>())
-                    .Select(check => check.Content as string).SequenceEqual(["Receive files", "Open links", "Copy to clipboard"]) != true)
-                throw new IOException("Sender settings must open only the chosen device with all three controls.");
-        }
-        finally
-        {
-            activeDialog?.Hide();
-            await senderDialog;
-        }
+        ToggleBlipRecipientPermissions(BlipOwner, own.Peer);
+        var expanded = recipientRows!.Children.OfType<Grid>().SingleOrDefault(row => row.Children.OfType<StackPanel>()
+            .Any(panel => panel.Children.OfType<TextBlock>().Any(text => text.Text == "Studio Mac")));
+        var switches = expanded?.Children.OfType<StackPanel>().FirstOrDefault()?.Children.OfType<StackPanel>()
+            .SelectMany(line => line.Children.OfType<Microsoft.UI.Xaml.Controls.Primitives.ToggleButton>());
+        if (activeDialog != null || switches == null ||
+            !switches.Select(check => check.Content as string).SequenceEqual(["Receive", "Copy", "Open"]))
+            throw new IOException("The gear must show only the selected recipient’s inline settings.");
+        ToggleBlipRecipientPermissions(BlipOwner, own.Peer);
         var pending = new BlipTransfer { Id = Guid.NewGuid().ToString(), Peer = own.Peer,
             Direction = "Outgoing", Status = "Pending", ItemNames = ["sample.txt"] };
         blipSnapshot.Transfers.Add(pending);

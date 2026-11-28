@@ -111,7 +111,9 @@ public sealed partial class MainWindow
     {
         if (busy || modalDepth > 0) return;
         PopupInput.Foreground(hwnd);
-        if (paths.Count != 1 || !Directory.Exists(paths[0]))
+        bool folderDrop = paths.Count == 1 && Directory.Exists(paths[0]);
+        bool hasAirDrop = AirDropCompanion() != null;
+        if (!folderDrop && !hasAirDrop)
         {
             await SendDroppedFiles(paths);
             return;
@@ -119,7 +121,8 @@ public sealed partial class MainWindow
 
         string folder = paths[0];
         var choices = new StackPanel { Spacing = 6 };
-        var dialog = new ContentDialog { XamlRoot = root.XamlRoot, Title = new DirectoryInfo(folder).Name,
+        var dialog = new ContentDialog { XamlRoot = root.XamlRoot, Title = paths.Count == 1
+            ? Path.GetFileName(Path.TrimEndingDirectorySeparator(folder)) : $"{paths.Count} files and folders",
             Content = choices, CloseButtonText = "Cancel" };
         Func<Task>? selected = null;
         void Choose(string title, Func<Task> action)
@@ -127,8 +130,12 @@ public sealed partial class MainWindow
             choices.Children.Add(QuickButton(title, () => { selected = action; dialog.Hide(); }));
         }
         Choose("Send with Blip", () => SendDroppedFiles(paths));
-        Choose("Sync folder", () => ShowQuickShare(folder));
-        Choose("Share over SMB", () => CreatePrivateShare(folder));
+        if (hasAirDrop) Choose("Send via AirDrop", () => { StartAirDropCompanion(paths); return Task.CompletedTask; });
+        if (folderDrop)
+        {
+            Choose("Sync folder", () => ShowQuickShare(folder));
+            Choose("Share over SMB", () => CreatePrivateShare(folder));
+        }
         await ShowDialog(dialog);
         if (selected != null) await selected();
     }

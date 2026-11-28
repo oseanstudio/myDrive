@@ -92,29 +92,31 @@ import UniformTypeIdentifiers
             self.view = .transfers
             self.blip.sendDropped(urls)
         }
-        guard urls.count == 1, let folder = urls.first,
-              (try? folder.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true else {
-            send()
-            return
-        }
+        let folder = urls.count == 1 ? urls.first.flatMap { candidate in
+            (try? candidate.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true ? candidate : nil
+        } : nil
         let actions = NSAlert()
-        actions.messageText = folder.lastPathComponent
-        actions.informativeText = "Choose what to do with this folder."
-        actions.addButton(withTitle: "Send with Blip")
-        actions.addButton(withTitle: "Sync Folder")
-        actions.addButton(withTitle: "Share over SMB")
-        actions.addButton(withTitle: "Cancel")
+        actions.messageText = urls.count == 1 ? urls[0].lastPathComponent : "\(urls.count) files and folders"
         let openedFromPopup = popoverVisible
-        switch actions.runModal() {
-        case .alertFirstButtonReturn: send()
-        case .alertSecondButtonReturn:
-            shareFolderPath = folder.path
-            dialog = .share
-            if openedFromPopup && !popoverVisible {
-                NotificationCenter.default.post(name: .myDriveShow, object: nil)
-            }
-        case .alertThirdButtonReturn: createPrivateShare(folder)
-        default: break
+        var commands: [() -> Void] = []
+        func add(_ title: String, _ work: @escaping () -> Void) {
+            actions.addButton(withTitle: title)
+            commands.append(work)
         }
+        add("Send with Blip", send)
+        add("Send via AirDrop") { self.sendAirDropFiles(urls) }
+        if let folder {
+            add("Sync Folder") {
+                self.shareFolderPath = folder.path
+                self.dialog = .share
+                if openedFromPopup && !self.popoverVisible {
+                    NotificationCenter.default.post(name: .myDriveShow, object: nil)
+                }
+            }
+            add("Share over SMB") { self.createPrivateShare(folder) }
+        }
+        actions.addButton(withTitle: "Cancel")
+        let choice = actions.runModal().rawValue - NSApplication.ModalResponse.alertFirstButtonReturn.rawValue
+        if commands.indices.contains(choice) { commands[choice]() }
     }
 }

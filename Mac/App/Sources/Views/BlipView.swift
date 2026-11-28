@@ -6,23 +6,10 @@ struct BlipView: View {
     @ObservedObject var receiver: BlipReceiver
     @State private var query = ""
     @State private var dropPeer: String?
-    @State private var permissionSender: (peer: String, name: String)?
+    @State private var permissionSender: String?
 
     var body: some View {
-        Group {
-            if let permissionSender {
-                VStack(alignment: .leading, spacing: 5) {
-                    Button { self.permissionSender = nil } label: {
-                        Label("Blip", systemImage: "chevron.left")
-                    }.controlSize(.small)
-                    Text(permissionSender.name).font(.system(size: 13, weight: .semibold)).lineLimit(1)
-                    BlipSenderPermissionsView(receiver: receiver, sender: permissionSender.peer)
-                }.frame(maxWidth: .infinity, alignment: .leading)
-            } else {
-                recipientsView
-            }
-        }
-        .onChange(of: receiver.recipientOwner) { permissionSender = nil }
+        recipientsView.onChange(of: receiver.recipientOwner) { permissionSender = nil }
     }
 
     private var recipientsView: some View {
@@ -319,42 +306,43 @@ struct BlipView: View {
         let active = sends.filter { containsRecipient(keys, target: $0.peer) }
         let preparing = receiver.sendingPeer.map { containsRecipient(keys, target: $0) } ?? false
         let sending = !active.isEmpty || preparing
+        let target = peer?.peer ?? removing
+        let editing = target != nil && permissionSender == target
         return HStack(spacing: 4) {
-            if let peer {
+            if editing, let target {
+                inlinePermissions(name, target: target, peer: peer)
+            } else if let peer {
                 sendAction(name, peer: peer, detail: detail, sending: sending)
             } else {
                 recipientName(name, sending: sending).fontWeight(person ? .semibold : .regular)
                     .help(name).frame(maxWidth: .infinity, alignment: .leading)
             }
             cancelSends(active, name: name)
-            if let peer {
+            if let peer, !editing {
                 Button { receiver.pasteAndSend(to: peer) } label: { Text("Paste").frame(minWidth: 42) }
                     .accessibilityLabel("Paste and send to " + name)
                     .help("Paste and send")
                     .disabled(receiver.sending || receiver.preparingSend)
             }
-            if let target = peer?.peer ?? removing {
-                Menu {
-                    Button("Sender Permissions…") { permissionSender = (target, name) }
-                    if deviceShortcut || removing != nil {
-                        Button("Edit Name…") {
-                            if let peer, !peer.isPerson { receiver.rename(peer) }
-                            else if let removing { receiver.renameRecent(removing, displayed: name, nickname: nickname, person: person) }
-                        }
-                    }
-                    if let removing {
-                        Button("Remove") { receiver.archiveRecipient(removing, peer: peer) }
-                    }
-                    if let peer, let connect = receiver.connectParsec {
-                        Button("Connect with Parsec") { connect(peer, false) }
-                        Button("Edit Parsec computer…") { connect(peer, true) }
-                    }
-                } label: { Image(systemName: "gearshape").frame(width: 24, height: 24) }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                .fixedSize()
-                .accessibilityLabel("Options for " + name)
-                .help("Options for " + name)
+            if let target {
+                if editing {
+                    Menu {
+                        recipientOptions(name, peer: peer, removing: removing, nickname: nickname,
+                                         person: person, deviceShortcut: deviceShortcut)
+                    } label: { Image(systemName: "ellipsis").frame(width: 22, height: 24) }
+                    .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+                    .accessibilityLabel("Options for " + name)
+                }
+                Button { permissionSender = editing ? nil : target } label: {
+                    Image(systemName: "gearshape").frame(width: 24, height: 24)
+                }
+                .buttonStyle(.borderless).fixedSize()
+                .accessibilityLabel("Sender permissions for " + name)
+                .help(editing ? "Close sender permissions" : "Sender permissions")
+                .contextMenu {
+                    recipientOptions(name, peer: peer, removing: removing, nickname: nickname,
+                                     person: person, deviceShortcut: deviceShortcut)
+                }
             }
         }
         .controlSize(.small).font(.system(size: 12)).frame(minHeight: 27)
@@ -364,7 +352,60 @@ struct BlipView: View {
             }
         }
         .contentShape(Rectangle())
-        .onDrop(of: [.fileURL], isTargeted: dropTarget(peer?.id)) { acceptDrop($0, to: peer) }
+        .onDrop(of: [.fileURL], isTargeted: dropTarget(editing ? nil : peer?.id)) {
+            !editing && acceptDrop($0, to: peer)
+        }
+    }
+
+    @ViewBuilder
+    private func recipientOptions(_ name: String, peer: BlipPeer?, removing: String?, nickname: String?,
+                                  person: Bool, deviceShortcut: Bool) -> some View {
+        if deviceShortcut || removing != nil {
+            Button("Edit Name…") {
+                if let peer, !peer.isPerson { receiver.rename(peer) }
+                else if let removing { receiver.renameRecent(removing, displayed: name, nickname: nickname, person: person) }
+            }
+        }
+        if let removing { Button("Remove") { receiver.archiveRecipient(removing, peer: peer) } }
+        if let peer, let connect = receiver.connectParsec {
+            Button("Connect with Parsec") { connect(peer, false) }
+            Button("Edit Parsec computer…") { connect(peer, true) }
+        }
+    }
+
+    private func inlinePermissions(_ name: String, target: String, peer: BlipPeer?) -> some View {
+        let owner = receiver.recipientOwner
+        let individual = BlipPolicy.exactPeer(target)
+        let roster = receiver.peers + receiver.directoryRecipients + [peer].compactMap { $0 }
+        var seen = Set<String>()
+        let devices = roster.filter { device in
+            let id = device.peer.lowercased()
+            return BlipPolicy.exactPeer(id) && id != owner.lowercased() &&
+                (individual ? id == target.lowercased() : accountPart(id) == accountPart(target)) &&
+                seen.insert(id).inserted
+        }
+        return VStack(alignment: .leading, spacing: 3) {
+            Text(name).fontWeight(.semibold).lineLimit(1)
+            if devices.isEmpty { Text("No known devices yet").font(.caption).foregroundStyle(.secondary) }
+            ForEach(devices) { device in
+                if !individual { Text(receiver.deviceName(device)).font(.caption).lineLimit(1) }
+                HStack(spacing: 4) {
+                    if device.id == devices.first?.id { Text("Auto:").font(.caption) }
+                    inlineToggle("Receive", detail: "Receive files automatically", device: device, owner: owner, rule: \.files)
+                    inlineToggle("Copy", detail: "Copy automatically accepted items", device: device, owner: owner, rule: \.clipboard)
+                    inlineToggle("Open", detail: "Open web links automatically", device: device, owner: owner, rule: \.peers)
+                }.toggleStyle(.button)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func inlineToggle(_ title: String, detail: String, device: BlipPeer, owner: String,
+                              rule: WritableKeyPath<BlipPolicy, Set<String>>) -> some View {
+        let name = receiver.deviceName(device)
+        return Toggle(title, isOn: Binding(get: { receiver.isTrusted(device, for: rule) }, set: {
+            if owner == receiver.recipientOwner { receiver.setTrusted(device, $0, for: rule) }
+        })).accessibilityLabel(title + " from " + name).help(detail + " from " + name)
     }
 
     private func dropTarget(_ id: String?) -> Binding<Bool> {

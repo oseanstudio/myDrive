@@ -1,6 +1,7 @@
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Controls.Primitives;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Windows.Storage.Pickers;
@@ -424,18 +425,86 @@ public sealed partial class MainWindow
         AddUnlistedSends();
     }
 
-    private static Button BlipRecipientOptions(string name, Action? permissions = null, Action? edit = null, Action? remove = null,
+    private string expandedBlipSender = "";
+    private string expandedBlipOwner = "";
+
+    private static Button BlipRecipientOptions(string name, Action? edit = null, Action? remove = null,
                                               Action? connectParsec = null, Action? editParsec = null)
     {
         var options = FlatBlipButton(QuickIcon("\uE713", "Options for " + name, () => { }));
         var menu = new MenuFlyout();
-        if (permissions != null) MenuAction(menu, "Sender permissions…", permissions);
         if (edit != null) MenuAction(menu, "Edit name…", edit);
         if (connectParsec != null) MenuAction(menu, "Connect with Parsec", connectParsec);
         if (editParsec != null) MenuAction(menu, "Edit Parsec computer…", editParsec);
         if (remove != null) MenuAction(menu, "Remove", remove);
         options.Flyout = menu;
         return options;
+    }
+
+    private void ToggleBlipRecipientPermissions(string owner, string peer)
+    {
+        if (owner != BlipOwner) return;
+        expandedBlipSender = expandedBlipOwner == owner && expandedBlipSender == peer ? "" : peer;
+        expandedBlipOwner = owner;
+        RenderRecipientRows();
+    }
+
+    private StackPanel InlineBlipPermissions(string owner, BlipDevice sender, string name)
+    {
+        var panel = new StackPanel { Spacing = 3, Padding = new Thickness(5, 3, 0, 3) };
+        panel.Children.Add(QuickText(name, 12, true));
+        var devices = (blipSnapshot?.Devices ?? []).Concat(directoryRecipients)
+            .Append(sender).Where(device => BlipTrustPolicy.ExactPeer(device.Peer) &&
+                !device.Peer.Equals(owner, StringComparison.OrdinalIgnoreCase) &&
+                (sender.IsPerson ? device.Account.Equals(sender.Account, StringComparison.OrdinalIgnoreCase)
+                    : device.Peer.Equals(sender.Peer, StringComparison.OrdinalIgnoreCase)))
+            .DistinctBy(device => device.Peer, StringComparer.OrdinalIgnoreCase)
+            .OrderBy(BlipDeviceName, StringComparer.CurrentCultureIgnoreCase).ToList();
+        if (devices.Count == 0) panel.Children.Add(QuickText("No known devices yet", 11));
+        foreach (var device in devices)
+        {
+            var deviceName = BlipDeviceName(device);
+            if (sender.IsPerson) panel.Children.Add(QuickText(deviceName, 11));
+            var toggles = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 2 };
+            if (device == devices[0]) toggles.Children.Add(new TextBlock { Text = "Auto:", FontSize = 11,
+                VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 2, 0) });
+            Add("Receive", "Receive files automatically", preferences => preferences.BlipAutoReceivePeers);
+            Add("Copy", "Copy automatically accepted items", preferences => preferences.BlipAutoClipboardPeers);
+            Add("Open", "Open web links automatically", preferences => preferences.BlipAutoOpenPeers);
+            panel.Children.Add(toggles);
+
+            void Add(string label, string description, Func<Preferences, List<string>> allowed)
+            {
+                var account = owner.Split(':')[0];
+                var preferences = Preferences.Current;
+                var toggle = new ToggleButton { Content = label, FontSize = 11, MinWidth = 0, MinHeight = 26,
+                    Padding = new Thickness(4, 2, 4, 2), IsChecked = preferences.BlipAutoOpenAccount.Equals(account,
+                        StringComparison.OrdinalIgnoreCase) && allowed(preferences).Contains(device.Peer, StringComparer.OrdinalIgnoreCase) };
+                AutomationProperties.SetName(toggle, label + " from " + deviceName);
+                ToolTipService.SetToolTip(toggle, description + " from " + deviceName);
+                toggle.Click += (_, _) =>
+                {
+                    if (diagnosticMode || owner != BlipOwner) return;
+                    lock (blipPolicyGate)
+                    {
+                        if (!preferences.BlipAutoOpenAccount.Equals(account, StringComparison.OrdinalIgnoreCase))
+                        {
+                            preferences.BlipAutoOpenAccount = account;
+                            preferences.BlipAutoReceivePeers = [];
+                            preferences.BlipAutoClipboardPeers = [];
+                            preferences.BlipAutoOpenPeers = [];
+                        }
+                        var peers = allowed(preferences);
+                        peers.RemoveAll(peer => peer.Equals(device.Peer, StringComparison.OrdinalIgnoreCase));
+                        if (toggle.IsChecked == true) peers.Add(device.Peer);
+                        Preferences.Save();
+                    }
+                    _ = RefreshBlip();
+                };
+                toggles.Children.Add(toggle);
+            }
+        }
+        return panel;
     }
 
     private static Button BlipPasteButton(string name, Action paste)
@@ -498,7 +567,9 @@ public sealed partial class MainWindow
             (device.IsPerson && SameBlipAccount(item.Transfer.Peer, device.Account))).ToList();
         active.RemoveAll(sends.Contains);
         var title = BlipDestinationLabel(QuickText(name, 12), detail, sends.Count > 0);
-        if (device.History) row.Children.Add(new Border { Child = title, Padding = new Thickness(7, 3, 0, 3) });
+        bool editing = expandedBlipOwner == owner && expandedBlipSender == device.Peer;
+        if (editing) row.Children.Add(InlineBlipPermissions(owner, device, name));
+        else if (device.History) row.Children.Add(new Border { Child = title, Padding = new Thickness(7, 3, 0, 3) });
         else
         {
             var send = FlatBlipButton(QuickButton("", () => _ = SendToBlipRecipient(owner, device)));
@@ -523,20 +594,28 @@ public sealed partial class MainWindow
         {
             var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 1, VerticalAlignment = VerticalAlignment.Center };
             if (sends.Count > 0) actions.Children.Add(CancelBlipSendingItems(name, sends));
-            if (!device.History)
+            if (!device.History && !editing)
             {
                 var paste = BlipPasteButton(name,
                     () => _ = SendToBlipRecipient(owner, device, paste: true));
                 paste.IsEnabled = BlipRunning && !busy;
                 actions.Children.Add(paste);
             }
-            actions.Children.Add(BlipRecipientOptions(name,
-                permissions: () => { if (owner == BlipOwner) _ = ChooseLinkSenders(device); },
+            var extras = BlipRecipientOptions(name,
                 edit: remove != null ? () => _ = RenameRecentRecipient(owner, remove, name, nickname, device.IsPerson, device)
                     : deviceShortcut ? () => _ = RenameBlipDevice(owner, name, device, nickname) : null,
                 remove: remove == null ? null : () => _ = UpdateRecentRecipients("archive", owner, device.History ? null : device, target: remove),
                 connectParsec: device.History ? null : () => _ = ConnectParsec(owner, device),
-                editParsec: device.History ? null : () => _ = ConnectParsec(owner, device, edit: true)));
+                editParsec: device.History ? null : () => _ = ConnectParsec(owner, device, edit: true));
+            var gear = QuickIcon("\uE713", "Sender permissions for " + name,
+                () => ToggleBlipRecipientPermissions(owner, device.Peer));
+            if (editing)
+            {
+                extras.Content = new FontIcon { Glyph = "\uE712", FontSize = 12 };
+                actions.Children.Add(extras);
+            }
+            else gear.ContextFlyout = extras.Flyout as MenuFlyout;
+            actions.Children.Add(gear);
             foreach (var action in actions.Children.OfType<Button>()) FlatBlipButton(action);
             Grid.SetColumn(actions, 1);
             row.Children.Add(actions);

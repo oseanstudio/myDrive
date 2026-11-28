@@ -50,6 +50,7 @@ public sealed partial class MainWindow
         MenuAction(addMenu,"Sync a folder…",()=>_=ShowQuickShare());
         MenuAction(addMenu,"Send with Blip…",()=>{NavigateQuick("transfers");if(blipSnapshot?.Status.Authenticated==true)_=ShowBlipSend();});
         MenuAction(addMenu,"Paste and send…",()=>_=PasteAndSendBlip());
+        MenuAction(addMenu,"Nearby AirDrop…",()=>_=ShowNearbyAirDrop());
         addMenu.Items.Add(new MenuFlyoutSeparator());
         MenuAction(addMenu,"Hide to tray",DismissQuickPopup);
         MenuAction(addMenu,"Quit myDrive",Quit);
