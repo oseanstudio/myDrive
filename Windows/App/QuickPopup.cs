@@ -62,7 +62,7 @@ public sealed partial class MainWindow
         var tabs = new Grid { ColumnSpacing = 4, Margin = new Thickness(0, 6, 0, 0) };
         foreach (var (key, name, icon) in new (string, string, string?)[]
             { ("transfers", SendViewName, null), ("sync", SyncViewName, null), ("connections", StorageViewName, null),
-              ("activity", "Activity", "\uE9D9"), ("settings", "Settings", "\uE713") })
+              ("cloud", "Cloud Drives", "\uE753"), ("activity", "Activity", "\uE9D9"), ("settings", "Settings", "\uE713") })
         {
             if (key == "activity") tabs.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
             tabs.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
@@ -94,6 +94,7 @@ public sealed partial class MainWindow
         if(busy)return;currentView=view;
         navigation.SelectedItem=view=="settings"?navigation.SettingsItem:navigation.MenuItems.OfType<NavigationViewItem>().FirstOrDefault(i=>i.Tag?.ToString()==view);
         Render();if(!diagnosticMode&&view=="sync"&&Environment.TickCount64-lastSyncRefresh>=10_000)_=RefreshSyncthing();if(view=="transfers")_=RefreshBlip();
+        if(view=="cloud")_=RefreshCloud();
     }
     private void UpdateQuickChrome()
     {

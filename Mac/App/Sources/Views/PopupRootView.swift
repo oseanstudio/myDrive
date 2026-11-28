@@ -71,6 +71,7 @@ struct PopupRootView: View {
                 Button { app.view = kind } label: {
                     Group {
                         switch kind {
+                        case .cloud: Image(systemName: "cloud")
                         case .activity: Image(systemName: "clock")
                         case .settings: Image(systemName: "gearshape")
                         default: Text(kind.label)
@@ -102,6 +103,7 @@ struct PopupRootView: View {
         case .syncInfo: SyncInfoView()
         case .syncAttention: SyncAttentionView()
         case .connections: ConnectionsView()
+        case .cloud: CloudDrivesView(model: app.cloud)
         case .activity: ActivityView()
         case .transfers: BlipView(receiver: app.blip)
         case .settings: SettingsView(fullWindow: fullWindow)

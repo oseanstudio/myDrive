@@ -1,6 +1,7 @@
 mod automation;
 mod blip_recents;
 mod client;
+mod cloud;
 mod desktop_update;
 mod model;
 mod mcp;
@@ -64,6 +65,9 @@ fn execute(r: Request) -> Result<Value, String> {
     }
     if let Some(action) = r.action.strip_prefix("relay.") {
         return relay::run(action, &r.payload, Path::new(&r.data_dir));
+    }
+    if let Some(action) = r.action.strip_prefix("cloud.") {
+        return cloud::execute(action, Path::new(&r.data_dir), &r.payload);
     }
     if r.action == "smb.connect" {
         #[cfg(windows)]
@@ -201,6 +205,15 @@ fn main() {
         #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
         if command == "--blip-engine" || (cfg!(windows) && command == "--windows-blip") {
             std::process::exit(blip::run(arguments));
+        }
+        if command == "--cloud-worker" {
+            let Some(root) = arguments.next() else { return };
+            let Some(job) = arguments.next().and_then(|value| value.into_string().ok()) else { return };
+            let Some(run) = arguments.next().and_then(|value| value.into_string().ok()) else { return };
+            if !Path::new(&root).is_absolute() || cloud::worker(Path::new(&root), &job, &run).is_err() {
+                std::process::exit(1);
+            }
+            return;
         }
         if command == "--syncthing-owner" {
             if let Err(error) = syncthing_engine::serve() {

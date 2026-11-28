@@ -6,7 +6,7 @@ import Combine
 import Foundation
 
 enum PopupViewKind: String, CaseIterable, Identifiable {
-    case sync, syncFiles, syncInfo, syncAttention, connections, activity, transfers, settings
+    case sync, syncFiles, syncInfo, syncAttention, connections, cloud, activity, transfers, settings
     var id: String { rawValue }
     var label: String {
         switch self {
@@ -14,6 +14,7 @@ enum PopupViewKind: String, CaseIterable, Identifiable {
         case .syncFiles: return "Sync files"
         case .syncInfo, .syncAttention: return "Syncthing"
         case .connections: return "SMB Drives"
+        case .cloud: return "Cloud Drives"
         case .activity: return "Activity"
         case .transfers: return "Blip"
         case .settings: return "Settings"
@@ -25,7 +26,7 @@ enum PopupViewKind: String, CaseIterable, Identifiable {
         default: return self
         }
     }
-    static var tabs: [PopupViewKind] { [.transfers, .sync, .connections, .activity, .settings] }
+    static var tabs: [PopupViewKind] { [.transfers, .sync, .connections, .cloud, .activity, .settings] }
 }
 
 enum StatusTint {
@@ -146,6 +147,7 @@ final class AppState: ObservableObject {
     private var announcedResponses = Set<String>()
 
     let syncthing = SyncthingService()
+    let cloud = CloudDrivesState()
     lazy var blip = BlipReceiver()
     let smbHosting = SmbSharingHost()
     @Published var shareFolderPath = ""
@@ -169,6 +171,7 @@ final class AppState: ObservableObject {
     // MARK: - Lifecycle
 
     func startup() {
+        cloud.start()
         Task {
             if let error = (try? await CoreBridge.shared.call(action: "update.error", request: ["data_dir": Paths.dataDir.path], timeout: 5)) as? String {
                 autoUpdateAfter = Date().addingTimeInterval(60 * 60)
@@ -288,6 +291,7 @@ final class AppState: ObservableObject {
     // MARK: - Timers
 
     func tick() {
+        cloud.tick(viewing: view == .cloud && (popoverVisible || updateWindowIsVisible()))
         checkForAppUpdate()
         if !manualUpdateRequested || idleForUpdate {
             installAppUpdate(automatic: !manualUpdateRequested)
@@ -352,7 +356,7 @@ final class AppState: ObservableObject {
     }
 
     private var idleForUpdate: Bool {
-        busy == nil && dialog == nil && NSApp.modalWindow == nil &&
+        busy == nil && !cloud.busy && !cloud.active && dialog == nil && NSApp.modalWindow == nil &&
             !blip.transfers.contains { $0.isLive && ["Created", "Pending", "Active", "ResumeRequested"].contains($0.status) }
     }
 

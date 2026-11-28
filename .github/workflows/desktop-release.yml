@@ -14,6 +14,7 @@ on:
       - 'tests/source-safety.mjs'
       - 'tests/service-cache/**'
       - 'tests/syncthing-owner.mjs'
+      - 'tests/cloud-drives.mjs'
       - '.github/workflows/desktop-release.yml'
       - '.github/workflows/macos-dmg.yml'
       - '.github/workflows/linux-appimage.yml'
@@ -146,6 +147,8 @@ jobs:
           node tests/automation-smoke.mjs (Join-Path $directory 'mydrive-cli.exe')
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           node tests/syncthing-owner.mjs $core
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          node tests/cloud-drives.mjs $core
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           $shareHost = Join-Path $directory 'mydrive-smb-host.exe'
           $hostResult = '{"action":"list"}' | & $shareHost | ConvertFrom-Json

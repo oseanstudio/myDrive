@@ -124,7 +124,7 @@ public sealed partial class MainWindow
     private bool UpdateIdle()
     {
         var transfers = blipSnapshot?.Transfers;
-        return !busy && modalDepth == 0 && (transfers == null ||
+        return !busy && !cloudBusy && !CloudBackupActive() && modalDepth == 0 && (transfers == null ||
             !transfers.Any(t => t.IsLive && t.Status is "Created" or "Pending" or "Active" or "ResumeRequested"));
     }
 

@@ -21,6 +21,7 @@ from file_manager import install_actions
 from services import DATA, ROOT, Blip, Sync, core, read_settings, save_settings
 from smb_sharing import add_private_share
 from storage_view import StorageView
+from cloud_view import CloudView
 from tray import Tray
 from transfer_view import TransferView, clipboard_text
 from ui_widgets import button, clear, label, menu, row
@@ -58,7 +59,7 @@ class MyDrive(Gtk.Application):
         self.send_activity_error = ""
         self.snapshot = {}
         self.lanes = {key: ThreadPoolExecutor(max_workers=1)
-                      for key in ("sync", "blip", "blip-recipients", "storage", "smb-health", "updates", "settings")}
+                      for key in ("sync", "blip", "blip-recipients", "storage", "smb-health", "cloud", "updates", "settings")}
         self.pending = {key: 0 for key in self.lanes}
         self.window = None
         self.browse = None
@@ -102,7 +103,7 @@ class MyDrive(Gtk.Application):
             self.desktop_appearance.connect("changed::color-scheme", lambda *_: self.apply_appearance())
         self.apply_appearance()
         titles = {"Send": "Blip", "Sync": "Syncthing", "SMB Drives": "SMB Drives",
-                  "Activity": "Activity", "Settings": "Settings"}
+                  "Cloud Drives": "Cloud Drives", "Activity": "Activity", "Settings": "Settings"}
         header_content = Gtk.Box(spacing=7)
         header_content.append(label(f"myDrive {VERSION}", "heading"))
         self.update_offer = button("", self.install_update)
@@ -153,8 +154,10 @@ class MyDrive(Gtk.Application):
             if name == "Activity":
                 tabs.append(Gtk.Box(hexpand=True))
             tab = Gtk.ToggleButton()
-            if name in ("Activity", "Settings"):
-                tab.set_icon_name("document-open-recent-symbolic" if name == "Activity" else "emblem-system-symbolic")
+            icons = {"Cloud Drives": "folder-remote-symbolic", "Activity": "document-open-recent-symbolic",
+                     "Settings": "emblem-system-symbolic"}
+            if name in icons:
+                tab.set_icon_name(icons[name])
             else:
                 tab.set_label(caption)
             tab.set_tooltip_text(caption)
@@ -178,8 +181,11 @@ class MyDrive(Gtk.Application):
                 self.change_startup("startup.status")
             if title == "Activity" and not self.fixture:
                 self.refresh_send_activity()
+            if title == "Cloud Drives" and not self.fixture:
+                self.cloud_view.refresh()
         self.stack.connect("notify::visible-child-name", show_view)
         self.storage_view = StorageView(self, self.pages["SMB Drives"])
+        self.cloud_view = CloudView(self, self.pages["Cloud Drives"])
         if not self.fixture:
             def check_visible_storage(window, _property):
                 if window.get_visible() and self.stack.get_visible_child_name() == "SMB Drives":
@@ -208,6 +214,7 @@ class MyDrive(Gtk.Application):
         self.storage_view.load()
         self.storage_view.start_monitor()
         self.transfer_view.refresh()
+        self.cloud_view.start()
         self.tick_updates()
         GLib.timeout_add_seconds(6 * 60 * 60, self.tick_updates)
         GLib.timeout_add_seconds(8, self.tick_sync)
@@ -240,6 +247,7 @@ class MyDrive(Gtk.Application):
 
     def tick_sync(self):
         self.refresh_background_sync()
+        self.cloud_view.tick()
         return not self.stopping
 
     def refresh_background_sync(self, force=False):
@@ -339,7 +347,8 @@ class MyDrive(Gtk.Application):
         )
 
     def update_idle(self):
-        if self.file_picker_depth or any(self.pending[key] for key in ("storage", "blip", "sync", "settings")):
+        if (self.file_picker_depth or self.cloud_view.active
+                or any(self.pending[key] for key in ("storage", "blip", "sync", "cloud", "settings"))):
             return False
         if any(window.get_transient_for() is self.window and window.get_visible()
                for window in Gtk.Window.list_toplevels()):

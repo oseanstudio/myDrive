@@ -30,7 +30,7 @@ mv "$appdir/usr/bin/SMB-ThirdPartyNotices.txt" "$appdir/usr/share/doc/mydrive/"
 node Core/third-party-notices.mjs Core/Cargo.toml "$appdir/usr/share/doc/mydrive/ThirdPartyNotices.txt"
 install -m644 Linux/packaging/AppImage-Runtime.txt "$appdir/usr/share/doc/mydrive/AppImage-Runtime.txt"
 install -Dm755 Linux/packaging/AppRun.sh "$appdir/AppRun"
-install -m644 Linux/{mydrive,services,blip_cli,file_manager,storage_view,smb_sharing,transfer_view,tray,ui_widgets}.py "$appdir/usr/lib/mydrive/"
+install -m644 Linux/{mydrive,services,blip_cli,cloud_view,file_manager,storage_view,smb_sharing,transfer_view,tray,ui_widgets}.py "$appdir/usr/lib/mydrive/"
 if [[ -n "${MYDRIVE_VERSION:-}" ]]; then
     printf '%s\n' "$MYDRIVE_VERSION" > "$appdir/usr/lib/mydrive/version.txt"
 fi
@@ -56,6 +56,7 @@ fi
 printf '%s\n' '{"action":"version"}' | "$output" --core | python3 -c 'import json,sys; assert json.load(sys.stdin)["ok"]'
 node tests/automation-smoke.mjs "$output" --cli
 node tests/syncthing-owner.mjs "$output" --core
+node tests/cloud-drives.mjs "$output" --core
 fixture=$(mktemp -d /tmp/md-blip.XXXXXX)
 if ! MYDRIVE_BLIP_LIBRARY="$build/libblip-jni.so" XDG_RUNTIME_DIR="$fixture" \
         XDG_DATA_HOME="$fixture/data" timeout 25s "$output" --cli blip serve </dev/null; then
