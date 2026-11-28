@@ -118,18 +118,20 @@ struct PopupRootView: View {
                 let updateTitle = app.checkingForAppUpdate ? "Checking for updates" :
                     app.availableAppUpdate.map(app.updateOfferTitle) ?? "Check for updates"
                 Button(action: app.fetchAppUpdate) {
-                    if app.checkingForAppUpdate {
-                        ProgressView().controlSize(.small).frame(width: 16)
-                    } else if app.availableAppUpdate != nil {
-                        Text(app.updateOfferLabel)
-                    } else {
-                        Image(systemName: "arrow.clockwise").frame(width: 16)
+                    Group {
+                        if app.checkingForAppUpdate || app.installingAppUpdate {
+                            ProgressView().controlSize(.small).scaleEffect(0.75)
+                        } else if app.availableAppUpdate != nil {
+                            Image(systemName: "arrow.down.circle").foregroundStyle(Color.accentColor)
+                        } else {
+                            Image(systemName: "arrow.clockwise").foregroundStyle(.secondary)
+                        }
                     }
+                    .font(.system(size: 13))
+                    .frame(width: 24, height: 24)
+                    .contentShape(Rectangle())
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .font(.system(size: 11))
-                .frame(height: 24)
+                .buttonStyle(.plain)
                 .disabled(app.checkingForAppUpdate || app.installingAppUpdate)
                 .help(updateTitle)
                 .accessibilityLabel(updateTitle)

@@ -301,8 +301,6 @@ class MyDrive(Gtk.Application):
             self.update_offer.set_visible(bool(update))
             self.update_offer_label()
             self.sync_auto_install_timer()
-            if not update and self.show_update_result:
-                self.announce(f"myDrive {VERSION} is up to date.")
             self.show_update_result = False
             self.install_update(automatic=True)
 

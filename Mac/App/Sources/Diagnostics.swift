@@ -42,6 +42,12 @@ enum Diagnostics {
                 for scheme in [ColorScheme.light,.dark] {
                     let file="blip-\(scheme == .light ? "light":"dark").png"
                     render(PopupRootView().environmentObject(state).environment(\.colorScheme,scheme),height:PopupMetrics.maxHeight,to:directory.appendingPathComponent(file),scheme:scheme);captures.append(file)
+                    state.availableAppUpdate = "99.99.99"
+                    let update = "update-available-\(scheme == .light ? "light" : "dark").png"
+                    render(PopupRootView().environmentObject(state).environment(\.colorScheme, scheme),
+                           height: PopupMetrics.maxHeight, to: directory.appendingPathComponent(update), scheme: scheme)
+                    captures.append(update)
+                    state.availableAppUpdate = nil
                     let permissions = "sender-permissions-\(scheme == .light ? "light" : "dark").png"
                     render(BlipSenderPermissionsView(receiver: receiver).padding(10).environment(\.colorScheme, scheme),
                            height: 180, to: directory.appendingPathComponent(permissions), scheme: scheme)

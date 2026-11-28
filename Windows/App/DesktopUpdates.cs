@@ -107,7 +107,6 @@ public sealed partial class MainWindow
             }
             offeredAppVersion = version;
             UpdateOfferLabel();
-            if (version is null && showUpdateResult) Info("myDrive is up to date", $"You’re using version {DisplayVersion}.");
         }
         catch (Exception)
         {

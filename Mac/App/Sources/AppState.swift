@@ -328,9 +328,6 @@ final class AppState: ObservableObject {
                 }
                 availableAppUpdate = target
                 foundUpdate = target != nil
-                if target == nil && showAppUpdateResult {
-                    showBanner(.info, "myDrive is up to date", "You’re using version \(version).")
-                }
             } catch {
                 if showAppUpdateResult { showBanner(.info, "Could not check for updates", "Try again when GitHub is available.") }
             }
@@ -341,11 +338,6 @@ final class AppState: ObservableObject {
             if download { manualUpdateRequested = true }
             installAppUpdate(automatic: !download)
         }
-    }
-
-    var updateOfferLabel: String {
-        if installingAppUpdate { return "Updating…" }
-        return preparedUpdatePath == nil ? "Update" : "Install"
     }
 
     func updateOfferTitle(_ version: String) -> String {
