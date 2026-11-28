@@ -589,13 +589,23 @@ class TransferView:
         return [("Cancel " + name, lambda t=transfer, r=relay: self.cancel_send(t, relay=r))
                 for identifier, name, transfer, relay in items if identifier and identifier not in self.cancelling_sends]
 
+    def send_cancel_control(self, items, name):
+        actions = self.sending_cancellations(items)
+        if not actions:
+            return None
+        if len(actions) == 1:
+            cancel = Gtk.Button(icon_name="window-close-symbolic", tooltip_text="Cancel sending to " + name)
+            cancel.update_property([Gtk.AccessibleProperty.LABEL], ["Cancel sending to " + name])
+            cancel.connect("clicked", lambda *_: actions[0][1]())
+            return cancel
+        return menu(actions, "window-close-symbolic", "Cancel sends to " + name)
+
     def show_unlisted_sends(self):
         for peer, items in reversed(list(self.unplaced_sends.items())):
             name = self.fallback_name(peer)
-            actions = self.sending_cancellations(items)
             controls = [label("Sending", "dim-label")]
-            if actions:
-                controls.append(menu(actions, "process-stop-symbolic", "Cancel sends to " + name))
+            if cancel := self.send_cancel_control(items, name):
+                controls.append(cancel)
             self.recipient_rows.prepend(row(name, "", *controls))
 
     def recent_details(self, owner):
@@ -660,7 +670,8 @@ class TransferView:
             controls.append(name_label)
         if items:
             controls.append(label("Sending", "dim-label"))
-            actions.extend(self.sending_cancellations(items))
+            if cancel := self.send_cancel_control(items, name):
+                controls.append(cancel)
         if peer:
             paste = Gtk.Button(label="Paste", width_request=55, tooltip_text="Paste and send to " + name)
             paste.connect("clicked", lambda *_: self.paste(peer, owner))

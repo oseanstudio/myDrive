@@ -246,21 +246,32 @@ struct BlipView: View {
     }
 
     @ViewBuilder private func cancelSends(_ items: [SendingItem], name: String) -> some View {
-        if !items.isEmpty {
+        if items.count == 1, let item = items.first {
+            Button { cancelSend(item) } label: {
+                Image(systemName: "xmark").frame(width: 20, height: 24)
+            }
+            .buttonStyle(.borderless).fixedSize()
+            .disabled(receiver.cancellingSends.contains(item.id))
+            .accessibilityLabel("Cancel sending to " + name)
+            .help("Cancel sending to " + name)
+        } else if !items.isEmpty {
             Menu {
                 ForEach(items) { item in
-                    Button("Cancel " + item.name) {
-                        switch item {
-                        case .direct(let transfer): receiver.cancelSend(transfer)
-                        case .relay(let transfer): receiver.cancelQueuedSend(transfer)
-                        }
-                    }.disabled(receiver.cancellingSends.contains(item.id))
+                    Button("Cancel " + item.name) { cancelSend(item) }
+                        .disabled(receiver.cancellingSends.contains(item.id))
                 }
             } label: {
-                Image(systemName: "xmark.circle").frame(width: 20, height: 24)
+                Image(systemName: "xmark").frame(width: 20, height: 24)
             }
             .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
             .accessibilityLabel("Cancel sends to " + name)
+        }
+    }
+
+    private func cancelSend(_ item: SendingItem) {
+        switch item {
+        case .direct(let transfer): receiver.cancelSend(transfer)
+        case .relay(let transfer): receiver.cancelQueuedSend(transfer)
         }
     }
 
@@ -315,6 +326,7 @@ struct BlipView: View {
                 recipientName(name, sending: sending).fontWeight(person ? .semibold : .regular)
                     .help(name).frame(maxWidth: .infinity, alignment: .leading)
             }
+            cancelSends(active, name: name)
             if let peer {
                 Button { receiver.pasteAndSend(to: peer) } label: { Text("Paste").frame(minWidth: 42) }
                     .accessibilityLabel("Paste and send to " + name)
@@ -344,7 +356,6 @@ struct BlipView: View {
                 .accessibilityLabel("Options for " + name)
                 .help("Options for " + name)
             }
-            cancelSends(active, name: name)
         }
         .controlSize(.small).font(.system(size: 12)).frame(minHeight: 27)
         .background {

@@ -424,12 +424,12 @@ public sealed partial class MainWindow
         AddUnlistedSends();
     }
 
-    private static Button BlipRecipientOptions(string name, Action permissions, Action? edit = null, Action? remove = null,
+    private static Button BlipRecipientOptions(string name, Action? permissions = null, Action? edit = null, Action? remove = null,
                                               Action? connectParsec = null, Action? editParsec = null)
     {
         var options = FlatBlipButton(QuickIcon("\uE713", "Options for " + name, () => { }));
         var menu = new MenuFlyout();
-        MenuAction(menu, "Sender permissions…", permissions);
+        if (permissions != null) MenuAction(menu, "Sender permissions…", permissions);
         if (edit != null) MenuAction(menu, "Edit name…", edit);
         if (connectParsec != null) MenuAction(menu, "Connect with Parsec", connectParsec);
         if (editParsec != null) MenuAction(menu, "Edit Parsec computer…", editParsec);
@@ -522,6 +522,7 @@ public sealed partial class MainWindow
         if (!device.History || remove != null || deviceShortcut || sends.Count > 0)
         {
             var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 1, VerticalAlignment = VerticalAlignment.Center };
+            if (sends.Count > 0) actions.Children.Add(CancelBlipSendingItems(name, sends));
             if (!device.History)
             {
                 var paste = BlipPasteButton(name,
@@ -536,7 +537,6 @@ public sealed partial class MainWindow
                 remove: remove == null ? null : () => _ = UpdateRecentRecipients("archive", owner, device.History ? null : device, target: remove),
                 connectParsec: device.History ? null : () => _ = ConnectParsec(owner, device),
                 editParsec: device.History ? null : () => _ = ConnectParsec(owner, device, edit: true)));
-            if (sends.Count > 0) actions.Children.Add(CancelBlipSendingItems(name, sends));
             foreach (var action in actions.Children.OfType<Button>()) FlatBlipButton(action);
             Grid.SetColumn(actions, 1);
             row.Children.Add(actions);

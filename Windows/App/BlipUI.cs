@@ -582,7 +582,7 @@ public sealed partial class MainWindow
             send.Tag = device;
             var paste = FlatBlipButton(BlipPasteButton(title.Text + ", " + detail,
                 () => SelectDevice(device, paste: true)));
-            var rename = BlipRecipientOptions(BlipDeviceName(device) + ", " + detail, () =>
+            var rename = BlipRecipientOptions(BlipDeviceName(device) + ", " + detail, edit: () =>
                 EditRecipientName(dialog, content, localPeer, device, title, send, paste, grouped));
             var row = new Grid { ColumnSpacing = 4 };
             row.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });

@@ -5,6 +5,9 @@ using System.Text.Json;
 namespace MyDrive;
 public sealed partial class MainWindow
 {
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern nint SendMessageW(nint window, uint message, nint parameter, nint data);
+
     private static void CheckParsecHostBadge()
     {
         var owner = "11111111-1111-4111-8111-111111111111:22222222-2222-4222-8222-222222222222";
@@ -88,11 +91,12 @@ public sealed partial class MainWindow
             row.Children.OfType<Button>().Any(button => button.Content is StackPanel panel &&
                 panel.Children.FirstOrDefault() is Grid heading &&
                 heading.Children.OfType<TextBlock>().Select(label => label.Text).SequenceEqual(["Studio Mac", "Sending"])));
-        if (sendingRows.SingleOrDefault() is not { } sendingRow ||
-            !sendingRow.Children.OfType<StackPanel>().SelectMany(actions => actions.Children.OfType<Button>())
-                .Any(button => Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(button) == "Cancel sending to Studio Mac") ||
-            page.Children.OfType<ListView>().Any())
-            throw new IOException("A pending Blip transfer must show Sending and Cancel in its recipient row.");
+        var sendActions = sendingRows.SingleOrDefault()?.Children.OfType<StackPanel>()
+            .SelectMany(panel => panel.Children.OfType<Button>()).ToArray();
+        if (sendActions is not { Length: >= 2 } ||
+            Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(sendActions[0]) != "Cancel sending to Studio Mac" ||
+            sendActions[1].Content is not "Paste" || page.Children.OfType<ListView>().Any())
+            throw new IOException("A pending transfer must show its Cancel button immediately to the left of Paste.");
         blipSnapshot.Transfers.Clear();
         Render();
         blipSnapshot.Devices.Remove(own);
@@ -182,10 +186,38 @@ public sealed partial class MainWindow
                 await notice.FileCard.LoadedPreview;
                 await Task.Delay(150);
                 notice.Surface.UpdateLayout();
-                if (notice.FileCard.PreviewKind != "text" ||
-                    notice.FileCard.ActualHeight < BlipReceivedCard.MediaHeight ||
+                if (notice.FileCard.PreviewKind != "text" || notice.FileCard.ActualHeight < 210 ||
                     notice.Surface is not Border { Child: ScrollViewer { ScrollableHeight: <= 1 } })
                     throw new IOException("The receive preview and its overlay controls do not fit the native window.");
+
+                const uint getIcon = 0x007F;
+                nint window = WinRT.Interop.WindowNative.GetWindowHandle(notice);
+                if (Enumerable.Range(0, 3).All(size => SendMessageW(window, getIcon, size, 0) == 0))
+                    throw new IOException("The receive window has no application icon set.");
+
+                if (AppWindowTitleBar.IsCustomizationSupported())
+                {
+                    notice.Surface.RequestedTheme = ElementTheme.Dark;
+                    await Task.Delay(50);
+                    if (notice.AppWindow.TitleBar.PreferredTheme != TitleBarTheme.Dark)
+                        throw new IOException("The receive caption does not follow the app's dark appearance.");
+                    notice.Surface.RequestedTheme = ElementTheme.Light;
+                    await Task.Delay(50);
+                    if (notice.AppWindow.TitleBar.PreferredTheme != TitleBarTheme.Light)
+                        throw new IOException("The receive caption does not follow the app's light appearance.");
+                }
+
+                int longHeight = notice.AppWindow.ClientSize.Height;
+                await File.WriteAllTextAsync(path, "A short note");
+                value.Id = Guid.NewGuid().ToString();
+                notice.Update(value, "Studio Mac", false, true);
+                await notice.FileCard.LoadedPreview;
+                await Task.Delay(150);
+                notice.Surface.UpdateLayout();
+                if (notice.FileCard.PreviewKind != "text" || notice.FileCard.ActualHeight > 130 ||
+                    notice.AppWindow.ClientSize.Height >= longHeight - 55 ||
+                    notice.Surface is not Border { Child: ScrollViewer { ScrollableHeight: <= 1 } })
+                    throw new IOException("A short receive preview must fit its content with its actions visible.");
             }
             finally { notice.Stop(); }
         }

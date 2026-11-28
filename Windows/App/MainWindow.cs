@@ -65,6 +65,7 @@ public sealed partial class MainWindow : Window
     private const string StorageViewName = "SMB Drives";
     private const string SendViewName = "Blip";
     private const string SyncViewName = "Syncthing";
+    internal static string AppIconPath => Path.Combine(AppContext.BaseDirectory, "Assets", "myDrive.ico");
     private static string DisplayVersion => typeof(MainWindow).Assembly.GetName().Version?.ToString(3) ?? "";
 
     private SolidColorBrush Brush(string resource)
@@ -85,7 +86,7 @@ public sealed partial class MainWindow : Window
         popupInput=new PopupInput(point=>DispatcherQueue.TryEnqueue(()=>DismissAt(point)));
         Title="myDrive";SystemBackdrop=new MicaBackdrop();root.RequestedTheme=RequestedAppearance;root.Background=Brush("ApplicationPageBackgroundThemeBrush");
         hwnd=WindowNative.GetWindowHandle(this);AppWindow.Resize(new Windows.Graphics.SizeInt32(1160,790));
-        AppWindow.SetIcon(Path.Combine(AppContext.BaseDirectory,"Assets","myDrive.ico"));
+        AppWindow.SetIcon(AppIconPath);
         root.RowDefinitions.Add(new(){Height=GridLength.Auto});root.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});root.RowDefinitions.Add(new(){Height=GridLength.Auto});
         branding=new StackPanel{Orientation=Orientation.Horizontal,Spacing=12,Margin=new Thickness(20,22,12,22)};
         branding.Children.Add(new Image{Source=new Microsoft.UI.Xaml.Media.Imaging.BitmapImage(new Uri(Path.Combine(AppContext.BaseDirectory,"Assets","myDrive.png"))),Width=38,Height=38});branding.Children.Add(Text("myDrive",22,true));navigation.PaneHeader=branding;
@@ -541,6 +542,7 @@ public sealed partial class MainWindow : Window
     {
         var host = new Grid { RequestedTheme = RequestedAppearance, Background = root.Background };
         var window = new Window { Title = "myDrive", Content = host };
+        window.AppWindow.SetIcon(AppIconPath);
         detachedDialog = window;
         var bounds = AppWindow.Size;
         var origin = AppWindow.Position;

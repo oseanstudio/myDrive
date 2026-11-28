@@ -1,6 +1,6 @@
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
-using Microsoft.UI.Xaml.Media;
+using Microsoft.UI.Xaml.Markup;
 using Microsoft.UI.Windowing;
 using Windows.Graphics;
 using WinRT.Interop;
@@ -28,7 +28,8 @@ internal sealed class BlipIncomingWindow : Window
     public BlipIncomingWindow(Action<BlipTransfer> accept,Action settings,Func<RectInt32> anchor) {
         this.anchor=anchor;
         Title="myDrive · Incoming transfer";
-        var content=new StackPanel{Spacing=8};
+        AppWindow.SetIcon(MainWindow.AppIconPath);
+        var content = new StackPanel { Spacing = 4 };
         var identity=new Grid{ColumnSpacing=6};
         identity.ColumnDefinitions.Add(new(){Width=new GridLength(1,GridUnitType.Star)});
         identity.ColumnDefinitions.Add(new(){Width=GridLength.Auto});
@@ -47,14 +48,31 @@ internal sealed class BlipIncomingWindow : Window
         fileCard.Copied += id => { if (TransferId == id) Dismiss(); };
         content.Children.Add(fileCard);content.Children.Add(details);content.Children.Add(progress);
         receive.Click+=(_,_)=>{if(transfer!=null)accept(transfer);};content.Children.Add(receive);
-        var border=new Border{Padding=new Thickness(6),Child=new ScrollViewer{Content=content,VerticalScrollBarVisibility=ScrollBarVisibility.Auto},RequestedTheme=MainWindow.RequestedAppearance};
-        border.PointerEntered+=(_,_)=>{hovered=true;UpdateExpiry();};border.PointerExited+=(_,_)=>{hovered=false;UpdateExpiry();};
-        void ApplyBackground()=>border.Background=new SolidColorBrush(border.ActualTheme==ElementTheme.Dark?Microsoft.UI.ColorHelper.FromArgb(255,32,32,32):Microsoft.UI.Colors.White);
-        border.ActualThemeChanged+=(_,_)=>ApplyBackground();
-        ApplyBackground();
-        Content=border;Surface=border;
-        AppWindow.IsShownInSwitchers=false;
-        if(AppWindow.Presenter is OverlappedPresenter presenter){presenter.SetBorderAndTitleBar(true,true);presenter.IsResizable=false;presenter.IsMaximizable=false;presenter.IsMinimizable=false;presenter.IsAlwaysOnTop=true;}
+        var border = (Border)XamlReader.Load("""
+            <Border xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    Background="{ThemeResource ApplicationPageBackgroundThemeBrush}" />
+            """);
+        border.Padding = new Thickness(4);
+        border.Child = new ScrollViewer { Content = content, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+        border.RequestedTheme = MainWindow.RequestedAppearance;
+        border.PointerEntered += (_, _) => { hovered = true; UpdateExpiry(); };
+        border.PointerExited += (_, _) => { hovered = false; UpdateExpiry(); };
+        Content = border;
+        Surface = border;
+        AppWindow.IsShownInSwitchers = false;
+        if (AppWindow.Presenter is OverlappedPresenter presenter)
+        {
+            presenter.SetBorderAndTitleBar(true, true);
+            presenter.IsResizable = presenter.IsMaximizable = presenter.IsMinimizable = false;
+            presenter.IsAlwaysOnTop = true;
+        }
+        if (AppWindowTitleBar.IsCustomizationSupported())
+        {
+            void ApplyCaptionTheme() => AppWindow.TitleBar.PreferredTheme = border.ActualTheme == ElementTheme.Dark
+                ? TitleBarTheme.Dark : TitleBarTheme.Light;
+            border.ActualThemeChanged += (_, _) => ApplyCaptionTheme();
+            ApplyCaptionTheme();
+        }
         AppWindow.Closing+=(_,e)=>{e.Cancel=true;Dismiss();};expiry.Tick+=(_,_)=>{expiry.Stop();AppWindow.Hide();};
     }
     private void Dismiss(){if(transfer!=null)dismissed.Add(transfer.Id);expiry.Stop();AppWindow.Hide();}

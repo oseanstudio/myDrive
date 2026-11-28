@@ -9,26 +9,27 @@ namespace MyDrive;
 
 internal sealed class BlipReceivedCard:UserControl {
     internal const int MediaHeight = 254;
+    private const int FilePreviewHeight = 126;
     private static readonly SolidColorBrush OverlayBrush = new(Microsoft.UI.ColorHelper.FromArgb(170, 0, 0, 0));
     private readonly Grid stage = new();
-    private readonly Grid preview = new() { Height = MediaHeight };
+    private readonly Grid preview = new() { Height = FilePreviewHeight };
     private readonly Border identity = new() { VerticalAlignment = VerticalAlignment.Top };
-    private readonly Border controls = new() { VerticalAlignment = VerticalAlignment.Bottom, HorizontalAlignment = HorizontalAlignment.Left };
+    private readonly Border controls = new() { VerticalAlignment = VerticalAlignment.Bottom };
     private readonly Border frame;
     private readonly Image image=new(){Stretch=Stretch.Uniform};
     private readonly TextBlock previewText = new()
     {
         FontSize = 12, FontFamily = new FontFamily("Consolas"), TextWrapping = TextWrapping.Wrap,
         TextTrimming = TextTrimming.CharacterEllipsis, MaxLines = 9,
-        Margin = new Thickness(13, 43, 13, 70), VerticalAlignment = VerticalAlignment.Top,
+        Margin = new Thickness(12, 40, 12, 48), VerticalAlignment = VerticalAlignment.Top,
     };
     private readonly FontIcon icon=new(){Glyph="\uE8A5",FontSize=40,Opacity=.65};
     private readonly ComboBox picker=new(){HorizontalAlignment=HorizontalAlignment.Stretch,MinHeight=28,MaxWidth=265};
     private readonly TextBlock name=new(){FontSize=12,TextTrimming=TextTrimming.CharacterEllipsis};
-    private readonly TextBlock feedback=new(){FontSize=11,TextWrapping=TextWrapping.Wrap,MaxLines=2};
+    private readonly TextBlock feedback = new() { FontSize = 11, TextWrapping = TextWrapping.Wrap, MaxLines = 2, Margin = new Thickness(0, 3, 0, 0) };
     private readonly SplitButton open=new(){Content="Open",MinHeight=30};
     private readonly Button copy=new(){Content="Copy",MinHeight=30};
-    private readonly StackPanel actions=new(){Orientation=Orientation.Horizontal,Spacing=8};
+    private readonly StackPanel actions = new() { Orientation = Orientation.Horizontal, Spacing = 4 };
     private readonly Func<nint> owner;
     private readonly Func<BlipFileAction,BlipTransfer,BlipReceivedItem,Task>? execute;
     private BlipTransfer? transfer;
@@ -50,10 +51,19 @@ internal sealed class BlipReceivedCard:UserControl {
         stage.Children.Add(preview);
         stage.Children.Add(identity);
         stage.Children.Add(controls);
-        var fileControls = new StackPanel { Spacing = 4 };
+        var fileControls = new Grid { ColumnSpacing = 6 };
+        fileControls.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
+        fileControls.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
+        fileControls.RowDefinitions.Add(new() { Height = GridLength.Auto });
+        fileControls.RowDefinitions.Add(new() { Height = GridLength.Auto });
+        name.VerticalAlignment = VerticalAlignment.Center;
+        picker.VerticalAlignment = VerticalAlignment.Center;
         fileControls.Children.Add(picker);
         fileControls.Children.Add(name);
+        Grid.SetColumn(actions, 1);
         fileControls.Children.Add(actions);
+        Grid.SetRow(feedback, 1);
+        Grid.SetColumnSpan(feedback, 2);
         fileControls.Children.Add(feedback);
         controls.Child = fileControls;
         frame = new Border { Child = stage, CornerRadius = new CornerRadius(8) };
@@ -116,7 +126,7 @@ internal sealed class BlipReceivedCard:UserControl {
     {
         previewText.Text = content;
         int lines = content.Split('\n').Sum(line => Math.Max(1, (line.Length + 37) / 38));
-        SetPreviewHeight(Math.Clamp(114 + lines * 16, 150, MediaHeight));
+        SetPreviewHeight(Math.Clamp(90 + lines * 16, 112, MediaHeight));
         icon.Visibility = Visibility.Collapsed;
     }
 
@@ -124,8 +134,15 @@ internal sealed class BlipReceivedCard:UserControl {
         int current=++generation;lastAttempt=DateTime.UtcNow;feedback.Text="";feedback.Visibility=Visibility.Collapsed;image.Source=null;previewText.Text="";icon.Visibility=Visibility.Visible;
         open.IsEnabled=copy.IsEnabled=false;actions.Visibility=transfer?.ConfirmedComplete==true?Visibility.Visible:Visibility.Collapsed;
         PreviewKind="placeholder";
-        SetPreviewHeight(MediaHeight);
-        var value=transfer;var entry=selected;if(value==null||entry==null){previewText.Text=value?.ConfirmedComplete==true?"File location is not available yet":"Preview appears after receiving";icon.Visibility=Visibility.Collapsed;BuildMenu();return;}
+        SetPreviewHeight(FilePreviewHeight);
+        var value = transfer;
+        var entry = selected;
+        if (value == null || entry == null)
+        {
+            if (value?.ConfirmedComplete == true) ShowText("File location is not available yet");
+            BuildMenu();
+            return;
+        }
         name.Text=entry.Name;ToolTipService.SetToolTip(name,entry.Path);
         var path=await Task.Run(()=>BlipReceivedFiles.LocalPath(value,entry));if(current!=generation)return;
         if(path==null){PreviewKind="missing";ShowText("File moved or unavailable");BuildMenu();return;}
@@ -163,7 +180,7 @@ internal sealed class BlipReceivedCard:UserControl {
                     icon.Visibility = Visibility.Collapsed;
                     PreviewKind = "thumbnail";
                     if (bitmap.PixelWidth > 0)
-                        SetPreviewHeight(Math.Clamp(320.0 * bitmap.PixelHeight / bitmap.PixelWidth, 178, MediaHeight));
+                        SetPreviewHeight(Math.Clamp(324.0 * bitmap.PixelHeight / bitmap.PixelWidth, 142, MediaHeight));
                     return;
                 }
             }
