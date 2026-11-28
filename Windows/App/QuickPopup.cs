@@ -73,6 +73,19 @@ public sealed partial class MainWindow
             AutomationProperties.SetName(tab, name);
             ToolTipService.SetToolTip(tab, name);
             tab.Click += (_, _) => NavigateQuick(key);
+            if (key == "sync")
+            {
+                tab.AllowDrop = true;
+                tab.DragOver += (_, args) =>
+                {
+                    if (busy || modalDepth > 0 ||
+                        !args.DataView.Contains(global::Windows.ApplicationModel.DataTransfer.StandardDataFormats.StorageItems)) return;
+                    if (currentView != "sync") NavigateQuick("sync");
+                    args.AcceptedOperation = global::Windows.ApplicationModel.DataTransfer.DataPackageOperation.Copy;
+                    args.DragUIOverride.Caption = "Sync with a device";
+                    args.Handled = true;
+                };
+            }
             Grid.SetColumn(tab, tabs.ColumnDefinitions.Count - 1);
             quickTabs.Add(key, tab);
             tabs.Children.Add(tab);
@@ -115,8 +128,8 @@ public sealed partial class MainWindow
         status.MaxWidth=compact?190:double.PositiveInfinity;
         UpdateProblemColors();
     }
-    private List<Peer> QuickPeers()=>syncSnapshot.HasValue?Items(syncSnapshot.Value,"devices")
-        .Where(d=>!B(d,"is_local")).Select(d=>new Peer(S(d,"deviceID"),S(d,"name","Unnamed device"),d.TryGetProperty("connection",out var c)&&B(c,"connected")))
+    private List<Peer> QuickPeers(bool includePaused=true)=>syncSnapshot.HasValue?Items(syncSnapshot.Value,"devices")
+        .Where(d=>!B(d,"is_local") && (includePaused || !B(d,"paused"))).Select(d=>new Peer(S(d,"deviceID"),S(d,"name","Unnamed device"),d.TryGetProperty("connection",out var c)&&B(c,"connected")))
         .OrderByDescending(p=>p.Connected).ThenBy(p=>p.Name).ToList():new();
     private static JsonElement FolderStats(JsonElement folder)=>folder.TryGetProperty("status",out var stats)&&stats.ValueKind==JsonValueKind.Object?stats:folder;
     private static bool HasFolderError(JsonElement folder)=>S(folder,"error").Length>0||N(FolderStats(folder),"pullErrors")>0||N(FolderStats(folder),"errors")>0;

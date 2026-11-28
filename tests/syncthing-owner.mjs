@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { access, mkdtemp, mkdir, readFile, rm } from "node:fs/promises";
+import { access, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -20,8 +20,8 @@ const env = {
 for (const name of ["STCONFDIR", "STDATADIR", "STGUIADDRESS", "STGUIAPIKEY"]) delete env[name];
 const children = [];
 
-function launch(executable, args, stdio) {
-    const child = spawn(executable, args, { env, stdio, windowsHide: true });
+function launch(executable, args, stdio, environment = env) {
+    const child = spawn(executable, args, { env: environment, stdio, windowsHide: true });
     children.push(child);
     return child;
 }
@@ -83,6 +83,100 @@ async function expectOffline(connection) {
     assert.equal(online, false, "the owned Syncthing process released its API port");
 }
 
+function change(method, body) {
+    return { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) };
+}
+
+async function freePort() {
+    const server = net.createServer();
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const { port } = server.address();
+    await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    return port;
+}
+
+async function request(connection, action, payload) {
+    const child = launch(core, prefix, ["pipe", "pipe", "inherit"]);
+    const output = [];
+    child.stdout.on("data", piece => output.push(piece));
+    const done = once(child, "close");
+    child.stdin.end(JSON.stringify({ action: "syncthing." + action, data_dir: data, syncthing: connection, payload }));
+    const [status] = await done;
+    assert.equal(status, 0);
+    return JSON.parse(Buffer.concat(output).toString("utf8"));
+}
+
+async function waitContent(file, content, seconds = 35) {
+    const deadline = Date.now() + seconds * 1000;
+    while (Date.now() < deadline) {
+        if (await readFile(file, "utf8").catch(() => null) === content) return;
+        await delay(150);
+    }
+    assert.fail("The expected synced copy did not arrive: " + path.basename(file));
+}
+
+async function selectedShare(connection, binary, identity) {
+    const secondPath = path.join(root, "recipient-profile");
+    await mkdir(secondPath);
+    const secondEnv = { ...env, STNODEFAULTFOLDER: "1" };
+    delete secondEnv.STHOMEDIR;
+    const generation = launch(binary, ["generate", "--home", secondPath], ["ignore", "ignore", "inherit"], secondEnv);
+    assert.equal(await exited(generation), 0);
+    const generatedConfig = await readFile(path.join(secondPath, "config.xml"), "utf8");
+    const key = generatedConfig.match(/<apikey>([^<]+)<\/apikey>/)?.[1];
+    assert.ok(key, "the isolated second engine has an API key");
+    const gui = await freePort();
+    const second = { endpoint: "http://127.0.0.1:" + gui, api_key: key };
+    const other = launch(binary, [
+        "serve", "--home", secondPath, "--gui-address=127.0.0.1:" + gui,
+        "--no-browser", "--no-restart", "--no-upgrade", "--log-file=-",
+    ], ["ignore", "ignore", "inherit"], secondEnv);
+    await waitOnline(second, 15);
+    const remote = (await api(second, "system/status")).myID;
+    const port1 = await freePort();
+    const port2 = await freePort();
+    const address = port => "tcp://127.0.0.1:" + port;
+    const localOptions = port => ({ listenAddresses: [address(port)], globalAnnounceEnabled: false,
+        localAnnounceEnabled: false, relaysEnabled: false, natEnabled: false });
+    await api(connection, "config/options", change("PATCH", localOptions(port1)));
+    await api(second, "config/options", change("PATCH", localOptions(port2)));
+    await api(connection, "config/devices", change("POST", { deviceID: remote, name: "Fixture recipient", addresses: [address(port2)] }));
+    await api(second, "config/devices", change("POST", { deviceID: identity, name: "Fixture sender", addresses: [address(port1)] }));
+
+    const source = path.join(root, "selected-source");
+    const destination = path.join(root, "selected-destination");
+    await mkdir(path.join(source, "project"), { recursive: true });
+    await mkdir(destination);
+    const explicit = "keep [draft].txt";
+    await writeFile(path.join(source, explicit), "original");
+    await writeFile(path.join(source, "private.txt"), "excluded");
+    await writeFile(path.join(source, "project", "notes.txt"), "folder contents");
+    const settings = { local_paths: [path.join(source, explicit), path.join(source, "project")], device_id: remote };
+    const share = await request(connection, "share.drop", settings);
+    assert.equal(share.ok, true, share.error);
+    assert.equal(share.data.selected_only, true);
+    const id = share.data.folder_id;
+    const saved = await api(connection, "config/folders/" + id);
+    assert.equal(saved.type, "sendreceive");
+    assert.equal(saved.paused, false);
+    assert.ok(saved.devices.some(device => device.deviceID === remote));
+    const receive = await api(second, "config/defaults/folder");
+    await api(second, "config/folders", change("POST", { ...receive, id, path: destination,
+        rescanIntervalS: 1, fsWatcherDelayS: 1, devices: [{ deviceID: remote }, { deviceID: identity }] }));
+    await waitContent(path.join(destination, explicit), "original");
+    await waitContent(path.join(destination, "project", "notes.txt"), "folder contents");
+    await assert.rejects(access(path.join(destination, "private.txt")), { code: "ENOENT" });
+    await writeFile(path.join(destination, explicit), "changed by recipient");
+    await waitContent(path.join(source, explicit), "changed by recipient");
+    const widened = await request(connection, "share.drop.preview", { local_paths: [source], device_id: remote });
+    assert.equal(widened.ok, false);
+    assert.match(widened.error, /selected items only/);
+    await api(second, "system/shutdown", { method: "POST" });
+    await exited(other);
+    console.log("Syncthing applied a mixed file and folder selection, kept its sibling private, and synced a recipient edit back.");
+}
+
 try {
     const first = open();
     // No Syncthing executable or profile was placed in this isolated data directory.
@@ -99,6 +193,7 @@ try {
     await api(connection, "config/folders", {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(folder),
     });
+    await selectedShare(connection, fresh.binary_path, identity);
     await first.close();
     await expectOffline(connection);
 

@@ -122,7 +122,7 @@ final class SmbSharingHost: @unchecked Sendable {
             picker.title = "Choose a folder to share over SMB"
             picker.canChooseDirectories = true
             picker.canChooseFiles = false
-            guard picker.runModal() == .OK, let picked = picker.url else { return }
+            guard picker.runMyDrivePicker() == .OK, let picked = picker.url else { return }
             folder = picked
         }
 

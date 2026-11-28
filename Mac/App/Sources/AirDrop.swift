@@ -7,7 +7,7 @@ import AppKit
         picker.prompt = "Choose"
         picker.canChooseDirectories = true
         picker.allowsMultipleSelection = true
-        guard picker.runModal() == .OK else { return }
+        guard picker.runMyDrivePicker() == .OK else { return }
         sendAirDropFiles(picker.urls)
     }
 

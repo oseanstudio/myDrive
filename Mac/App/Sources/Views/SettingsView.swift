@@ -145,7 +145,7 @@ private struct BlipSettingsView: View {
         picker.canChooseDirectories = true
         picker.canCreateDirectories = true
         picker.allowsMultipleSelection = false
-        guard picker.runModal() == .OK, let folder = picker.url else { return }
+        guard picker.runMyDrivePicker() == .OK, let folder = picker.url else { return }
         saveDownloadFolder(folder)
     }
 

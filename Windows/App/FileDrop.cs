@@ -30,7 +30,15 @@ public sealed partial class MainWindow
             }
             catch (Exception error) { Error(error); return; }
             finally { deferral.Complete(); }
-            if (paths.Count > 0) await HandleFileDrop(paths);
+            if (paths.Count > 0)
+            {
+                if (currentView == "sync")
+                {
+                    try { await ShowSyncDrop(paths); }
+                    catch (Exception error) { Error(error); }
+                }
+                else await HandleFileDrop(paths);
+            }
         };
     }
 

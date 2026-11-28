@@ -151,6 +151,7 @@ final class AppState: ObservableObject {
     lazy var blip = BlipReceiver()
     let smbHosting = SmbSharingHost()
     @Published var shareFolderPath = ""
+    @Published var syncDropPaths: [URL] = []
     private let log = ActivityLog.shared
     private var lastSnapshotAt = Date.distantPast
     private var lastEventsAt = Date.distantPast
@@ -675,7 +676,7 @@ final class AppState: ObservableObject {
         picker.prompt = "Use this location"
         picker.canChooseFiles = false
         picker.canChooseDirectories = true
-        guard picker.runModal() == .OK, let destination = picker.url else { return }
+        guard picker.runMyDrivePicker() == .OK, let destination = picker.url else { return }
         perform("Update sync location") {
             _ = try await self.syncthing.call("relocate", payload: [
                 "folder_id": folder.id, "expected_path": folder.path, "local_path": destination.path
@@ -1055,7 +1056,7 @@ final class AppState: ObservableObject {
         guard let state = storageBrowse else { return }
         let panel = NSSavePanel()
         panel.nameFieldStringValue = file.name
-        guard panel.runModal() == .OK, let destination = panel.url else { return }
+        guard panel.runMyDrivePicker() == .OK, let destination = panel.url else { return }
         perform("Download \(file.name)", connection: state.bookmark.nickname) {
             try await CoreBridge.shared.fileAction(
                 "download", bookmark: state.bookmark,
@@ -1069,7 +1070,7 @@ final class AppState: ObservableObject {
         let panel = NSOpenPanel()
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
-        guard panel.runModal() == .OK, let source = panel.url else { return }
+        guard panel.runMyDrivePicker() == .OK, let source = panel.url else { return }
         let name = source.lastPathComponent
         let destination = state.path.isEmpty ? name : "\(state.path)/\(name)"
         perform("Upload \(name)", connection: state.bookmark.nickname) {

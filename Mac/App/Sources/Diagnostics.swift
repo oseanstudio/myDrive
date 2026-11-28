@@ -179,13 +179,22 @@ enum Diagnostics {
     }
 
     @MainActor private static func checkFieldEditShortcuts() throws {
+        let menu = NativeFilePicker.makeApplicationMenu()
+        let edit = menu.items.compactMap(\.submenu).first { $0.title == "Edit" }
         for (key, action) in [("a", "selectAll:"), ("x", "cut:"), ("c", "copy:"), ("v", "paste:")] {
             guard let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command,
                 timestamp: 0, windowNumber: 0, context: nil, characters: key, charactersIgnoringModifiers: key,
                 isARepeat: false, keyCode: 0),
-                AppDelegate.textEditAction(for: event) == NSSelectorFromString(action) else {
+                AppDelegate.textEditAction(for: event) == NSSelectorFromString(action),
+                edit?.items.contains(where: { $0.keyEquivalent == key && $0.action == NSSelectorFromString(action) }) == true else {
                 throw BlipReceiverError.message("A standard text editing shortcut did not route to the field editor.")
             }
+        }
+        let goToFolder = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [.command, .shift],
+            timestamp: 0, windowNumber: 0, context: nil, characters: "G", charactersIgnoringModifiers: "G",
+            isARepeat: false, keyCode: 5)
+        guard let goToFolder, AppDelegate.textEditAction(for: goToFolder) == nil else {
+            throw BlipReceiverError.message("Go to Folder must reach the native file picker.")
         }
     }
 

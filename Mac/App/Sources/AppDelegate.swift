@@ -296,7 +296,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         if let monitor = NSEvent.addLocalMonitorForEvents(matching: clickEvents.union(.keyDown), handler: { [weak self] event in
             guard let self else { return event }
             if event.type == .keyDown {
-                if (event.window === self.popover.contentViewController?.view.window || event.window === self.fullWindow),
+                if (event.window === self.popover.contentViewController?.view.window || event.window === self.fullWindow ||
+                    event.window is NSSavePanel || event.window?.sheetParent is NSSavePanel),
                    let editor = event.window?.firstResponder as? NSTextView, editor.isFieldEditor,
                    let action = Self.textEditAction(for: event), NSApp.sendAction(action, to: editor, from: nil) {
                     return nil

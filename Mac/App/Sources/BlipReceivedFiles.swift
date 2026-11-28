@@ -179,7 +179,7 @@ private final class BlipThumbnailReply:@unchecked Sendable {
     static func folder(_ item:BlipReceivedItem,_ transfer:BlipTransfer)throws{let file=try url(item,transfer);guard NSWorkspace.shared.open(item.is_directory ? file:file.deletingLastPathComponent()) else{throw BlipReceiverError.message("The received folder could not open.")}}
     static func openWith(_ app:URL?,item:BlipReceivedItem,transfer:BlipTransfer)throws {
         let file=try url(item,transfer);var chosen=app
-        if chosen==nil{let picker=NSOpenPanel();picker.title="Choose application";picker.directoryURL=URL(fileURLWithPath:"/Applications");picker.allowedContentTypes=[.application];picker.canChooseDirectories=false;picker.allowsMultipleSelection=false;guard picker.runModal() == .OK else{return};chosen=picker.url}
+        if chosen==nil{let picker=NSOpenPanel();picker.title="Choose application";picker.directoryURL=URL(fileURLWithPath:"/Applications");picker.allowedContentTypes=[.application];picker.canChooseDirectories=false;picker.allowsMultipleSelection=false;guard picker.runMyDrivePicker() == .OK else{return};chosen=picker.url}
         guard let chosen else{return};NSWorkspace.shared.open([file],withApplicationAt:chosen,configuration:NSWorkspace.OpenConfiguration())
     }
 }

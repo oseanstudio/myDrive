@@ -15,6 +15,7 @@ enum PopupMetrics {
 
 struct PopupRootView: View {
     @EnvironmentObject var app: AppState
+    @State private var hoveringSyncTab = false
     var fullWindow = false
 
     var body: some View {
@@ -88,6 +89,7 @@ struct PopupRootView: View {
                 .help(kind.label)
                 .accessibilityLabel(kind.label)
                 .accessibilityAddTraits(selected ? .isSelected : [])
+                .modifier(SyncTabDrop(active: kind == .sync, hover: $hoveringSyncTab, app: app))
             }
         }
         .padding(.horizontal, 10)
@@ -98,7 +100,9 @@ struct PopupRootView: View {
     @ViewBuilder
     private var content: some View {
         switch app.view {
-        case .sync: SyncView()
+        case .sync:
+            if app.syncDropPaths.isEmpty { SyncView() }
+            else { SyncDropView(blip: app.blip) }
         case .syncFiles: SyncFilesView()
         case .syncInfo: SyncInfoView()
         case .syncAttention: SyncAttentionView()
@@ -177,6 +181,26 @@ struct PopupRootView: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
+    }
+}
+
+private struct SyncTabDrop: ViewModifier {
+    let active: Bool
+    @Binding var hover: Bool
+    let app: AppState
+
+    @ViewBuilder func body(content: Content) -> some View {
+        if active {
+            content
+                .onDrop(of: [.fileURL], isTargeted: $hover) { providers in
+                    FileDropInput.receive(providers) { app.prepareSyncDrop($0) }
+                }
+                .onChange(of: hover) { entered in
+                    if entered && app.busy == nil && app.dialog == nil { app.view = .sync }
+                }
+        } else {
+            content
+        }
     }
 }
 

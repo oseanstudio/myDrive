@@ -8,6 +8,7 @@ struct Preferences: Codable, Equatable {
     var syncthingEndpoint = "http://127.0.0.1:8384/"
     var lastSyncFolder = ""
     var lastSyncDevice = ""
+    var syncRecipientDevices: [String: String]? = nil
     var autoRemount = true
     var lastEventId: UInt64 = 0
     var startAtLogin = false
@@ -37,6 +38,7 @@ struct Preferences: Codable, Equatable {
         case syncthingEndpoint = "syncthing_endpoint"
         case lastSyncFolder = "last_sync_folder"
         case lastSyncDevice = "last_sync_device"
+        case syncRecipientDevices = "sync_recipient_devices"
         case autoRemount = "auto_remount"
         case lastEventId = "last_event_id"
         case startAtLogin = "start_at_login"

@@ -155,7 +155,7 @@ final class CloudDrivesState: NSObject, ObservableObject {
         picker.title = "Choose a local folder to back up"
         picker.canChooseFiles = false
         picker.canChooseDirectories = true
-        guard picker.runModal() == .OK, let folder = picker.url else { return }
+        guard picker.runMyDrivePicker() == .OK, let folder = picker.url else { return }
 
         let alert = NSAlert()
         alert.messageText = "Back up a folder"
@@ -192,7 +192,7 @@ final class CloudDrivesState: NSObject, ObservableObject {
         picker.canChooseDirectories = true
         picker.canCreateDirectories = true
         picker.directoryURL = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
-        guard picker.runModal() == .OK, let folder = picker.url else { return }
+        guard picker.runMyDrivePicker() == .OK, let folder = picker.url else { return }
         let destination = folder.appendingPathComponent(item.str("name")).path
         perform("Downloading…") {
             _ = try await self.call("download", ["account": selectedAccount, "path": item.str("path"),

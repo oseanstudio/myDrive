@@ -88,6 +88,10 @@ import UniformTypeIdentifiers
         let urls = candidates.map(\.standardizedFileURL).filter { $0.isFileURL && ($0.host ?? "").isEmpty &&
             FileManager.default.fileExists(atPath: $0.path) && seen.insert($0).inserted }
         guard !urls.isEmpty else { return }
+        if view == .sync {
+            prepareSyncDrop(urls)
+            return
+        }
         let send = {
             self.view = .transfers
             self.blip.sendDropped(urls)

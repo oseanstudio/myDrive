@@ -96,7 +96,7 @@ struct ShareDialog: View {
                     let panel = NSOpenPanel()
                     panel.canChooseDirectories = true
                     panel.canChooseFiles = false
-                    if panel.runModal() == .OK, let url = panel.url {
+                    if panel.runMyDrivePicker() == .OK, let url = panel.url {
                         path = url.path
                     }
                 }
@@ -389,7 +389,7 @@ struct SyncSettingsDialog: View {
                         panel.canChooseDirectories = false
                         panel.directoryURL = URL(fileURLWithPath: SyncthingService.findConfig()
                             ?? (configPath as NSString).deletingLastPathComponent)
-                        if panel.runModal() == .OK, let url = panel.url {
+                        if panel.runMyDrivePicker() == .OK, let url = panel.url {
                             configPath = url.path
                         }
                     }
@@ -486,7 +486,7 @@ struct BookmarkEditorDialog: View {
                         let panel = NSOpenPanel()
                         panel.canChooseDirectories = true
                         panel.canChooseFiles = false
-                        if panel.runModal() == .OK, let url = panel.url { host = url.path }
+                        if panel.runMyDrivePicker() == .OK, let url = panel.url { host = url.path }
                     }
                     .font(.system(size: 11))
                     .controlSize(.small)
@@ -517,7 +517,7 @@ struct BookmarkEditorDialog: View {
                         Button("Choose…") {
                             let panel = NSOpenPanel()
                             panel.canChooseFiles = true
-                            if panel.runModal() == .OK, let url = panel.url { keyPath = url.path }
+                            if panel.runMyDrivePicker() == .OK, let url = panel.url { keyPath = url.path }
                         }
                         .font(.system(size: 11))
                         .controlSize(.small)

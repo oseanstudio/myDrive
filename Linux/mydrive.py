@@ -168,6 +168,11 @@ class MyDrive(Gtk.Application):
             if tab_buttons:
                 tab.set_group(next(iter(tab_buttons.values())))
             tab.connect("clicked", lambda _button, target=name: self.stack.set_visible_child_name(target))
+            if name == "Sync":
+                target = Gtk.DropTarget.new(Gdk.FileList.__gtype__, Gdk.DragAction.COPY)
+                target.connect("enter", self.hover_sync_tab)
+                target.connect("drop", self.drop_on_sync_tab)
+                tab.add_controller(target)
             tabs.append(tab)
             tab_buttons[name] = tab
         self.stack.set_visible_child_name("Send")
@@ -610,8 +615,109 @@ class MyDrive(Gtk.Application):
         paths = self.dropped_paths(value)
         if not paths:
             return False
-        self.handle_drop(paths)
+        if self.stack.get_visible_child_name() == "Sync":
+            self.share_dropped(paths)
+        else:
+            self.handle_drop(paths)
         return True
+
+    def hover_sync_tab(self, *_):
+        self.stack.set_visible_child_name("Sync")
+        return Gdk.DragAction.COPY
+
+    def drop_on_sync_tab(self, controller, value, x, y):
+        paths = self.dropped_paths(value)
+        if not paths:
+            return False
+        self.share_dropped(paths)
+        return True
+
+    def share_dropped(self, paths):
+        if self.fixture or self.stopping or self.file_picker_depth:
+            return
+        self.stack.set_visible_child_name("Sync")
+        if not self.snapshot.get("devices"):
+            self.work("sync", "", lambda: self.sync.request("snapshot"),
+                      lambda snapshot: self.sync_drop_targets(paths, snapshot),
+                      quiet=True, queue=True, on_error=self.announce)
+            return
+        self.sync_drop_targets(paths, self.snapshot)
+
+    def sync_drop_targets(self, paths, snapshot):
+        devices = {device["deviceID"]: device.get("name") or device["deviceID"]
+                   for device in snapshot.get("devices", []) if not device.get("is_local") and not device.get("paused")}
+        if not devices:
+            self.announce("Pair a device in Syncthing before offering files or folders.")
+            return
+        blip = self.transfer_view
+        owner = blip.recipient_owner
+        recent = [item for item in blip.recent_recipients if not item.get("archived") and item["peer"] != owner] if owner else []
+        links = self.preferences.get("sync_recipient_devices", {})
+        title = Path(paths[0]).name if len(paths) == 1 else f"{len(paths)} items"
+        fields = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+
+        def choose_dialog(caption, contents):
+            dialog = Gtk.Dialog(title=caption, transient_for=self.window, modal=True)
+            dialog.add_button("Cancel", Gtk.ResponseType.CANCEL)
+            dialog.get_content_area().append(self.scrolled_list(contents, height=238))
+            dialog.connect("response", lambda widget, _: widget.close())
+            return dialog
+
+        chooser = choose_dialog(title, fields)
+
+        def sync(device, link=None):
+            if link and owner != blip.recipient_owner:
+                return
+            payload = {"local_paths": paths, "device_id": device}
+            def offered(result):
+                if link and owner == blip.recipient_owner:
+                    self.preferences.setdefault("sync_recipient_devices", {})[link] = device
+                    save_settings("preferences.json", self.preferences)
+                self.refresh_sync(quiet=True)
+                if result.get("created"):
+                    GLib.idle_add(lambda: self.announce("Accept the share on " + devices[device] + " to start syncing."))
+            self.work("sync", "Start two-way sync", lambda: self.sync.request("share.drop", **payload), offered)
+
+        def add_devices(listing, dialog, linked_key=None):
+            for device, name in devices.items():
+                action = button(name, lambda device=device: (dialog.close(), sync(device, linked_key)))
+                action.set_tooltip_text(name + " · " + device)
+                listing.append(action)
+
+        def link_recipient(key, selected=None):
+            chooser.close()
+            if owner != blip.recipient_owner:
+                return
+            if selected in devices:
+                sync(selected, key)
+                return
+            candidates = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+            candidates.append(Gtk.Label(label="Choose this person’s paired device to start two-way sync.",
+                                        wrap=True, xalign=0))
+            link_picker = choose_dialog("Link a Syncthing device", candidates)
+            add_devices(candidates, link_picker, key)
+            self.present_dialog(link_picker)
+
+        if recent:
+            fields.append(label("Recent recipients", "heading"))
+        for item in recent:
+            key = owner + "/" + item["peer"].lower()
+            device = links.get(key)
+            name = item.get("nickname") or item.get("person_nickname") or blip.recent_fallback(item)
+            line = Gtk.Box(spacing=4)
+            choose = button(name, lambda key=key, device=device: link_recipient(key, device))
+            choose.set_hexpand(True)
+            if device in devices:
+                choose.set_tooltip_text("Sync with " + devices[device])
+            line.append(choose)
+            if device in devices:
+                relink = Gtk.Button(icon_name="document-edit-symbolic", tooltip_text="Change sync device for " + name)
+                relink.connect("clicked", lambda _, key=key: link_recipient(key))
+                line.append(relink)
+            fields.append(line)
+        fields.append(label("Other devices", "heading"))
+        add_devices(fields, chooser)
+        self.present_dialog(chooser)
 
     def handle_drop(self, paths):
         folder_drop = len(paths) == 1 and Path(paths[0]).is_dir()

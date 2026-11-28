@@ -102,7 +102,7 @@ struct BlipSendPayload {
         picker.canChooseDirectories = true
         picker.allowsMultipleSelection = true
         picker.treatsFilePackagesAsDirectories = true
-        guard picker.runModal() == .OK, !picker.urls.isEmpty, recipientOwner == owner else { return }
+        guard picker.runMyDrivePicker() == .OK, !picker.urls.isEmpty, recipientOwner == owner else { return }
         send(.forFiles(picker.urls), to: peer)
     }
 

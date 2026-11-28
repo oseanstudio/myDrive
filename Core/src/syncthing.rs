@@ -522,7 +522,14 @@ impl Api {
     pub fn execute(&self, action: &str, data: &Value, data_dir: &Path) -> Result<Value, String> {
         let id = data["folder_id"].as_str().unwrap_or("");
         match action {
-            "share.preview" | "share" => self.share(data, action == "share", data_dir),
+            "share.preview" | "share" | "share.drop.preview" | "share.drop" => {
+                let drop = if matches!(action, "share.drop.preview" | "share.drop") {
+                    Some(drop_selection(&data["local_paths"])?)
+                } else {
+                    None
+                };
+                self.share(data, matches!(action, "share" | "share.drop"), data_dir, drop.as_ref())
+            }
             "snapshot" => self.snapshot_with_schedule(data_dir),
             "device_progress" => self.device_progress(id),
             "attention" => self.folder_attention(data),
@@ -867,19 +874,29 @@ impl Api {
         Ok(json!({"folder_id": id, "path": destination, "paused": actual["paused"]}))
     }
 
-    fn share(&self, data: &Value, apply: bool, data_dir: &Path) -> Result<Value, String> {
-        let input = data["local_path"]
-            .as_str()
-            .ok_or("Choose a local folder to sync.")?;
-        let root = Path::new(input)
-            .canonicalize()
-            .map_err(|_| "The selected folder does not exist or cannot be opened.")?;
+    fn share(&self, data: &Value, apply: bool, data_dir: &Path, drop: Option<&DropSelection>) -> Result<Value, String> {
+        let root = if let Some(selection) = drop {
+            selection.root.clone()
+        } else {
+            Path::new(data["local_path"].as_str().ok_or("Choose a local folder to sync.")?)
+                .canonicalize().map_err(|_| "The selected folder does not exist or cannot be opened.")?
+        };
         if !root.is_dir() {
             return Err("Choose a folder, then select individual files inside it.".into());
         }
         if root.parent().is_none() {
             return Err("Choose a specific folder instead of an entire disk.".into());
         }
+        let backups = data_dir.join("syncthing-backups");
+        let _share_lock = if apply {
+            fs::create_dir_all(&backups).map_err(|error| error.to_string())?;
+            let lock = fs::OpenOptions::new().create(true).truncate(false).read(true).write(true)
+                .open(backups.join("share.lock")).map_err(|error| error.to_string())?;
+            lock.try_lock().map_err(|_| "Another myDrive share is being prepared. Try again.")?;
+            Some(lock)
+        } else {
+            None
+        };
         let target = data["device_id"]
             .as_str()
             .filter(|s| !s.is_empty())
@@ -898,6 +915,9 @@ impl Api {
         }
         if device["untrusted"].as_bool().unwrap_or(false) {
             return Err("This device requires encrypted sharing. Configure its encryption password in Syncthing before sharing from myDrive.".into());
+        }
+        if drop.is_some() && device["paused"].as_bool() == Some(true) {
+            return Err("Resume this Syncthing device before starting a new share.".into());
         }
         let folders = self.get(&["rest", "config", "folders"], &[])?;
         let (existing, overlaps) = plan_share(&root, &folders, local_id, target)?;
@@ -925,15 +945,31 @@ impl Api {
                 .ok_or("Missing Syncthing folder ID.")?
                 .to_string()
         };
-        let default_label = root
+        let default_label = drop.map(|selection| selection.label.clone()).unwrap_or_else(|| root
             .file_name()
             .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_else(|| "myDrive folder".into());
+            .unwrap_or_else(|| "myDrive folder".into()));
         let label = data["label"]
             .as_str()
             .filter(|s| !s.trim().is_empty())
             .unwrap_or(&default_label);
-        let result = json!({"folder_id":id,"path":friendly_path(&root),"label":label,"device_name":device["name"],"created":created,"offered":apply,"nested":!overlaps.is_empty(),"overlapping_folders":overlaps,"remote_acceptance":"The other device may need to accept the folder in Syncthing."});
+        let filtered = drop.filter(|selection| !selection.ignore.is_empty());
+        if let Some(selection) = filtered {
+            if created {
+                match fs::symlink_metadata(root.join(".stignore")) {
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    _ => return Err("This folder already has Syncthing exclusions. Put the selected items in a separate folder to share them.".into()),
+                }
+            } else if self.ignores(&id)? != selection.ignore {
+                return Err("This folder already has a different sync scope. Put the selected items in a separate folder to share them.".into());
+            }
+        } else if drop.is_some() && !created && self.ignores(&id)?.iter().any(|line| line == SELECTED_SHARE) {
+            return Err("This folder already syncs selected items only. Choose the same items or a separate folder.".into());
+        }
+        if drop.is_some() && !created && folder["type"].as_str() != Some("sendreceive") {
+            return Err("This folder is configured for one-way syncing. Change its mode in Syncthing before sharing it both ways.".into());
+        }
+        let result = json!({"folder_id":id,"path":friendly_path(&root),"label":label,"device_name":device["name"],"created":created,"offered":apply,"nested":!overlaps.is_empty(),"selected_only":filtered.is_some(),"overlapping_folders":overlaps,"remote_acceptance":"The other device may need to accept the folder in Syncthing."});
         if !apply {
             return Ok(result);
         }
@@ -954,13 +990,17 @@ impl Api {
         if self.get(&["rest", "config", "folders"], &[])? != folders {
             return Err("Sync folders changed while preparing this share. Refresh and try again; no sync settings were changed.".into());
         }
-        fs::create_dir_all(data_dir.join("syncthing-backups")).map_err(|e| e.to_string())?;
-        fs::write(data_dir.join("syncthing-backups").join(format!("share-{}-{}.json",hex::encode(sha2::Sha256::digest(id.as_bytes())),chrono::Utc::now().format("%Y%m%dT%H%M%S%.9f"))),serde_json::to_vec_pretty(&json!({"folder_id":id,"path":folder["path"],"paused":folder["paused"],"device_ids":folder["devices"].as_array().map(|d|d.iter().map(|v|v["deviceID"].clone()).collect::<Vec<_>>()),"created":created})).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
+        fs::write(backups.join(format!("share-{}-{}.json",hex::encode(sha2::Sha256::digest(id.as_bytes())),chrono::Utc::now().format("%Y%m%dT%H%M%S%.9f"))),serde_json::to_vec_pretty(&json!({"folder_id":id,"path":folder["path"],"paused":folder["paused"],"device_ids":folder["devices"].as_array().map(|d|d.iter().map(|v|v["deviceID"].clone()).collect::<Vec<_>>()),"created":created})).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
         if created {
             folder["id"] = json!(id);
             folder["label"] = json!(label);
             folder["path"] = json!(friendly_path(&root));
-            folder["devices"] = json!(shared);
+            // Keep a selected-only share local and paused until the exclusions have been read back.
+            folder["devices"] = if filtered.is_some() {
+                json!(shared.iter().filter(|entry| entry["deviceID"] == local_id).collect::<Vec<_>>())
+            } else {
+                json!(shared)
+            };
             folder["paused"] = json!(true);
             folder["type"] = json!("sendreceive");
             folder["maxConflicts"] = json!(-1);
@@ -973,7 +1013,16 @@ impl Api {
                 folder["versioning"] = json!({"type":"simple","params":{"keep":"20","cleanoutDays":"0"},"cleanupIntervalS":3600,"fsPath":"","fsType":"basic"});
             }
             self.call("POST", &["rest", "config", "folders"], &[], Some(&folder))?;
-            if data["skip_build"].as_bool().unwrap_or(false) {
+            if let Some(selection) = filtered {
+                self.call("POST", &["rest", "db", "ignores"], &[("folder", &id)],
+                          Some(&json!({"ignore": selection.ignore})))
+                    .map_err(|error| format!("The selected share was left paused because its exclusions could not be saved. {error}"))?;
+                if self.ignores(&id)? != selection.ignore || self.folder(&id)?["paused"] != true {
+                    return Err("Syncthing did not confirm the selected scope. The share has not been offered.".into());
+                }
+                self.call("PATCH", &["rest", "config", "folders", &id], &[],
+                          Some(&json!({"devices": shared})))?;
+            } else if data["skip_build"].as_bool().unwrap_or(false) {
                 let rules = [
                     ".tools",
                     "build",
@@ -1020,6 +1069,57 @@ impl Api {
         )?;
         Ok(result)
     }
+}
+
+const SELECTED_SHARE: &str = "// myDrive selected share v1";
+
+struct DropSelection {
+    root: std::path::PathBuf,
+    label: String,
+    ignore: Vec<String>,
+}
+
+fn drop_selection(items: &Value) -> Result<DropSelection, String> {
+    let items = items.as_array().filter(|paths| (1..=256).contains(&paths.len()))
+        .ok_or("Choose up to 256 files or folders to sync.")?;
+    let mut paths = Vec::new();
+    for item in items {
+        let path = Path::new(item.as_str().ok_or("Choose local files and folders.")?);
+        let info = fs::symlink_metadata(path).map_err(|_| "One of the selected items is unavailable.")?;
+        if !path.is_absolute() || !(info.is_file() || info.is_dir()) || info.file_type().is_symlink() {
+            return Err("Choose available local files and folders. Shortcuts need their original item.".into());
+        }
+        paths.push(path.canonicalize().map_err(|_| "One of the selected items is unavailable.")?);
+    }
+    paths.sort();
+    paths.dedup();
+    let first = &paths[0];
+    let label = first.file_name().and_then(|name| name.to_str()).ok_or("Choose a named file or folder.")?;
+    if paths.len() == 1 && first.is_dir() {
+        return Ok(DropSelection { root: first.clone(), label: label.into(), ignore: vec![] });
+    }
+    let mut root = first.parent().ok_or("Choose items inside a specific folder.")?;
+    while paths.iter().any(|path| !path.starts_with(root) || path == root) {
+        root = root.parent().ok_or("Drop items from different drives separately.")?;
+    }
+    if root.parent().is_none() {
+        return Err("Drop items from each folder separately when their only common location is a drive root.".into());
+    }
+    let rules = paths.iter().map(|path| {
+        let relative = path.strip_prefix(root).map_err(|_| "The selected item is outside the sync folder.")?;
+        let parts = relative.iter().map(|part| part.to_str().filter(|part| {
+            !part.chars().any(char::is_control)
+                && !matches!(part.to_ascii_lowercase().as_str(), ".stignore" | ".stfolder" | ".stversions")
+        }).ok_or("The selection includes an unsupported filename or a Syncthing control file."))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(SelectionRule { path: parts.join("/"), sync: true, is_dir: path.is_dir() })
+    }).collect::<Result<Vec<_>, String>>()?;
+    let ignore = render_rules_for_mode(&["#escape=\\".into(), SELECTED_SHARE.into(), "**".into()],
+                                       &rules, cfg!(windows), false)?;
+    let label = if paths.len() == 1 { label.into() } else {
+        format!("{} selected items", paths.len())
+    };
+    Ok(DropSelection { root: root.into(), label, ignore })
 }
 
 fn missing_sync_root(error: &str) -> bool {

@@ -18,6 +18,7 @@ public sealed class Preferences
     public bool SyncthingManual {get;set;}
     public string LastSyncFolder {get;set;}="";
     public string LastSyncDevice {get;set;}="";
+    public Dictionary<string,string> SyncRecipientDevices {get;set;}=new();
     public static Preferences Current {get;private set;}=Load();
     private static Preferences Load(){try{return JsonSerializer.Deserialize<Preferences>(File.ReadAllText(Path.Combine(CoreBridge.DataDir,"preferences.json")))??new();}catch{return new();}}
     public static void Save(){Directory.CreateDirectory(CoreBridge.DataDir);var path=Path.Combine(CoreBridge.DataDir,"preferences.json");File.WriteAllText(path+".tmp",JsonSerializer.Serialize(Current,new JsonSerializerOptions{WriteIndented=true}));File.Move(path+".tmp",path,true);}
