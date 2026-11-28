@@ -146,6 +146,8 @@ class MyDrive(Gtk.Application):
         content.append(self.status)
         self.incoming_slot = Gtk.ScrolledWindow(visible=False, hscrollbar_policy=Gtk.PolicyType.NEVER,
             max_content_height=265, propagate_natural_height=True, margin_start=8, margin_end=8)
+        self.incoming_content = Gtk.Viewport()
+        self.incoming_slot.set_child(self.incoming_content)
         content.append(self.incoming_slot)
         self.stack = Gtk.Stack(vhomogeneous=False, vexpand=True)
         content.append(self.stack)
@@ -212,8 +214,9 @@ class MyDrive(Gtk.Application):
                         "direction": "Incoming", "has_error": True, "progress": 3609442, "total_bytes": 5000000000,
                         "error_message": "Could not recreate a fixture symbolic link.", "error_code": 300}
             self.transfer_view.present_incoming(incoming, announce=True)
-            card = self.incoming_slot.get_child()
-            children = [card.observe_children().get_item(i) for i in range(card.observe_children().get_n_items())]
+            card = self.incoming_content.get_child()
+            model = card.observe_children()
+            children = [model.get_item(i) for i in range(model.get_n_items())]
             assert self.incoming_slot.get_visible() and self.transfer_view.receive_window is None
             assert any(isinstance(child, Gtk.ProgressBar) and abs(child.get_fraction() - 3609442 / 5000000000) < 1e-7
                        for child in children)

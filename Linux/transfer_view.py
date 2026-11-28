@@ -972,7 +972,7 @@ class TransferView:
             self.incoming_details = False
             self.inline_preview_id = None
             self.app.incoming_slot.set_visible(False)
-            self.app.incoming_slot.set_child(None)
+            self.app.incoming_content.set_child(None)
         if self.receive_window and self.receive_window[0] == identifier:
             self.receive_window[1].close()
 
@@ -996,7 +996,7 @@ class TransferView:
                     self.show_received(transfer, inline=True)
             else:
                 self.inline_preview_id = None
-                self.app.incoming_slot.set_child(self.receive_status_card(transfer,
+                self.app.incoming_content.set_child(self.receive_status_card(transfer,
                     details=self.incoming_details, dismiss=True))
                 self.app.incoming_slot.set_visible(True)
             return
@@ -1077,11 +1077,11 @@ class TransferView:
         if notice:
             notice.set_child(stage)
         else:
-            self.app.incoming_slot.set_child(stage)
+            self.app.incoming_content.set_child(stage)
             self.app.incoming_slot.set_visible(True)
 
         def visible():
-            return notice.get_visible() if notice else self.app.incoming_slot.get_child() is stage
+            return notice.get_visible() if notice else self.app.incoming_content.get_child() is stage
 
         def dismiss():
             if notice:
