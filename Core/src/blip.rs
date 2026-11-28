@@ -401,7 +401,6 @@ impl Session {
         }
         #[cfg(target_os = "macos")]
         mac::prepare_receive_root(self)?;
-        #[cfg(not(target_os = "macos"))]
         let inbox = self.receive_inbox()?;
         #[cfg(not(target_os = "macos"))]
         {
